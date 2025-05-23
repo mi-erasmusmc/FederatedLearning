@@ -6,76 +6,92 @@
 #' @param rounds     outer rounds
 #' @param popSettings        (only if you need to re‐build population)
 #' @return a data.frame of outer‐fold test metrics + best hyperparams
-federatedNestedCv <- function(dataList,
-                              w0,
+#' @importFrom Metrics auc
+federatedNestedCv <- function(clientHosts,
+                              clientPaths,
+                              popSettings,
+                              algorithm,
                               hyperGrid,
-                              k,
                               rounds,
-                              clientFrac) {
-  m <- length(dataList)
+                              clientFrac,
+                              epsilon = 1e-6) {
+  m <- length(clientHosts)
   outerResults <- vector("list", m)
 
   for (testIdx in seq_len(m)) {
-    # split outer
-    testClient <- dataList[[testIdx]]
-    trainClients <- dataList[-testIdx]
+    testHost <- clientHosts[testIdx]
+    testPath <- clientPaths[testIdx]
+    trainHosts <- clientHosts[-testIdx]
+    trainPaths <- clientPaths[-testIdx]
 
-    innerM <- length(trainClients)
+    innerM <- length(trainHosts)
     hyperPerf <- lapply(seq_along(hyperGrid), function(hIdx) {
       hp <- hyperGrid[[hIdx]]
-
-      foldPerf <- sapply(seq_len(innerM), function(vIdx) {
-        valClient <- trainClients[[vIdx]]
-        innerTrain <- trainClients[-vIdx]
-
-        hist <- FederatedLearning::federatedDualAveraging(
-          dataList    = innerTrain,
-          w0          = w0,
-          etaC        = hp$etaC,
-          etaS        = hp$etaS,
-          k           = k,
-          R           = rounds,
-          clientFrac  = clientFrac,
-          lambda      = hp$lambda
-        )
-        wFinal <- tail(hist$wHistory, 1)[[1]]
-        pHatVal <- plogis(valClient$xMatrix %*% wFinal)
-
-        c(
-          accuracy = FederatedLearning::accuracy(valClient$y, pHatVal),
-          logloss = FederatedLearning::logLoss(valClient$y, pHatVal),
-          density = FederatedLearning::density(wFinal)
-        )
+      config <- list(
+        etaClient = hp$etaClient,
+        etaServer = hp$etaServer,
+        k = hp$k,
+        rounds = rounds,
+        lambda = hp$lambda,
+        mapType = hp$mapType,
+        intercept = hp$intercept,
+        profile = hp$profile,
+        epsilon = epsilon,
+        clientFrac = clientFrac
+      )
+      foldMetrics <- lapply(seq_len(innerM), function(vIdx) {
+        valHost <- trainHosts[vIdx]
+        valPath <- trainPaths[vIdx]
+        innerTrainHosts <- trainHosts[-vIdx]
+        innerTrainPaths <- trainPaths[-vIdx]
+        res <- runFederated(innerTrainHosts, innerTrainPaths, popSettings, algorithm, config)
+        w <- res$w
+        evaluateClient(w, valHost, valPath, popSettings)
       })
-      # average over inner folds
-      colMeans(foldPerf)
+      # average metrics over inner folds
+      do.call(rbind, foldMetrics) |> colMeans()
     })
 
     innerDf <- do.call(rbind, hyperPerf)
     bestIdx <- which.max(innerDf[, "accuracy"])
     bestHp <- hyperGrid[[bestIdx]]
-
-    histFinal <- FederadLearning::federatedDualAveraging(
-      dataList = trainClients,
-      w0 = w0,
-      etaC = bestHp$etaC,
-      etaS = bestHp$etaS,
-      k = k,
+    configBest <- list(
+      etaClient = bestHp$etaClient,
+      etaServer = bestHp$etaServer,
+      k = bestHp$k,
       rounds = rounds,
-      clientFrac = clientFrac,
-      lambda = bestHp$lambda
+      lambda = bestHp$lambda,
+      mapType = bestHp$mapType,
+      intercept = bestHp$intercept,
+      profile = bestHp$profile,
+      epsilon = epsilon,
+      clientFrac = clientFrac
     )
-    wFinal <- tail(histFinal$wHistory, 1)[[1]]
-    pHatTest <- plogis(testClient$xMatrix %*% wFinal)
-    testMetrics <- c(
-      accuracy = FederatedLearning::accuracy(testClient$y, pHatTest),
-      logloss  = FederatedLearning::logLoss(testClient$y, pHatTest),
-      density  = FederatedLearning::density(wFinal)
-    )
-
+    resFinal <- runFederated(trainHosts, trainPaths, popSettings, algorithm, configBest)
+    wFinal <- resFinal$w
+    testMetrics <- evaluateClient(wFinal, testHost, testPath, popSettings)
     outerResults[[testIdx]] <- c(bestHp, testMetrics)
   }
 
-  # bind into a single data.frame
   do.call(rbind, lapply(outerResults, as.data.frame))
+#' Evaluate model weights on a single client
+#' @param w numeric vector of model coefficients
+#' @param clientHost hostname
+#' @param clientPath path to client data
+#' @param popSettings population settings
+#' @return named list of metrics: accuracy, auc, logloss, density
+evaluateClient <- function(w, clientHost, clientPath, popSettings) {
+  cl <- parallel::makeCluster(1)
+  on.exit(stopCluster(cl))
+  clusterLoadData(cl, clientHost, popSettings)
+  data <- parallel::clusterEvalQ(cl, list(xMatrix = xMatrix, yLabels = yLabels))[[1]]
+  xMatrix <- data$xMatrix
+  yLabels <- data$yLabels
+  pHat <- plogis(as.numeric(xMatrix %*% w))
+  list(
+    accuracy = FederatedLearning::accuracy(yLabels, pHat),
+    auc      = Metrics::auc(yLabels, pHat),
+    logloss  = FederatedLearning::logLoss(yLabels, pHat),
+    density  = FederatedLearning::density(w)
+  )
 }
