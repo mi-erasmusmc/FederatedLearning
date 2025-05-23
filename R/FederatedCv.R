@@ -74,6 +74,7 @@ federatedNestedCv <- function(clientHosts,
   }
 
   do.call(rbind, lapply(outerResults, as.data.frame))
+}
 #' Evaluate model weights on a single client
 #' @param w numeric vector of model coefficients
 #' @param clientHost hostname
