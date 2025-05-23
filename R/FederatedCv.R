@@ -7,6 +7,7 @@
 #' @param popSettings        (only if you need to re‐build population)
 #' @return a data.frame of outer‐fold test metrics + best hyperparams
 #' @importFrom Metrics auc
+#' @export
 federatedNestedCv <- function(clientHosts,
                               clientPaths,
                               popSettings,
