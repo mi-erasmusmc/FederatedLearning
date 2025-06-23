@@ -114,13 +114,13 @@ digraph FedNestedCV {
   /* ========== LEGEND ============================================= */
   subgraph cluster_legend {
 
-      label = "Legend";
+      label = \"Legend\";
       fontname = Helvetica;
       style = invis;                          /* no surrounding box  */
       rankdir = LR;                           /* lay legend left-→right */
 
       /* two silent points to draw a solid double arrow --------------*/
-      node [shape = point, width = 0.01, label = ""]
+      node [shape = point, width = 0.01, label = \"\"]
       n1; n2;
 
       /* two silent points to draw a dashed single arrow -------------*/
@@ -128,13 +128,13 @@ digraph FedNestedCV {
 
       /* solid, double-headed arrow : model-update vector ------------*/
       edge  [arrowhead = none, dir = both,
-             penwidth = 1.4, color = "#6C8EBF"]
-      n1 -> n2 [label = "  update vector" fontsize = 8]
+             penwidth = 1.4, color = \"#6C8EBF\"]
+      n1 -> n2 [label = \"  update vector\" fontsize = 8]
 
       /* dashed, single-headed arrow : evaluation metric -------------*/
       edge  [style = dashed, dir = forward, arrowhead = normal,
-             penwidth = 1.4, color = "#6C8EBF"]
-      n3 -> n4 [label = "  AUC only" fontsize = 8]
+             penwidth = 1.4, color = \"#6C8EBF\"]
+      n3 -> n4 [label = \"  AUC only\" fontsize = 8]
   }
 
   /* ---------- global title --------------------------------------- */
