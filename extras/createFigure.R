@@ -6,7 +6,7 @@ dot_code <- "
 digraph FedNestedCV {
 
   /* ---------- general graph attributes --------------------------- */
-  graph [rankdir = TB, nodesep = 0.7, bgcolor = white]
+  graph [rankdir = TB, nodesep = 0.4, bgcolor = white]
 
   /* ---------- colour palette ------------------------------------- */
   /* cylinders:                 training  = blue
@@ -42,7 +42,7 @@ digraph FedNestedCV {
       node [shape = box, style = filled, fillcolor = \"#C6E0B4\",
             width = 1.4, height = 0.8, fontname = Helvetica,
             fontsize = 11]
-      S1    [label = \"Server\\n(FedDualAvg)\"]
+      S1    [label = \"Server\"]
       
       /* --- communication arrows ---------------------------------- */
       edge  [arrowhead = none, dir = both,
@@ -90,7 +90,7 @@ digraph FedNestedCV {
       node [shape = box, style = filled, fillcolor = \"#C6E0B4\",
             width = 1.4, height = 0.8, fontname = Helvetica,
             fontsize = 11]
-      S2    [label = \"Server\\n(FedDualAvg)\"]
+      S2    [label = \"Server\"]
       
       edge  [arrowhead = none, dir = both,
              penwidth = 1.4, color = \"#6C8EBF\"]
@@ -103,9 +103,9 @@ digraph FedNestedCV {
       S2   -> V_2
       S2   -> Test2
       T1_2 -> T2_2 [style = invis]
-      T2_2 -> T4_2 [style = invis]
-      T4_2 -> V_2  [style = invis]
-      V_2  -> Test2 [style = invis]
+      T2_2 -> V_2  [style = invis]
+      V_2  -> T4_2 [style = invis]
+      T4_2 -> Test2 [style = invis]
   }
 
   /* ---------- align the two clusters on the same rank ------------ */
