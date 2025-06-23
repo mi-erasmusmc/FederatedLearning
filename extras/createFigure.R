@@ -6,7 +6,7 @@ dot_code <- "
 digraph FedNestedCV {
 
   /* ---------- general graph attributes --------------------------- */
-  graph [rankdir = LR, nodesep = 0.7, bgcolor = white]
+  graph [rankdir = TB, nodesep = 0.7, bgcolor = white]
 
   /* ---------- colour palette ------------------------------------- */
   /* cylinders:                 training  = blue
