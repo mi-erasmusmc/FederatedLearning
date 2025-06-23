@@ -38,7 +38,6 @@ digraph FedNestedCV {
       node [fillcolor = \"#F6B26B\"]                  /* outer test */
       Test  [label = \"Fold 5\\n(outer test)\"]
       
-      { rank = same; T1_1 T2_1 T4_1 V_1 Test }
       /* --- server ------------------------------------------------- */
       node [shape = box, style = filled, fillcolor = \"#C6E0B4\",
             width = 1.4, height = 0.8, fontname = Helvetica,
@@ -87,7 +86,6 @@ digraph FedNestedCV {
       node [fillcolor = \"#F6B26B\"]
       Test2 [label = \"Fold 5\\n(outer test)\"]
       
-      { rank = same; T1_2 T2_2 T4_2 V_2 Test2 }
       
       node [shape = box, style = filled, fillcolor = \"#C6E0B4\",
             width = 1.4, height = 0.8, fontname = Helvetica,
@@ -105,8 +103,8 @@ digraph FedNestedCV {
       S2   -> V_2
       S2   -> Test2
       T1_2 -> T2_2 [style = invis]
-      T2_2 -> T3_2 [style = invis]                                                                          
-      T3_2 -> V_2  [style = invis]                                                                         
+      T2_2 -> T4_2 [style = invis]
+      T4_2 -> V_2  [style = invis]
       V_2  -> Test2 [style = invis]
   }
 
