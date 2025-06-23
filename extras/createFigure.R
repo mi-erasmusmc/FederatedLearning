@@ -117,7 +117,8 @@ digraph FedNestedCV {
       label = \"Legend\";
       fontname = Helvetica;
       style = invis;                          /* no surrounding box  */
-      rankdir = LR;                           /* lay legend left-→right */
+      rankdir = TB;                           /* lay legend top→bottom  */
+      rank = sink;                            /* push legend to bottom  */
 
       /* two silent points to draw a solid double arrow --------------*/
       node [shape = point, width = 0.01, label = \"\"]
@@ -135,6 +136,9 @@ digraph FedNestedCV {
       edge  [style = dashed, dir = forward, arrowhead = normal,
              penwidth = 1.4, color = \"#6C8EBF\"]
       n3 -> n4 [label = \"  AUC only\" fontsize = 8]
+
+      /* invisible link to keep the two arrows vertically separated */
+      n2 -> n3 [style = invis]
   }
 
   /* ---------- global title --------------------------------------- */
