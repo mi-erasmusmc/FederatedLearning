@@ -1,29 +1,38 @@
 # Code to run federated nested CV
 clientHosts <- c("localhost", "localhost", "localhost", "localhost", "localhost")
-clientPaths <- c("./data/client1", "./data/client2", "./data/client3", "./data/client4", "./data/client5")
+path <- "./data/readmissionPhenotypes"
+resultDirectory <- "./results/readmissionPhenotypes"
+if (!dir.exists(resultDirectory)) dir.create(resultDirectory, recursive = TRUE)
+clientPaths <- c(file.path(path, "client1"), 
+                 file.path(path, "client2"),
+                 file.path(path, "client3"),
+                 file.path(path, "client4"),
+                 file.path(path, "client5"))
 stopifnot(length(clientHosts) == length(clientPaths))
 
 popSettings <- PatientLevelPrediction::createStudyPopulationSettings(
   requireTimeAtRisk = FALSE,
-  riskWindowEnd = 5 * 365
+  riskWindowEnd = 30,
+  removeSubjectsWithPriorOutcome = FALSE
 )
 
-algorithm <- "DualAvg"
+algorithm <- "DualAvgCpp"
 
 paramGrid <- list(
-  etaClient = c(0.01, 0.1, 1.0),
-  etaServer = c(0.01, 0.1, 1.0),
-  k = c(1, 5, 10),
-  lambda = c(1e-3, 1e-4, 1e-2),
-  mapType = c("union", "intersection"),
-  intercept = c(TRUE, FALSE),
+  etaClient = c(1.0),
+  etaServer = c(1.0),
+  k = c(10),
+  lambda = c(14.14214), # unnormalized
+  mapType = c("intersection"),
+  intercept = c(TRUE),
   profile = c(FALSE)
 )
+paramGrid$tildeEta <- paramGrid$etaClient * paramGrid$etaServer * paramGrid$k
 
 gridDf <- expand.grid(paramGrid, stringsAsFactors = FALSE)
-hyperGrid <- apply(gridDf, 1, as.list)
+hyperGrid <- split(gridDf, seq_len(nrow(gridDf)))
 
-rounds <- 100
+rounds <- 10000
 clientFrac <- 1
 
 results <- FederatedLearning::federatedNestedCv(
@@ -34,8 +43,12 @@ results <- FederatedLearning::federatedNestedCv(
   hyperGrid   = hyperGrid,
   rounds      = rounds,
   clientFrac  = clientFrac,
+  resultDirectory = resultDirectory,
   epsilon     = 1e-6
 )
 
 print(results)
-write.csv(results, "nested_cv_results.csv", row.names = FALSE)
+write.csv(results, file.path(resultDirectory, 
+                             "nested_cv_results_full.csv"), 
+          row.names = FALSE)
+

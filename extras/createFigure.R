@@ -1,5 +1,6 @@
 # install.packages("DiagrammeR")   # once
 library(DiagrammeR)
+library(DiagrammeRsvg)
 library(grid)
 
 dot_code <- "
@@ -150,10 +151,5 @@ digraph FedNestedCV {
 
 ## build widget and capture as grob ---------------------------------
 widget <- grViz(dot_code)
-fed_grob <- grid::grid.grabExpr(print(widget))
-
-## save as PDF / SVG (vector graphic) -------------------------------
-grid.newpage(); grid.draw(fed_grob)
-# ggsave can also handle grobs if you prefer:
-# ggplot2::ggsave(\"fed_nested_cv.pdf\", plot = fed_grob,
-#                 width = 10, height = 4)
+svg_txt <- export_svg(widget)
+writeLines(svg_txt, "nested_cv_diagram.svg")
