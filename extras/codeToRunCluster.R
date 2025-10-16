@@ -1,5 +1,9 @@
 clientHosts <- c("localhost", "localhost", "localhost")
-clientPaths <- c("./data/client1", "./data/client2", "./data/client3")
+clientPaths <- c(
+  "./data/lungCancerPhenotypes/client1",
+  "./data/lungCancerPhenotypes/client2",
+  "./data/lungCancerPhenotypes/client3"
+)
 
 popSettings <- PatientLevelPrediction::createStudyPopulationSettings(
   requireTimeAtRisk = FALSE,
@@ -54,10 +58,11 @@ bestConfig <- list(
   profile = FALSE,
   epsilon = 1e-6
 )
-cl <- FederatedLearning::clusterInit(clientHosts, clientPaths)
+cl <- FederatedLearning::clusterInit(clientHosts, clientPaths, mirai = TRUE)
 on.exit(FederatedLearning:::stopCluster(cl), add = TRUE)
 FederatedLearning::clusterLoadData(cl, clientPaths, popSettings)
-fedFit <- FederatedLearning::runFederated(
+fedFit <- FederatedLearning::fitFederated(
   cl = cl,
   algorithm = "DualAvg",
-  config = bestConfig)
+  config = bestConfig
+)
