@@ -1,3 +1,17 @@
+# Helper: retain cluster attributes when subsetting workers
+subsetCluster <- function(cl, idx) {
+  sub <- cl[idx]
+  if (!is.null(names(cl))) {
+    names(sub) <- names(cl)[idx]
+  }
+  class(sub) <- class(cl)
+  attrNames <- setdiff(names(attributes(cl)), c("class", "names"))
+  for (nm in attrNames) {
+    attr(sub, nm) <- attr(cl, nm)
+  }
+  sub
+}
+
 #' Outer + inner CV for federated hyperparameter tuning
 #' @param dataList   list of length M, each element $X,$y
 #' @param w0         initial parameter vector
@@ -16,7 +30,8 @@ federatedNestedCv <- function(clientHosts,
                               rounds,
                               clientFrac,
                               resultDirectory,
-                              epsilon = 1e-6) {
+                              epsilon = 1e-6,
+                              mirai = FALSE) {
   logName <- "federatedLog"
   logger <- ParallelLogger::createLogger(
       name = logName,
@@ -35,53 +50,74 @@ federatedNestedCv <- function(clientHosts,
   m <- length(clientHosts)
   outerResults <- vector("list", m)
 
+  algo <- .getAlgorithm(algorithm)
+  if (is.null(algo)) {
+    stop(sprintf("Algorithm '%s' is not registered", algorithm))
+  }
+  lambdaStrategy <- algo$lambdaStrategy %||% .lambdaStrategyDefault()
+
   # init cluster and client states
-  cl <- clusterInit(clientHosts, clientPaths)
+  cl <- clusterInit(clientHosts, clientPaths, mirai = mirai)
   on.exit(stopCluster(cl), add = TRUE)
   popSizes <- clusterLoadData(cl, clientPaths, popSettings)
+  globalMap <- clusterCollectCovRefs(cl, type = hyperGrid[[1]]$mapType)
   totalPopSize <- Reduce("+", popSizes)
-  initLambda <- hyperGrid[[1]]$lambda / (3 * totalPopSize / 5) # inner loop fits on 3
   clientIds <- seq_len(m)
-  hyperGridNoLambda <- lapply(hyperGrid, function(x) x[!names(x) %in% "lambda"])
   for (testIdx in clientIds) {
     message(sprintf("Outer fold %d/%d", testIdx, m))
     trainIds <- clientIds[-testIdx]
+    clTrain <- subsetCluster(cl, trainIds)
+    clTest <- subsetCluster(cl, testIdx)
 
-    hyperResults <- lapply(hyperGridNoLambda, function(hpBase) {
+    hyperResults <- lapply(hyperGrid, function(hp) {
+      hpList <- if (is.data.frame(hp)) as.list(hp[1, , drop = FALSE]) else as.list(hp)
+      hpBase <- hpList[!names(hpList) %in% "lambda"]
       tuned <- tuneLambda(
-        cl = cl[trainIds],
+        cl = clTrain,
         algorithm = algorithm,
         configBase = hpBase,
         trainIds = seq_along(trainIds),
         rounds = rounds,
         clientFrac = clientFrac,
         epsilon = epsilon,
-        initLambda =  initLambda
+        lambdaStrategy = lambdaStrategy,
+        lambdaDefault = hpList$lambda,
+        totalPopSize = totalPopSize,
+        globalMap = globalMap
       )
-      data.frame(
-        etaClient = hpBase$etaClient,
-        etaServer = hpBase$etaServer,
-        k = hpBase$k,
-        lambda = tuned$bestLambda,
-        mapType = hpBase$mapType,
-        intercept = hpBase$intercept,
-        profile = hpBase$profile,
-        auc = tuned$perf
-      )
+      paramsOut <- hpBase
+      paramsOut$lambda <- tuned$bestLambda
+      paramsOut$auc <- tuned$perf
+      as.data.frame(paramsOut, stringsAsFactors = FALSE)
     })
     innerDf <- do.call(rbind, hyperResults)
     bestIdx <- which.max(innerDf$auc)
-    bestRow <- innerDf[bestIdx, ]
-    configBest <- as.list(bestRow[c(
-      "etaClient", "etaServer", "k", "mapType", "intercept", "profile", "lambda"
-    )])
-    configBest$lambda <- configBest$lambda * 3 / 4 # renormalize to 4 sets instead of 3
+    bestRow <- innerDf[bestIdx, , drop = FALSE]
+    configCols <- setdiff(names(bestRow), "auc")
+    configBest <- as.list(bestRow[configCols])
+    configBest$profile <- configBest$profile %||% FALSE
     configBest$rounds <- rounds
     configBest$epsilon <- epsilon
     configBest$clientFrac <- clientFrac
-    resFinal <- fitFederated(cl[trainIds], algorithm, configBest)
+    contextFinal <- list(
+      cl = clTrain,
+      configBase = configBest,
+      rounds = rounds,
+      clientFrac = clientFrac,
+      epsilon = epsilon,
+      totalPopSize = totalPopSize,
+      globalMap = globalMap
+    )
+    trainConfig <- configBest
+    trainConfig$mapping <- globalMap
+    trainConfig$p <- nrow(globalMap)
+    trainConfig$lambda <- lambdaStrategy$initial(configBest$lambda, totalPopSize, contextFinal)
+    trainConfig$rounds <- rounds
+    trainConfig$epsilon <- epsilon
+    trainConfig$clientFrac <- clientFrac
+    resFinal <- fitFederated(clTrain, algorithm, trainConfig)
     wFinal <- resFinal$w
-    testMetrics <- evaluateClient(cl[testIdx], wFinal, resFinal$config)
+    testMetrics <- evaluateClient(clTest, wFinal, resFinal$config)
     outerResults[[testIdx]] <- c(configBest, list(auc = testMetrics))
   }
   delta <- Sys.time() - start

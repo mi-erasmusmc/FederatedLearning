@@ -1,7 +1,7 @@
 # Code to run federated nested CV
 clientHosts <- c("localhost", "localhost", "localhost", "localhost", "localhost")
-path <- "./data/readmissionPhenotypes"
-resultDirectory <- "./results/readmissionPhenotypes"
+path <- "./data/dementia"
+resultDirectory <- "./results/dementiaADAP"
 if (!dir.exists(resultDirectory)) dir.create(resultDirectory, recursive = TRUE)
 clientPaths <- c(file.path(path, "client1"), 
                  file.path(path, "client2"),
@@ -16,23 +16,27 @@ popSettings <- PatientLevelPrediction::createStudyPopulationSettings(
   removeSubjectsWithPriorOutcome = FALSE
 )
 
-algorithm <- "DualAvgCpp"
+algorithm <- "ADAP"
 
 paramGrid <- list(
-  etaClient = c(1.0),
-  etaServer = c(1.0),
-  k = c(10),
-  lambda = c(14.14214), # unnormalized
-  mapType = c("intersection"),
-  intercept = c(TRUE),
-  profile = c(FALSE)
+  mapType = "intersection",
+  intercept = TRUE
 )
-paramGrid$tildeEta <- paramGrid$etaClient * paramGrid$etaServer * paramGrid$k
+# paramGrid <- list(
+#   etaClient = c(1.0),
+#   etaServer = c(1.0),
+#   k = c(10),
+#   lambda = c(14.14214), # unnormalized
+#   mapType = c("intersection"),
+#   intercept = c(TRUE),
+#   profile = c(FALSE)
+# )
+# paramGrid$tildeEta <- paramGrid$etaClient * paramGrid$etaServer * paramGrid$k
 
 gridDf <- expand.grid(paramGrid, stringsAsFactors = FALSE)
 hyperGrid <- split(gridDf, seq_len(nrow(gridDf)))
 
-rounds <- 10000
+rounds <- if (algorithm == "ADAP") 2 else 10000
 clientFrac <- 1
 
 results <- FederatedLearning::federatedNestedCv(
@@ -44,11 +48,11 @@ results <- FederatedLearning::federatedNestedCv(
   rounds      = rounds,
   clientFrac  = clientFrac,
   resultDirectory = resultDirectory,
-  epsilon     = 1e-6
+  epsilon     = 1e-6,
+  mirai       = FALSE
 )
 
 print(results)
 write.csv(results, file.path(resultDirectory, 
                              "nested_cv_results_full.csv"), 
           row.names = FALSE)
-

@@ -75,19 +75,31 @@ unimodalSearchInit <- function(stdStep = 2,
         c0 <- co[1]
         c1 <- co[2]
         c2 <- co[3]
-        logm <- -c1 / (2 * c2)
-        expected <- c0 - c1^2 / (4 * c2)
         maxVal <- y[bi]
 
-        # stopping tests
-        if (maxVal == 0) {
+        if (!is.finite(c2) || abs(c2) < .Machine$double.eps) {
           cont <- FALSE
-        } else if ((expected - maxVal) / abs(maxVal) < state$stopByY) {
-          cont <- FALSE
-        } else if (abs(logm - log(x[bi])) < state$stopByX)  {
-        cont <- FALSE
+          expected <- maxVal
+          nextX <- x[bi]
+        } else {
+          logm <- -c1 / (2 * c2)
+          expected <- c0 - c1^2 / (4 * c2)
+          if (!is.finite(logm) || !is.finite(expected)) {
+            cont <- FALSE
+            expected <- maxVal
+            nextX <- x[bi]
+          } else {
+            # stopping tests
+            if (maxVal == 0) {
+              cont <- FALSE
+            } else if (((expected - maxVal) / abs(maxVal)) < state$stopByY) {
+              cont <- FALSE
+            } else if (abs(logm - log(x[bi])) < state$stopByX)  {
+              cont <- FALSE
+            }
+            nextX <- exp(logm)
+          }
         }
-        nextX <- exp(logm)
       }
     }
     list(continue = cont, nextX = nextX, expected = expected)
@@ -107,6 +119,12 @@ unimodalSearchInit <- function(stdStep = 2,
     }
     state$x[state$bestIdx]
   }
+  state$bestY <- function() {
+    if (is.na(state$bestIdx)) {
+      return(NULL)
+    }
+    state$y[state$bestIdx]
+  }
   state
 }
 
@@ -117,27 +135,61 @@ unimodalSearchInit <- function(stdStep = 2,
 #  • returns final best λ plus its CV‐mean
 tuneLambda <- function(cl, algorithm, configBase, trainIds,
                         rounds, clientFrac, epsilon,
+                        lambdaStrategy, lambdaDefault, totalPopSize,
+                        globalMap,
                         stdStep = 2,
                         stopByY = 1e-2,
                         stopByX = log(1.5),
                         firstCut = 1.0,
-                        initLambda = 1.0,
                         verbose = TRUE) {
+  context <- list(
+    cl = cl,
+    configBase = configBase,
+    trainIds = trainIds,
+    rounds = rounds,
+    clientFrac = clientFrac,
+    epsilon = epsilon,
+    totalPopSize = totalPopSize,
+    lambdaDefault = lambdaDefault,
+    globalMap = globalMap
+  )
+
+  baseLambda <- lambdaDefault
+  if (is.function(lambdaStrategy$seed)) {
+    seedVal <- lambdaStrategy$seed(context)
+    if (is.numeric(seedVal) && length(seedVal) > 0 && is.finite(seedVal[1]) && seedVal[1] > 0) {
+      baseLambda <- seedVal[1]
+    }
+  }
+  if (!is.numeric(baseLambda) || length(baseLambda) == 0 || !is.finite(baseLambda[1]) || baseLambda[1] <= 0) {
+    stop("Unable to determine a positive starting lambda for tuning")
+  }
+  baseLambda <- as.numeric(baseLambda[1])
+
+  initLambda <- lambdaStrategy$initial(baseLambda, totalPopSize, context)
+  if (!is.numeric(initLambda) || length(initLambda) == 0 || !is.finite(initLambda[1]) || initLambda[1] <= 0) {
+    stop("Lambda strategy produced a non-positive transformed lambda")
+  }
+  initLambda <- as.numeric(initLambda[1])
+
   search <- unimodalSearchInit(stdStep, stopByY, stopByX, firstCut, init = initLambda)
 
-  # initial λ to seed the 
   cfg0 <- c(configBase, list(
     lambda = initLambda,
     rounds = rounds,
     epsilon = epsilon,
-    clientFrac = clientFrac
+    clientFrac = clientFrac,
+    mapping = globalMap,
+    p = nrow(globalMap)
   ))
 
   aucs0 <- sapply(trainIds, function(valId) {
     train2 <- setdiff(trainIds, valId)
+    trainCluster <- subsetCluster(cl, train2)
+    valCluster <- subsetCluster(cl, valId)
     message("Fitting on folds ", train2, " validating on fold ", valId)
-    res <- fitFederated(cl[train2], algorithm, cfg0)
-    ev <- evaluateClient(cl[valId], res$w, config = res$config)
+    res <- fitFederated(trainCluster, algorithm, cfg0)
+    ev <- evaluateClient(valCluster, res$w, config = res$config)
     ev
   })
 
@@ -172,15 +224,19 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
         lambda = lambdaTry,
         rounds = rounds,
         epsilon = epsilon,
-        clientFrac = clientFrac
+        clientFrac = clientFrac,
+        mapping = globalMap,
+        p = nrow(globalMap)
       )
     )
 
     # your inner CV over trainIds
     aucs <- sapply(trainIds, function(valId) {
       train2 <- setdiff(trainIds, valId)
-      res <- fitFederated(cl[train2], algorithm, cfg)
-      ev <- evaluateClient(cl[valId], res$w, res$config)
+      trainCluster <- subsetCluster(cl, train2)
+      valCluster <- subsetCluster(cl, valId)
+      res <- fitFederated(trainCluster, algorithm, cfg)
+      ev <- evaluateClient(valCluster, res$w, res$config)
       ev
     })
 
@@ -195,5 +251,17 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
   }
 
   bestLambda <- search$bestX()
-  list(bestLambda = bestLambda, perf = mean(aucs))
+  if (is.null(bestLambda) || !is.finite(bestLambda)) {
+    bestLambda <- initLambda
+  }
+  bestLambda <- as.numeric(bestLambda)[1]
+  bestPerf <- search$bestY()
+  if (is.null(bestPerf)) {
+    bestPerf <- m
+  }
+  list(
+    bestLambda = lambdaStrategy$final(bestLambda, totalPopSize, context),
+    bestLambdaTrain = bestLambda,
+    perf = bestPerf
+  )
 }

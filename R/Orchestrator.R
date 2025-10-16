@@ -5,10 +5,7 @@
 #' @param config       list(etaClient, etaServer, K, rounds, lambda, clientFrac)
 #' @return w
 #' @export
-fitFederated <- function(cl,
-                         algorithm,
-                         config,
-                         verbose = TRUE) {
+fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   algo <- .getAlgorithm(algorithm)
 
   globalMap <- clusterCollectCovRefs(cl, type = config$mapType)
@@ -20,10 +17,13 @@ fitFederated <- function(cl,
     config$profile <- FALSE
   } else {
     if (config$profile == TRUE) {
-      parallel::clusterEvalQ(cl, utils::Rprof(
-        filename = sprintf("worker-%d.out", Sys.getpid()),
-        line.profiling = TRUE
-      ))
+      parallel::clusterEvalQ(
+        cl,
+        utils::Rprof(
+          filename = sprintf("worker-%d.out", Sys.getpid()),
+          line.profiling = TRUE
+        )
+      )
       on.exit(
         parallel::clusterEvalQ(cl, utils::Rprof(NULL)),
         add = TRUE,
@@ -49,11 +49,15 @@ fitFederated <- function(cl,
       n = n
     )
   }
-  parallel::clusterExport(cl, c(
-    "algo", "config",
-    "clientUpdate", "getLocalObjective"
-  ),
-  envir = environment()
+  parallel::clusterExport(
+    cl,
+    c(
+      "algo",
+      "config",
+      "clientUpdate",
+      "getLocalObjective"
+    ),
+    envir = environment()
   )
   serverState <- algo$serverInit(config)
   parallel::clusterExport(cl, "serverState", envir = environment())
@@ -69,12 +73,17 @@ fitFederated <- function(cl,
   }
 
   previousObjective <- -Inf
+  lastTick <- Sys.time()
+  lastRound <- 0L
 
   for (r in 0:(config$rounds - 1)) {
     serverState$r <- r
     # update client state
     parallel::clusterExport(cl, "serverState", envir = environment())
-    report <- parallel::clusterEvalQ(cl, clientUpdate(serverBroadcast = serverState))
+    report <- parallel::clusterEvalQ(
+      cl,
+      clientUpdate(serverBroadcast = serverState)
+    )
     # step 2: server round
     srv <- algo$serverRound(
       serverState = serverState,
@@ -84,7 +93,10 @@ fitFederated <- function(cl,
     serverState <- srv$state
     serverReport <- srv$report
     parallel::clusterExport(cl, c("serverReport"), envir = environment())
-    localObjectives <- parallel::clusterEvalQ(cl, getLocalObjective(serverReport$w))
+    localObjectives <- parallel::clusterEvalQ(
+      cl,
+      getLocalObjective(serverReport$w)
+    )
     lossVec <- vapply(localObjectives, `[[`, numeric(1), "objective")
     globalLoss <- sum(lossVec)
     globalObjective <- globalLoss
@@ -92,12 +104,29 @@ fitFederated <- function(cl,
     deltaAbs <- globalObjective - previousObjective
     criteria <- deltaAbs / (abs(globalObjective) + 1)
     if (verbose) {
-      # only every 100 rounds
       if (r %% 100 == 0 || r == config$rounds - 1) {
-        cat(sprintf(
-          "Round %3d: obj = %12.6f  crit = %12.2e\n",
-          r, globalObjective, criteria
-        ))
+        now <- Sys.time()
+        nrounds <- r - lastRound
+        if (r > 0 && nrounds > 0) {
+          dt <- as.numeric(difftime(now, lastTick, units = "secs"))
+          cat(sprintf(
+            "Round %3d: obj = %12.6f  crit = %12.2e  dt(%3d) = %8.3fs\n",
+            r,
+            globalObjective,
+            criteria,
+            nrounds,
+            dt
+          ))
+        } else {
+          cat(sprintf(
+            "Round %3d: obj = %12.6f  crit = %12.2e\n",
+            r,
+            globalObjective,
+            criteria
+          ))
+        }
+        lastTick <- now
+        lastRound <- r
       }
     }
     previousObjective <- globalObjective

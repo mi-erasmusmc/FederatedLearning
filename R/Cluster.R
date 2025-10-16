@@ -1,20 +1,20 @@
 #' @export
-clusterInit <- function(clientHosts,
-                        clientPaths) {
+clusterInit <- function(clientHosts, clientPaths, mirai = TRUE) {
   stopifnot(length(clientHosts) == length(clientPaths))
-  cl <- parallelly::makeClusterPSOCK(
-    workers = clientHosts,
-    rscript_libs = .libPaths(), # TODO is this needed?
-    default_packages = c("PatientLevelPrediction", 
-      "FederatedLearning"),
-  )
+  if (mirai) {
+    cl <- mirai::make_cluster(n = length(clientHosts))
+  } else {
+    cl <- parallelly::makeClusterPSOCK(
+      workers = clientHosts,
+      rscript_libs = .libPaths(), # TODO is this needed?
+      default_packages = c("PatientLevelPrediction", "FederatedLearning"),
+    )
+  }
   cl
 }
 
 #' @export
-clusterLoadData <- function(cl,
-                            clientPaths,
-                            popSettings) {
+clusterLoadData <- function(cl, clientPaths, popSettings) {
   popSizes <- parallel::clusterApply(
     cl,
     seq_along(clientPaths),
@@ -34,13 +34,19 @@ clusterLoadData <- function(cl,
 
 #' @export
 clusterCollectCovRefs <- function(cl, type = "union") {
-  covRefList <- parallel::clusterCall(
+  covRefList <- parallel::clusterEvalQ(
     cl,
-    function() {
+    {
       covariateRef <- FederatedLearning::getClientFeatures(plpData)
-      covariateRef
     }
   )
+  # covRefList <- parallel::clusterCall(
+  #   cl,
+  #   function() {
+  #     covariateRef <- FederatedLearning::getClientFeatures(plpData)
+  #     covariateRef
+  #   }
+  # )
   globalMap <- FederatedLearning::createGlobalMap(covRefList, type = type)
   globalMap
 }
@@ -49,7 +55,11 @@ clusterCollectCovRefs <- function(cl, type = "union") {
 clusterCreateMatrices <- function(cl, config) {
   parallel::clusterCall(
     cl,
-    function(config) {
+    function(mapping, config) {
+      config <- within(config, {
+        mapping <- mapping
+        p <- nrow(mapping)
+      })
       clientData <- FederatedLearning::createClientMatrix(
         plpData,
         config = config
@@ -57,6 +67,7 @@ clusterCreateMatrices <- function(cl, config) {
       assign("clientData", clientData, envir = .GlobalEnv)
       NULL
     },
+    mapping = config$mapping,
     config = config
   )
 }
