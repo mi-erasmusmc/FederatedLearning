@@ -2,10 +2,11 @@ Package: FederatedLearning
 Title: What the Package Does (One Line, Title Case)
 Version: 0.0.0.9000
 Authors@R: 
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"))
-Description: What the package does (one paragraph).
-License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
-    license
+    person("Egill", "Fridgeirsson", , "e.fridgeirsson@erasmusmc.nl", role = c("aut", "cre"))
+Description: Implements federated learning workflows for patient-level
+    prediction models, including distributed data preparation, model fitting,
+    diagnostics, and evaluation across simulated or remote clinical data sites.
+License: Apache License (>= 2)
 Depends:
   R (>= 4.1.0)
 Imports:
@@ -13,8 +14,17 @@ Imports:
     rlang,
     dplyr,
     Andromeda,
+    Matrix,
+    Metrics,
+    ParallelLogger,
+    parallelly,
+    mirai,
+    glmnet,
     Rcpp,
-    RcppEigen
+    RcppEigen,
+    pROC
+Suggests:
+    testthat (>= 3.0.0)
 LinkingTo:
     Rcpp,
     RcppEigen
