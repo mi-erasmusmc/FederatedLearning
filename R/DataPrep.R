@@ -36,8 +36,16 @@ getClientFeatures <- function(plpData) {
 #' @return data.frame with covariateId and columnId (1..P_global)
 #' @export
 createGlobalMap <- function(covRefList,
-                            type = c("union", "intersection")) {
+                            type = c("union", "intersection"),
+                            featureSet = NULL,
+                            covariateIds = NULL,
+                            analysisIds = NULL) {
   type <- match.arg(type)
+  covRefList <- lapply(covRefList, filterCovariateRef,
+    featureSet = featureSet,
+    covariateIds = covariateIds,
+    analysisIds = analysisIds
+  )
   idLists <- lapply(covRefList, `[[`, "covariateId")
   if (type == "union") {
     allIds <- sort(unique(unlist(idLists)))
@@ -48,6 +56,45 @@ createGlobalMap <- function(covRefList,
     covariateId = allIds,
     columnId = seq_along(allIds)
   )
+}
+
+#' Filter covariate references for a named experiment feature set
+#' @param covariateRef covariate reference data.frame
+#' @param featureSet one of "all", "ageSex", "phenotypes", "ageSexPhenotypes"
+#' @param covariateIds optional explicit covariate ids to retain
+#' @param analysisIds optional explicit analysis ids to retain
+#' @return filtered covariateRef data.frame
+#' @export
+filterCovariateRef <- function(covariateRef,
+                               featureSet = NULL,
+                               covariateIds = NULL,
+                               analysisIds = NULL) {
+  if (is.null(covariateRef) || nrow(covariateRef) == 0) {
+    return(covariateRef)
+  }
+  featureSet <- featureSet %||% "all"
+  keep <- rep(TRUE, nrow(covariateRef))
+  ageSexIds <- c(1002, 8532001)
+
+  if (!identical(featureSet, "all")) {
+    if (identical(featureSet, "ageSex")) {
+      keep <- covariateRef$covariateId %in% ageSexIds
+    } else if (identical(featureSet, "phenotypes")) {
+      keep <- covariateRef$analysisId %in% 49
+    } else if (identical(featureSet, "ageSexPhenotypes")) {
+      keep <- covariateRef$covariateId %in% ageSexIds |
+        covariateRef$analysisId %in% 49
+    } else {
+      stop("Unknown featureSet: ", featureSet)
+    }
+  }
+  if (!is.null(covariateIds)) {
+    keep <- keep & covariateRef$covariateId %in% covariateIds
+  }
+  if (!is.null(analysisIds)) {
+    keep <- keep & covariateRef$analysisId %in% analysisIds
+  }
+  covariateRef[keep, , drop = FALSE]
 }
 
 #' @export

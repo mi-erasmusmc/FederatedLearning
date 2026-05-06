@@ -1,3 +1,8 @@
+# Null coalescing helper used in algorithm configs
+`%||%` <- function(x, y) {
+  if (is.null(x)) y else x
+}
+
 #' Compute density = fraction of |w|>threshold
 computeDensity <- function(w, threshold = 1e-4) {
   mean(abs(w) > threshold)
