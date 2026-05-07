@@ -1,17 +1,3 @@
-# Helper: retain cluster attributes when subsetting workers
-subsetCluster <- function(cl, idx) {
-  sub <- cl[idx]
-  if (!is.null(names(cl))) {
-    names(sub) <- names(cl)[idx]
-  }
-  class(sub) <- class(cl)
-  attrNames <- setdiff(names(attributes(cl)), c("class", "names"))
-  for (nm in attrNames) {
-    attr(sub, nm) <- attr(cl, nm)
-  }
-  sub
-}
-
 #' Outer + inner CV for federated hyperparameter tuning
 #' @param clientHosts worker host names or addresses
 #' @param clientPaths paths to client PLP data folders

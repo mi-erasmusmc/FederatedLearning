@@ -53,7 +53,8 @@ clientUpdateFastDA <- function(clientData,
   }
   list(
     g = g,
-    wtilde = wtilde
+    wtilde = wtilde,
+    n = clientData$n %||% length(clientData$yLabels)
   )
 }
 
@@ -61,9 +62,9 @@ clientUpdateFastDA <- function(clientData,
 serverRoundFastDA <- function(serverState,
                               clientReports,
                               config) {
-  gBar <- Reduce(`+`, lapply(clientReports, `[[`, "g")) / length(clientReports)
-  wtildeBar <-
-    Reduce(`+`, lapply(clientReports, `[[`, "wtilde")) / length(clientReports)
+  aggregation <- config$aggregation %||% "sampleSize"
+  gBar <- weightedReportAverage(clientReports, "g", aggregation = aggregation)
+  wtildeBar <- weightedReportAverage(clientReports, "wtilde", aggregation = aggregation)
 
   r <- serverState$r
   k <- config$k
@@ -101,5 +102,6 @@ serverRoundFastDA <- function(serverState,
   serverInit = serverInitFastDA,
   clientInit = NULL,
   clientUpdate = clientUpdateFastDA,
-  serverRound = serverRoundFastDA
+  serverRound = serverRoundFastDA,
+  supportsClientSampling = TRUE
 )

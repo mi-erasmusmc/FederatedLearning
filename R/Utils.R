@@ -30,3 +30,21 @@ auc <- function(y, pHat) {
     NA_real_
   }
 }
+
+reportWeights <- function(clientReports, aggregation = "sampleSize") {
+  aggregation <- match.arg(aggregation, c("sampleSize", "equalClient"))
+  if (identical(aggregation, "equalClient")) {
+    return(rep(1 / length(clientReports), length(clientReports)))
+  }
+  ns <- vapply(clientReports, function(x) x$n %||% NA_real_, numeric(1))
+  if (any(!is.finite(ns)) || any(ns <= 0)) {
+    stop("sampleSize aggregation requires each client report to include positive finite n")
+  }
+  ns / sum(ns)
+}
+
+weightedReportAverage <- function(clientReports, name, aggregation = "sampleSize") {
+  weights <- reportWeights(clientReports, aggregation = aggregation)
+  values <- lapply(clientReports, `[[`, name)
+  Reduce(`+`, Map(function(value, weight) value * weight, values, weights))
+}
