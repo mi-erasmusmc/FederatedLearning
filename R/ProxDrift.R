@@ -1,7 +1,7 @@
 serverInitProxDrift <- function(config) {
   p <- config$p + as.integer(config$intercept)
-  x0 <- rep(0, p) # global model xᵣ
-  # compute P_{~ηg}(x) one time
+  x0 <- rep(0, p) # global model
+  # compute the proximal drift point once
   pX0 <- proxL1(x0,
     alphaLambda = config$tildeEta * config$lambda,
     intercept = config$intercept
@@ -66,9 +66,11 @@ clientUpdateProxDrift <- function(
     )
   }
   # update client state
-  clientState <<- list(
-    c = cI,
-    sumGrad = sumGrad
+  assign("clientState", list(
+      c = cI,
+      sumGrad = sumGrad
+    ),
+    envir = .GlobalEnv
   )
   list(
     bzr = bzr,

@@ -9,7 +9,7 @@
 A package for running federated learning algorithms in R.
 }
 \author{
-\strong{Maintainer}: First Last \email{first.last@example.com}
+\strong{Maintainer}: Egill Fridgeirsson \email{e.fridgeirsson@erasmusmc.nl}
 
 }
 \keyword{internal}

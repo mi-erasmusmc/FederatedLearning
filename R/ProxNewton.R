@@ -22,7 +22,7 @@ clientUpdateProxNewton <- function(clientData,
   sumResiduals <- sum(residuals)
   grad <- grad - clientData$xMeans * sumResiduals
 
-  # Hessian diagonal: ∂²L/∂w_j² = 1/n ∑_i x_ij^2 * p_i*(1-p_i)
+  # Hessian diagonal: d2L/dw_j2 = mean_i x_ij^2 * p_i * (1 - p_i)
   wDiag <- pVec * (1 - pVec)
   wDiag <- pmax(wDiag, config$epsThresh)
   sumWd <- sum(wDiag)
@@ -38,7 +38,7 @@ clientUpdateProxNewton <- function(clientData,
 serverRoundProxNewton <- function(serverState,
                                   clientReports,
                                   config) {
-  # 1) aggregate gradient & Hessian‐diags
+  # 1) aggregate gradient and Hessian diagonals
   grads <- sapply(clientReports, `[[`, "grad")
   hess <- sapply(clientReports, `[[`, "hess")
   gBar <- Matrix::rowMeans(grads)
@@ -51,7 +51,7 @@ serverRoundProxNewton <- function(serverState,
   for (s in seq_len(sweeps)) {
     for (j in seq_along(wNew)) {
       if (config$intercept && j == 1) next
-      # Newton‐style CD update for coordinate j
+      # Newton-style coordinate descent update for coordinate j
       uj <- wNew[j] + gBar[j] / hBar[j]
       wNew[j] <- sign(uj) * pmax(abs(uj) - lambda / hBar[j], 0)
     }

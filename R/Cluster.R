@@ -1,3 +1,8 @@
+#' Initialize a worker cluster for client execution
+#' @param clientHosts worker host names or addresses
+#' @param clientPaths client data paths; used to define cluster size
+#' @param mirai if TRUE, use `mirai`; otherwise use PSOCK workers
+#' @return cluster object
 #' @export
 clusterInit <- function(clientHosts, clientPaths, mirai = TRUE) {
   stopifnot(length(clientHosts) == length(clientPaths))
@@ -13,6 +18,11 @@ clusterInit <- function(clientHosts, clientPaths, mirai = TRUE) {
   cl
 }
 
+#' Load PLP data on each cluster worker
+#' @param cl cluster object
+#' @param clientPaths paths to client PLP data folders
+#' @param popSettings PatientLevelPrediction population settings
+#' @return integer vector of per-client population sizes
 #' @export
 clusterLoadData <- function(cl, clientPaths, popSettings) {
   popSizes <- parallel::clusterApply(
@@ -32,6 +42,14 @@ clusterLoadData <- function(cl, clientPaths, popSettings) {
   popSizes
 }
 
+#' Collect client covariate references and build a global map
+#' @param cl cluster object
+#' @param type "union" or "intersection"
+#' @param featureSet optional named feature set: "all", "ageSex", "phenotypes",
+#'   or "ageSexPhenotypes"
+#' @param covariateIds optional explicit covariate ids to retain
+#' @param analysisIds optional explicit analysis ids to retain
+#' @return data.frame with covariateId and columnId
 #' @export
 clusterCollectCovRefs <- function(cl,
                                   type = "union",
@@ -61,6 +79,10 @@ clusterCollectCovRefs <- function(cl,
   globalMap
 }
 
+#' Create local model matrices on each cluster worker
+#' @param cl cluster object
+#' @param config list containing `mapping` and model matrix options
+#' @return list of NULL values, one per worker
 #' @export
 clusterCreateMatrices <- function(cl, config) {
   parallel::clusterCall(

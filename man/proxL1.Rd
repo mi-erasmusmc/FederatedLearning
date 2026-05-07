@@ -2,14 +2,14 @@
 % Please edit documentation in R/MathUtils.R
 \name{proxL1}
 \alias{proxL1}
-\title{Soft‐threshold ℓ1‐proximal operator}
+\title{Soft-threshold l1-proximal operator}
 \usage{
 proxL1(z, alphaLambda, intercept = TRUE)
 }
 \arguments{
 \item{z}{numeric vector (dual state)}
 
-\item{alphaLambda}{nonnegative scalar (α·λ)}
+\item{alphaLambda}{nonnegative scalar (alpha * lambda)}
 
 \item{intercept}{wether there is an intercept}
 }
@@ -17,5 +17,5 @@ proxL1(z, alphaLambda, intercept = TRUE)
 numeric vector (primal state)
 }
 \description{
-Soft‐threshold ℓ1‐proximal operator
+Soft-threshold l1-proximal operator
 }

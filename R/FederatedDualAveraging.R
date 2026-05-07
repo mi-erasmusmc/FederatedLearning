@@ -8,15 +8,10 @@ serverInitDA <- function(config) {
   list(z = z)
 }
 
-#' One client's K‐step dual‐averaging loop
-#' @param clientState list(z=dualState)
-#' @param xMatrix local xMatrix (n × p)
-#' @param yLabels local yLabels (length n, in {0,1})
-#' @param etaClient client learning rate
-#' @param etaServer server learning rate
-#' @param roundIdx integer current federated round (0‐based)
-#' @param k integer number of local updates
-#' @param lambda regularization weight
+#' One client's K-step dual-averaging loop
+#' @param clientData local client data list with `xMatrix` and `yLabels`
+#' @param serverBroadcast server state broadcast to the client
+#' @param config algorithm configuration list
 #' @return numeric deltaZ = z_final - z_initial
 #' @export
 clientUpdateDA <- function(clientData,
@@ -25,7 +20,7 @@ clientUpdateDA <- function(clientData,
   z <- serverBroadcast$z
   # client state is global in client
   for (i in seq_len(config$k) - 1) {
-    # ˜η = η_s·η_c·round·K + η_c·k
+    # eta_tilde = eta_s * eta_c * round * K + eta_c * k
     etaTilde <- 
       config$etaServer * config$etaClient * serverBroadcast$r * config$k + config$etaClient * i
     # primal retrieval

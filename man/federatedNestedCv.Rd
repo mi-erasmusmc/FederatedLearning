@@ -12,24 +12,34 @@ federatedNestedCv(
   hyperGrid,
   rounds,
   clientFrac,
-  epsilon = 1e-06
+  resultDirectory,
+  epsilon = 1e-06,
+  mirai = FALSE
 )
 }
 \arguments{
-\item{popSettings}{(only if you need to re‐build population)}
+\item{clientHosts}{worker host names or addresses}
 
-\item{hyperGrid}{data.frame or list of lists of hyper‐parameters to try}
+\item{clientPaths}{paths to client PLP data folders}
+
+\item{popSettings}{PatientLevelPrediction population settings}
+
+\item{algorithm}{registered federated learning algorithm name}
+
+\item{hyperGrid}{data.frame or list of lists of hyper-parameters to try}
 
 \item{rounds}{outer rounds}
 
-\item{dataList}{list of length M, each element $X,$y}
+\item{clientFrac}{fraction of clients sampled per round}
 
-\item{w0}{initial parameter vector}
+\item{resultDirectory}{directory for logs and results}
 
-\item{k}{clientFrac}
+\item{epsilon}{convergence tolerance}
+
+\item{mirai}{if TRUE, use \code{mirai}; otherwise use PSOCK workers}
 }
 \value{
-a data.frame of outer‐fold test metrics + best hyperparams
+a data.frame of outer-fold test metrics + best hyperparams
 }
 \description{
 Outer + inner CV for federated hyperparameter tuning

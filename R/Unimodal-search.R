@@ -1,4 +1,4 @@
-# Fit y ≃ c-1 + c1*log(x) + c2*(log(x))^2 by weighted least‐squares
+# Fit y approximately c-1 + c1*log(x) + c2*(log(x))^2 by weighted least-squares
 quadrLogFit <- function(x, y, ySd) {
   n <- length(x)
   stopifnot(n >= 3)
@@ -69,7 +69,7 @@ unimodalSearchInit <- function(stdStep = 2,
         nextX <- x[bi] * state$stdStep
         if (!(x[bi] < Inf)) cont <- FALSE
 
-        # maximum is bracketed → do a quadratic‐fit in log‐space
+        # maximum is bracketed, so do a quadratic fit in log-space
       } else {
         co <- quadrLogFit(x, y, ys)
         c0 <- co[1]
@@ -129,10 +129,10 @@ unimodalSearchInit <- function(stdStep = 2,
 }
 
 # Now a little wrapper that
-#  • repeatedly calls step()
-#  • runs your inner‐CV at each new lambda
-#  • calls try(lambda, mean_auc, sd_auc)
-#  • returns final best λ plus its CV‐mean
+#  - repeatedly calls step()
+#  - runs your inner-CV at each new lambda
+#  - calls try(lambda, mean_auc, sd_auc)
+#  - returns final best lambda plus its CV mean
 tuneLambda <- function(cl, algorithm, configBase, trainIds,
                         rounds, clientFrac, epsilon,
                         lambdaStrategy, lambdaDefault, totalPopSize,
@@ -197,7 +197,7 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
   s <- sd(aucs0)
 
   if (verbose) {
-    message(sprintf("[iter %2d] initial λ = %.5g  (predicted auc = %.5g)",
+    message(sprintf("[iter %2d] initial lambda = %.5g  (predicted auc = %.5g)",
            0, initLambda, m)) 
   }
   search$try(initLambda, m, s)
@@ -208,14 +208,14 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     s <- search$step()
     if (!s$continue) {
       if (verbose) {
-       message(sprintf("→ stopping search after %d iterations. best lambda = %g",
+       message(sprintf("stopping search after %d iterations. best lambda = %g",
              iter - 1, search$bestX()))
       }
       break
     }
     lambdaTry <- s$nextX
     if (verbose) {
-      message(sprintf("[iter %2d] proposing λ = %.5g  (predicted auc = %.5g)",
+      message(sprintf("[iter %2d] proposing lambda = %.5g  (predicted auc = %.5g)",
              iter, lambdaTry, s$expected))
     }
     cfg <- c(

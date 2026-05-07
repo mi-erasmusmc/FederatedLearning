@@ -3,6 +3,8 @@ Title: What the Package Does (One Line, Title Case)
 Version: 0.0.0.9000
 Authors@R: 
     person("Egill", "Fridgeirsson", , "e.fridgeirsson@erasmusmc.nl", role = c("aut", "cre"))
+Author: Egill Fridgeirsson [aut, cre]
+Maintainer: Egill Fridgeirsson <e.fridgeirsson@erasmusmc.nl>
 Description: Implements federated learning workflows for patient-level
     prediction models, including distributed data preparation, model fitting,
     diagnostics, and evaluation across simulated or remote clinical data sites.
@@ -13,7 +15,6 @@ Imports:
     PatientLevelPrediction,
     rlang,
     dplyr,
-    Andromeda,
     Matrix,
     Metrics,
     ParallelLogger,
@@ -31,4 +32,4 @@ LinkingTo:
 NeedsCompilation: yes
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3

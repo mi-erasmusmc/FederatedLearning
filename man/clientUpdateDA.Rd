@@ -2,30 +2,20 @@
 % Please edit documentation in R/FederatedDualAveraging.R
 \name{clientUpdateDA}
 \alias{clientUpdateDA}
-\title{One client's K‐step dual‐averaging loop}
+\title{One client's K-step dual-averaging loop}
 \usage{
 clientUpdateDA(clientData, serverBroadcast, config)
 }
 \arguments{
-\item{clientState}{list(z=dualState)}
+\item{clientData}{local client data list with \code{xMatrix} and \code{yLabels}}
 
-\item{xMatrix}{local xMatrix (n × p)}
+\item{serverBroadcast}{server state broadcast to the client}
 
-\item{yLabels}{local yLabels (length n, in {0,1})}
-
-\item{etaClient}{client learning rate}
-
-\item{etaServer}{server learning rate}
-
-\item{roundIdx}{integer current federated round (0‐based)}
-
-\item{k}{integer number of local updates}
-
-\item{lambda}{regularization weight}
+\item{config}{algorithm configuration list}
 }
 \value{
 numeric deltaZ = z_final - z_initial
 }
 \description{
-One client's K‐step dual‐averaging loop
+One client's K-step dual-averaging loop
 }
