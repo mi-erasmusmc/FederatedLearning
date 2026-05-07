@@ -18,6 +18,64 @@ clusterInit <- function(clientHosts, clientPaths, mirai = TRUE) {
   cl
 }
 
+.workerStateNames <- c(
+  "plpData",
+  "clientData",
+  "clientState",
+  "clientLocalId",
+  "serverState",
+  "serverReport",
+  "modelW",
+  "algo",
+  "config",
+  ".assertWorkerState",
+  ".evaluateBinaryMetrics",
+  "logLoss",
+  "clientUpdate",
+  "getLocalObjective"
+)
+
+.assertWorkerState <- function(..., action = NULL) {
+  required <- c(...)
+  missing <- required[!vapply(
+    required,
+    exists,
+    logical(1),
+    envir = .GlobalEnv,
+    inherits = FALSE
+  )]
+  if (length(missing) > 0) {
+    msg <- paste0(
+      "Worker state is missing required object(s): ",
+      paste(missing, collapse = ", ")
+    )
+    if (!is.null(action)) {
+      msg <- paste(msg, action)
+    }
+    stop(msg, call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+#' Clear FederatedLearning state from cluster workers
+#' @param cl cluster object
+#' @return invisibly, one NULL per worker
+#' @export
+clusterClearState <- function(cl) {
+  invisible(parallel::clusterCall(
+    cl,
+    function(stateNames) {
+      existing <- intersect(stateNames, ls(envir = .GlobalEnv, all.names = TRUE))
+      if (length(existing) > 0) {
+        rm(list = existing, envir = .GlobalEnv)
+      }
+      options(FederatedLearning.localId = NULL)
+      NULL
+    },
+    stateNames = .workerStateNames
+  ))
+}
+
 #' Load PLP data on each cluster worker
 #' @param cl cluster object
 #' @param clientPaths paths to client PLP data folders
@@ -28,7 +86,15 @@ clusterLoadData <- function(cl, clientPaths, popSettings) {
   popSizes <- parallel::clusterApply(
     cl,
     seq_along(clientPaths),
-    function(i, clientPaths, popSettings) {
+    function(i, clientPaths, popSettings, stateNames) {
+      existing <- intersect(
+        stateNames,
+        ls(envir = .GlobalEnv, all.names = TRUE)
+      )
+      if (length(existing) > 0) {
+        rm(list = existing, envir = .GlobalEnv)
+      }
+      options(FederatedLearning.localId = NULL)
       plpData <- FederatedLearning::loadClientData(
         clientPaths[i],
         popSettings = popSettings
@@ -37,7 +103,8 @@ clusterLoadData <- function(cl, clientPaths, popSettings) {
       nrow(plpData$population)
     },
     clientPaths = clientPaths,
-    popSettings = popSettings
+    popSettings = popSettings,
+    stateNames = .workerStateNames
   )
   popSizes
 }
@@ -56,9 +123,14 @@ clusterCollectCovRefs <- function(cl,
                                   featureSet = NULL,
                                   covariateIds = NULL,
                                   analysisIds = NULL) {
+  parallel::clusterExport(cl, ".assertWorkerState", envir = environment())
   covRefList <- parallel::clusterEvalQ(
     cl,
     {
+      .assertWorkerState(
+        "plpData",
+        action = "Run clusterLoadData() before collecting covariates."
+      )
       covariateRef <- FederatedLearning::getClientFeatures(plpData)
     }
   )
@@ -85,9 +157,17 @@ clusterCollectCovRefs <- function(cl,
 #' @return list of NULL values, one per worker
 #' @export
 clusterCreateMatrices <- function(cl, config) {
+  parallel::clusterExport(cl, ".assertWorkerState", envir = environment())
   parallel::clusterCall(
     cl,
     function(mapping, config) {
+      if (exists("clientData", envir = .GlobalEnv, inherits = FALSE)) {
+        rm("clientData", envir = .GlobalEnv)
+      }
+      .assertWorkerState(
+        "plpData",
+        action = "Run clusterLoadData() before creating client matrices."
+      )
       config <- within(config, {
         mapping <- mapping
         p <- nrow(mapping)
@@ -140,12 +220,16 @@ clusterCreateMatrices <- function(cl, config) {
 clusterPredict <- function(cl, w) {
   parallel::clusterExport(
     cl,
-    c(".evaluateBinaryMetrics", "logLoss"),
+    c(".assertWorkerState", ".evaluateBinaryMetrics", "logLoss"),
     envir = asNamespace("FederatedLearning")
   )
   metrics <- parallel::clusterCall(
     cl,
     function(w) {
+      .assertWorkerState(
+        "clientData",
+        action = "Run fitFederated() or clusterCreateMatrices() before prediction."
+      )
       preds <- stats::plogis(as.numeric(clientData$xMatrix %*% w))
       .evaluateBinaryMetrics(clientData$yLabels, preds, w)$auc
     },
@@ -160,10 +244,15 @@ clusterPredict <- function(cl, w) {
 #' @return data.frame with sample, outcome, and feature diagnostics
 #' @export
 clusterDiagnostics <- function(cl, config = list()) {
+  parallel::clusterExport(cl, ".assertWorkerState", envir = environment())
   rows <- parallel::clusterApply(
     cl,
     seq_along(cl),
     function(i, config) {
+      .assertWorkerState(
+        "plpData",
+        action = "Run clusterLoadData() before diagnostics."
+      )
       pop <- plpData$population
       covRef <- FederatedLearning::getClientFeatures(plpData)
       filtered <- FederatedLearning::filterCovariateRef(
@@ -204,13 +293,17 @@ clusterDiagnostics <- function(cl, config = list()) {
 clusterEvaluateModel <- function(cl, w, threshold = 1e-4) {
   parallel::clusterExport(
     cl,
-    c(".evaluateBinaryMetrics", "logLoss"),
+    c(".assertWorkerState", ".evaluateBinaryMetrics", "logLoss"),
     envir = asNamespace("FederatedLearning")
   )
   rows <- parallel::clusterApply(
     cl,
     seq_along(cl),
     function(i, w, threshold) {
+      .assertWorkerState(
+        "clientData",
+        action = "Run fitFederated() or clusterCreateMatrices() before evaluation."
+      )
       lin <- as.numeric(clientData$xMatrix %*% w)
       preds <- stats::plogis(lin)
       y <- clientData$yLabels
