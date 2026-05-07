@@ -3,3 +3,6 @@ results
 data
 extras/task_manifest.csv
 extras/atlas_json
+*.o
+*.so
+src/symbols.rds

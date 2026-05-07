@@ -1,5 +1,5 @@
 Package: FederatedLearning
-Title: What the Package Does (One Line, Title Case)
+Title: Federated Patient-Level Prediction for OMOP Common Data Model Data
 Version: 0.0.0.9000
 Authors@R: 
     person("Egill", "Fridgeirsson", , "e.fridgeirsson@erasmusmc.nl", role = c("aut", "cre"))
