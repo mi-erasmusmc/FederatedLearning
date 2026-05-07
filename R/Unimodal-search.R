@@ -265,3 +265,141 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     perf = bestPerf
   )
 }
+
+tuneLambdaLead <- function(cl, algorithm, configBase, trainIds,
+                           rounds, clientFrac, epsilon,
+                           lambdaStrategy, lambdaDefault, totalPopSize,
+                           globalMap,
+                           stdStep = 2,
+                           stopByY = 1e-2,
+                           stopByX = log(1.5),
+                           firstCut = 1.0,
+                           verbose = TRUE) {
+  context <- list(
+    cl = cl,
+    configBase = configBase,
+    trainIds = trainIds,
+    rounds = rounds,
+    clientFrac = clientFrac,
+    epsilon = epsilon,
+    totalPopSize = totalPopSize,
+    lambdaDefault = lambdaDefault,
+    globalMap = globalMap
+  )
+
+  baseLambda <- lambdaDefault
+  if (is.function(lambdaStrategy$seed)) {
+    seedVal <- lambdaStrategy$seed(context)
+    if (is.numeric(seedVal) && length(seedVal) > 0 && is.finite(seedVal[1]) && seedVal[1] > 0) {
+      baseLambda <- seedVal[1]
+    }
+  }
+  if (!is.numeric(baseLambda) || length(baseLambda) == 0 || !is.finite(baseLambda[1]) || baseLambda[1] <= 0) {
+    stop("Unable to determine a positive starting lambda for tuning")
+  }
+  baseLambda <- as.numeric(baseLambda[1])
+
+  initLambda <- lambdaStrategy$initial(baseLambda, totalPopSize, context)
+  if (!is.numeric(initLambda) || length(initLambda) == 0 || !is.finite(initLambda[1]) || initLambda[1] <= 0) {
+    stop("Lambda strategy produced a non-positive transformed lambda")
+  }
+  initLambda <- as.numeric(initLambda[1])
+
+  metricName <- configBase$cvMetric %||% "deviance"
+  hessianMode <- configBase$hessian %||% "full"
+  mapHash <- if (!is.null(globalMap)) digest::digest(globalMap$covariateId) else NA_character_
+  cacheKey <- digest::digest(list(
+    trainIds = sort(trainIds),
+    intercept = isTRUE(configBase$intercept),
+    hessian = hessianMode,
+    map = mapHash
+  ))
+
+  roundsLead <- max(rounds, 3L)
+  commonCfg <- modifyList(
+    configBase,
+    list(
+      rounds = roundsLead,
+      epsilon = epsilon,
+      clientFrac = clientFrac,
+      mapping = globalMap,
+      p = nrow(globalMap),
+      foldsK = configBase$foldsK %||% 5L,
+      cvMetric = metricName,
+      cacheKey = cacheKey,
+      hessian = hessianMode
+    )
+  )
+
+  toScore <- function(metricVal) {
+    if (!is.finite(metricVal)) {
+      return(NA_real_)
+    }
+    if (identical(metricName, "deviance")) {
+      return(-metricVal)
+    }
+    metricVal
+  }
+
+  rangeCfg <- modifyList(commonCfg, list(lambda = initLambda, request = "lambdaRange"))
+  rangeRes <- fitFederated(cl, algorithm, rangeCfg, verbose = verbose)
+  lambdaSeq <- rangeRes$lambdaSeq
+  if (is.null(lambdaSeq) || length(lambdaSeq) == 0) {
+    lambdaSeq <- rep(initLambda, 1L)
+  }
+  cacheKey <- rangeRes$cacheKey %||% cacheKey
+  commonCfg$cacheKey <- cacheKey
+
+  lambdaCandidates <- unique(as.numeric(lambdaSeq))
+  if (verbose) {
+    message(sprintf(
+      "ADAP2 lead lambda grid: max = %.5g, min = %.5g, count = %d",
+      max(lambdaCandidates), min(lambdaCandidates), length(lambdaCandidates)
+    ))
+  }
+  bestScore <- -Inf
+  bestLambda <- NA_real_
+  bestPerfRaw <- NA_real_
+
+  for (ii in seq_along(lambdaCandidates)) {
+    lam <- lambdaCandidates[ii]
+    cfg <- modifyList(commonCfg, list(lambda = lam, request = "cv", cacheKey = cacheKey))
+    res <- fitFederated(cl, algorithm, cfg, verbose = verbose)
+    scoreRaw <- res$cvMetric %||% NA_real_
+    score <- toScore(scoreRaw)
+    if (verbose) {
+       message(sprintf("[iter %2d] lambda = %.5g  lead-CV score = %.5g", ii - 1, lam, score))
+    }
+    if (!is.finite(score)) {
+      if (identical(metricName, "auc")) {
+        score <- 0.5
+        if (!is.finite(scoreRaw)) {
+          scoreRaw <- 0.5
+        }
+      } else {
+        score <- -Inf
+        if (!is.finite(scoreRaw)) {
+          scoreRaw <- NA_real_
+        }
+      }
+    }
+    if (is.finite(score) && score >= bestScore) {
+      bestScore <- score
+      bestLambda <- lam
+      bestPerfRaw <- scoreRaw
+    }
+  }
+
+  if (!is.finite(bestLambda)) {
+    bestLambda <- lambdaCandidates[1]
+  }
+  perfOut <- if (identical(metricName, "deviance")) bestPerfRaw else bestScore
+
+  list(
+    bestLambda = lambdaStrategy$final(bestLambda, totalPopSize, context),
+    bestLambdaTrain = bestLambda,
+    perf = perfOut,
+    cacheKey = cacheKey,
+    lambdaSeq = lambdaCandidates
+  )
+}

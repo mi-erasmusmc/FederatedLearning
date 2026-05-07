@@ -21,6 +21,7 @@ Imports:
     parallelly,
     mirai,
     glmnet,
+    digest,
     Rcpp,
     RcppEigen,
     pROC

@@ -64,7 +64,13 @@ federatedNestedCv <- function(clientHosts,
   cl <- clusterInit(clientHosts, clientPaths, mirai = mirai)
   on.exit(stopCluster(cl), add = TRUE)
   popSizes <- clusterLoadData(cl, clientPaths, popSettings)
-  globalMap <- clusterCollectCovRefs(cl, type = hyperGrid[[1]]$mapType)
+  globalMap <- clusterCollectCovRefs(
+    cl,
+    type = hyperGrid[[1]]$mapType,
+    featureSet = hyperGrid[[1]]$featureSet,
+    covariateIds = hyperGrid[[1]]$covariateIds,
+    analysisIds = hyperGrid[[1]]$analysisIds
+  )
   totalPopSize <- Reduce("+", popSizes)
   clientIds <- seq_len(m)
   for (testIdx in clientIds) {
@@ -76,28 +82,47 @@ federatedNestedCv <- function(clientHosts,
     hyperResults <- lapply(hyperGrid, function(hp) {
       hpList <- if (is.data.frame(hp)) as.list(hp[1, , drop = FALSE]) else as.list(hp)
       hpBase <- hpList[!names(hpList) %in% "lambda"]
-      tuned <- tuneLambda(
-        cl = clTrain,
-        algorithm = algorithm,
-        configBase = hpBase,
-        trainIds = seq_along(trainIds),
-        rounds = rounds,
-        clientFrac = clientFrac,
-        epsilon = epsilon,
-        lambdaStrategy = lambdaStrategy,
-        lambdaDefault = hpList$lambda,
-        totalPopSize = totalPopSize,
-        globalMap = globalMap
-      )
+      tuned <- if (identical(algorithm, "ADAP2")) {
+        tuneLambdaLead(
+          cl = clTrain,
+          algorithm = algorithm,
+          configBase = hpBase,
+          trainIds = seq_along(trainIds),
+          rounds = rounds,
+          clientFrac = clientFrac,
+          epsilon = epsilon,
+          lambdaStrategy = lambdaStrategy,
+          lambdaDefault = hpList$lambda,
+          totalPopSize = totalPopSize,
+          globalMap = globalMap
+        )
+      } else {
+        tuneLambda(
+          cl = clTrain,
+          algorithm = algorithm,
+          configBase = hpBase,
+          trainIds = seq_along(trainIds),
+          rounds = rounds,
+          clientFrac = clientFrac,
+          epsilon = epsilon,
+          lambdaStrategy = lambdaStrategy,
+          lambdaDefault = hpList$lambda,
+          totalPopSize = totalPopSize,
+          globalMap = globalMap
+        )
+      }
       paramsOut <- hpBase
       paramsOut$lambda <- tuned$bestLambda
       paramsOut$auc <- tuned$perf
+      if (identical(algorithm, "ADAP2")) {
+        paramsOut$cacheKey <- tuned$cacheKey %||% NA_character_
+      }
       as.data.frame(paramsOut, stringsAsFactors = FALSE)
     })
     innerDf <- do.call(rbind, hyperResults)
     bestIdx <- which.max(innerDf$auc)
     bestRow <- innerDf[bestIdx, , drop = FALSE]
-    configCols <- setdiff(names(bestRow), "auc")
+    configCols <- setdiff(names(bestRow), c("auc", "cacheKey"))
     configBest <- as.list(bestRow[configCols])
     configBest$profile <- configBest$profile %||% FALSE
     configBest$rounds <- rounds
@@ -115,8 +140,18 @@ federatedNestedCv <- function(clientHosts,
     trainConfig <- configBest
     trainConfig$mapping <- globalMap
     trainConfig$p <- nrow(globalMap)
-    trainConfig$lambda <- lambdaStrategy$initial(configBest$lambda, totalPopSize, contextFinal)
-    trainConfig$rounds <- rounds
+    cacheKeyBest <- if ("cacheKey" %in% names(bestRow)) bestRow$cacheKey else NA_character_
+    if (identical(algorithm, "ADAP2")) {
+      trainConfig$lambda <- configBest$lambda
+      trainConfig$request <- "fit"
+      if (!is.na(cacheKeyBest)) {
+        trainConfig$cacheKey <- cacheKeyBest
+      }
+      trainConfig$rounds <- max(rounds, 3L)
+    } else {
+      trainConfig$lambda <- lambdaStrategy$initial(configBest$lambda, totalPopSize, contextFinal)
+      trainConfig$rounds <- rounds
+    }
     trainConfig$epsilon <- epsilon
     trainConfig$clientFrac <- clientFrac
     resFinal <- fitFederated(clTrain, algorithm, trainConfig)
