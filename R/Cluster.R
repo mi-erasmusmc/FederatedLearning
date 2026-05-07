@@ -104,13 +104,50 @@ clusterCreateMatrices <- function(cl, config) {
   )
 }
 
+.evaluateBinaryMetrics <- function(y, preds, w, threshold = 1e-4) {
+  aucVal <- if (length(unique(y)) == 2) {
+    as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
+  } else {
+    NA_real_
+  }
+  logLossVal <- logLoss(y, preds)
+  eps <- 1e-15
+  pClip <- pmin(pmax(preds, eps), 1 - eps)
+  calFit <- if (length(unique(y)) == 2) {
+    suppressWarnings(
+      tryCatch(
+        stats::glm(y ~ stats::qlogis(pClip), family = stats::binomial()),
+        error = function(e) NULL
+      )
+    )
+  } else {
+    NULL
+  }
+  calIntercept <- if (!is.null(calFit)) unname(stats::coef(calFit)[[1]]) else NA_real_
+  calSlope <- if (!is.null(calFit)) unname(stats::coef(calFit)[[2]]) else NA_real_
+  data.frame(
+    auc = aucVal,
+    logLoss = logLossVal,
+    calibrationIntercept = calIntercept,
+    calibrationSlope = calSlope,
+    density = mean(abs(w) > threshold),
+    n = length(y),
+    outcomes = sum(y),
+    stringsAsFactors = FALSE
+  )
+}
+
 clusterPredict <- function(cl, w) {
+  parallel::clusterExport(
+    cl,
+    c(".evaluateBinaryMetrics", "logLoss"),
+    envir = asNamespace("FederatedLearning")
+  )
   metrics <- parallel::clusterCall(
     cl,
     function(w) {
       preds <- stats::plogis(as.numeric(clientData$xMatrix %*% w))
-      auc <- Metrics::auc(clientData$yLabels, preds)
-      auc
+      .evaluateBinaryMetrics(clientData$yLabels, preds, w)$auc
     },
     w = w
   )
@@ -165,6 +202,11 @@ clusterDiagnostics <- function(cl, config = list()) {
 #' @return data.frame with AUC, log loss, calibration intercept/slope
 #' @export
 clusterEvaluateModel <- function(cl, w, threshold = 1e-4) {
+  parallel::clusterExport(
+    cl,
+    c(".evaluateBinaryMetrics", "logLoss"),
+    envir = asNamespace("FederatedLearning")
+  )
   rows <- parallel::clusterApply(
     cl,
     seq_along(cl),
@@ -172,30 +214,9 @@ clusterEvaluateModel <- function(cl, w, threshold = 1e-4) {
       lin <- as.numeric(clientData$xMatrix %*% w)
       preds <- stats::plogis(lin)
       y <- clientData$yLabels
-      aucVal <- if (length(unique(y)) == 2) {
-        as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
-      } else {
-        NA_real_
-      }
-      eps <- 1e-15
-      pClip <- pmin(pmax(preds, eps), 1 - eps)
-      logLossVal <- -mean(y * log(pClip) + (1 - y) * log(1 - pClip))
-      calFit <- tryCatch(
-        stats::glm(y ~ stats::qlogis(pClip), family = stats::binomial()),
-        error = function(e) NULL
-      )
-      calIntercept <- if (!is.null(calFit)) unname(stats::coef(calFit)[1]) else NA_real_
-      calSlope <- if (!is.null(calFit)) unname(stats::coef(calFit)[2]) else NA_real_
-      data.frame(
-        client = i,
-        auc = aucVal,
-        logLoss = logLossVal,
-        calibrationIntercept = calIntercept,
-        calibrationSlope = calSlope,
-        density = mean(abs(w) > threshold),
-        n = length(y),
-        outcomes = sum(y),
-        stringsAsFactors = FALSE
+      cbind(
+        data.frame(client = i),
+        .evaluateBinaryMetrics(y, preds, w, threshold = threshold)
       )
     },
     w = w,
