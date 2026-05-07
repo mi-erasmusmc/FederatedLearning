@@ -48,8 +48,21 @@ gradLogistic <- function(weights, xMatrix, yLabels) {
   as.numeric(crossprod(xMatrix, res)) / length(yLabels)
 }
 
-logisticLoss <- function(weights, xMatrix, yLabels) {
+binaryLogLoss <- function(eta, yLabels, meanLoss = TRUE) {
+  logTerm <- ifelse(eta > 0, eta + log1p(exp(-eta)), log1p(exp(eta)))
+  loss <- logTerm - yLabels * eta
+  if (meanLoss) {
+    mean(loss)
+  } else {
+    sum(loss)
+  }
+}
+
+logisticNegLogLik <- function(weights, xMatrix, yLabels, meanLoss = FALSE) {
   linearPred <- as.numeric(xMatrix %*% weights)
-  loss <- sum(yLabels * linearPred - log1p(exp(linearPred)))
-  loss
+  binaryLogLoss(linearPred, yLabels, meanLoss = meanLoss)
+}
+
+logisticLoss <- function(weights, xMatrix, yLabels) {
+  -logisticNegLogLik(weights, xMatrix, yLabels, meanLoss = FALSE)
 }

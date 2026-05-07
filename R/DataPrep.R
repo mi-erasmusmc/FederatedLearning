@@ -101,6 +101,20 @@ filterCovariateRef <- function(covariateRef,
   covariateRef[keep, , drop = FALSE]
 }
 
+.clientMatrixMoments <- function(xMatrix, intercept = FALSE) {
+  xMeans <- Matrix::colMeans(xMatrix)
+  x2Means <- Matrix::colMeans(xMatrix^2)
+  if (intercept) {
+    xMeans[1] <- 0
+    x2Means[1] <- 0
+  }
+  list(xMeans = xMeans, x2Means = x2Means)
+}
+
+.clientMatrixVariance <- function(xMeans, x2Means) {
+  pmax(x2Means - xMeans^2, 0)
+}
+
 #' Create a local sparse design matrix from PLP data and a global map
 #' @param plpData a PLP data object with a populated `population`
 #' @param config list containing `mapping` and `intercept`
@@ -120,17 +134,12 @@ createClientMatrix <- function(plpData, config) {
   }
   yLabels <- as.integer(plpData$population$outcomeCount)
   n <- nrow(xMatrix)
-  xMeans <- Matrix::colMeans(xMatrix)
-  x2Means <- xMeans^2
-  if (config$intercept) {
-    xMeans[1] <- 0
-    x2Means[1] <- 0
-  }
+  moments <- .clientMatrixMoments(xMatrix, intercept = isTRUE(config$intercept))
 
   list(
     xMatrix = xMatrix,
-    xMeans = xMeans,
-    x2Means = x2Means,
+    xMeans = moments$xMeans,
+    x2Means = moments$x2Means,
     yLabels = yLabels,
     n = n
   )
