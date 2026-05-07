@@ -53,6 +53,10 @@ List clientUpdateDualAveragingCpp(List &clientData,
 
   Eigen::VectorXd z0 = z;
   int n = yLabels.size();
+  double reportN = double(n);
+  if (clientData.containsElementNamed("n") && !Rf_isNull(clientData["n"])) {
+    reportN = as<double>(clientData["n"]);
+  }
   for (int i = 0; i < k; ++i) {
     // composite penalty weight ˜η_{r,k}
     double alpha = etaS * etaC * (double)r * (double)k + etaC * (double)i;
@@ -69,7 +73,8 @@ List clientUpdateDualAveragingCpp(List &clientData,
     z -= etaC * g;
   }
   Eigen::VectorXd delta = z - z0;
-  return List::create(_["delta"] = delta);
+  return List::create(_["delta"] = delta,
+                      _["n"] = reportN);
 }
 
 //' @export
@@ -83,15 +88,43 @@ List serverRoundDualAveragingCpp(List &serverState,
   double etaC = config["etaClient"];
   int k = config["k"];
   double lambda = config["lambda"];
+  std::string aggregation = "sampleSize";
+  if (config.containsElementNamed("aggregation") &&
+      !Rf_isNull(config["aggregation"])) {
+    aggregation = as<std::string>(config["aggregation"]);
+  }
 
   int M = clientReports.size();
   Eigen::VectorXd avg = Eigen::VectorXd::Zero(z.size());
-  // 1) average the list of Δz
-  for (int i = 0; i < M; ++i) {
-    const List &cliRep = clientReports[i];
-    avg += as<Eigen::VectorXd>(cliRep["delta"]);
+  if (aggregation == "equalClient") {
+    // 1) average the list of Δz
+    for (int i = 0; i < M; ++i) {
+      const List &cliRep = clientReports[i];
+      avg += as<Eigen::VectorXd>(cliRep["delta"]);
+    }
+    avg /= double(M);
+  } else if (aggregation == "sampleSize") {
+    double totalN = 0.0;
+    std::vector<double> ns(M);
+    for (int i = 0; i < M; ++i) {
+      const List &cliRep = clientReports[i];
+      if (!cliRep.containsElementNamed("n") || Rf_isNull(cliRep["n"])) {
+        stop("sampleSize aggregation requires each client report to include positive finite n");
+      }
+      double ni = as<double>(cliRep["n"]);
+      if (!R_finite(ni) || ni <= 0.0) {
+        stop("sampleSize aggregation requires each client report to include positive finite n");
+      }
+      ns[i] = ni;
+      totalN += ni;
+    }
+    for (int i = 0; i < M; ++i) {
+      const List &cliRep = clientReports[i];
+      avg += as<Eigen::VectorXd>(cliRep["delta"]) * (ns[i] / totalN);
+    }
+  } else {
+    stop("aggregation must be 'sampleSize' or 'equalClient'");
   }
-  avg /= double(M);
 
   // 2) server dual update
 

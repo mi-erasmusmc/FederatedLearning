@@ -31,7 +31,7 @@ clientUpdateDA <- function(clientData,
     z <- z - config$etaClient * g
   }
   delta <- z - serverBroadcast$z
-  list(delta = delta)
+  list(delta = delta, n = clientData$n %||% length(clientData$yLabels))
 }
 
 #' One server round
@@ -42,9 +42,8 @@ clientUpdateDA <- function(clientData,
 serverRoundDA <- function(serverState,
                           clientReports,
                           config) {
-  # average over clients
-  deltaList <- lapply(clientReports, function(x) x$delta)
-  delta <- Reduce("+", deltaList) / length(deltaList)
+  aggregation <- config$aggregation %||% "sampleSize"
+  delta <- weightedReportAverage(clientReports, "delta", aggregation = aggregation)
   # server update
   z <- serverState$z + config$etaServer * delta
   # return new dual state
@@ -60,5 +59,6 @@ serverRoundDA <- function(serverState,
   serverInit     = serverInitDA,
   clientInit     = NULL,
   clientUpdate   = clientUpdateDA,
-  serverRound    = serverRoundDA
+  serverRound    = serverRoundDA,
+  supportsClientSampling = TRUE
 )

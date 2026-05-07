@@ -8,6 +8,18 @@
 #' @export
 fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   algo <- .getAlgorithm(algorithm)
+  if (is.null(algo)) {
+    stop(sprintf("Algorithm '%s' is not registered", algorithm))
+  }
+  clientFrac <- config$clientFrac %||% 1
+  if (!is.numeric(clientFrac) || length(clientFrac) != 1L ||
+      !is.finite(clientFrac) || clientFrac <= 0 || clientFrac > 1) {
+    stop("config$clientFrac must be a single finite value in (0, 1]")
+  }
+  if (clientFrac < 1 && !isTRUE(algo$supportsClientSampling)) {
+    stop(sprintf("Algorithm '%s' does not support clientFrac < 1", algorithm))
+  }
+  config$clientFrac <- clientFrac
 
   if (!is.null(config$mapping)) {
     globalMap <- config$mapping
@@ -120,13 +132,33 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   lastTick <- Sys.time()
   lastRound <- 0L
   serverReport <- list()
+  if (!is.null(config$clientSampleSeed)) {
+    oldSeed <- if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+    } else {
+      NULL
+    }
+    set.seed(config$clientSampleSeed)
+    on.exit({
+      if (is.null(oldSeed)) {
+        if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+          rm(".Random.seed", envir = .GlobalEnv)
+        }
+      } else {
+        assign(".Random.seed", oldSeed, envir = .GlobalEnv)
+      }
+    }, add = TRUE)
+  }
 
   for (r in 0:(config$rounds - 1)) {
+    activeClients <- selectActiveClients(length(cl), config$clientFrac)
+    clActive <- subsetCluster(cl, activeClients)
     serverState$r <- r
+    serverState$activeClients <- activeClients
     # update client state
-    parallel::clusterExport(cl, "serverState", envir = environment())
+    parallel::clusterExport(clActive, "serverState", envir = environment())
     report <- parallel::clusterEvalQ(
-      cl,
+      clActive,
       clientUpdate(serverBroadcast = serverState)
     )
     # step 2: server round
@@ -137,6 +169,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     )
     serverState <- srv$state
     serverReport <- srv$report
+    serverReport$activeClients <- activeClients
     parallel::clusterExport(cl, c("serverReport"), envir = environment())
     hasWeights <- !is.null(serverReport$w) && !isTRUE(serverReport$skipConvergence)
     criteria <- NA_real_
@@ -213,4 +246,28 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     result[[nm]] <- serverReport[[nm]]
   }
   result
+}
+
+selectActiveClients <- function(nClients, clientFrac = 1) {
+  if (!is.numeric(clientFrac) || length(clientFrac) != 1L ||
+      !is.finite(clientFrac) || clientFrac <= 0 || clientFrac > 1) {
+    stop("clientFrac must be a single finite value in (0, 1]")
+  }
+  if (clientFrac >= 1 || nClients <= 1L) {
+    return(seq_len(nClients))
+  }
+  sample(seq_len(nClients), max(1L, ceiling(clientFrac * nClients)))
+}
+
+subsetCluster <- function(cl, idx) {
+  sub <- cl[idx]
+  if (!is.null(names(cl))) {
+    names(sub) <- names(cl)[idx]
+  }
+  class(sub) <- class(cl)
+  attrNames <- setdiff(names(attributes(cl)), c("class", "names"))
+  for (nm in attrNames) {
+    attr(sub, nm) <- attr(cl, nm)
+  }
+  sub
 }

@@ -4,5 +4,6 @@ utils::globalVariables(c("clientData", "clientState", "plpData"))
   serverInit = serverInitDualAveragingCpp,
   clientUpdate = clientUpdateDualAveragingCpp,
   clientInit = NULL,
-  serverRound  = serverRoundDualAveragingCpp
+  serverRound  = serverRoundDualAveragingCpp,
+  supportsClientSampling = TRUE
 )

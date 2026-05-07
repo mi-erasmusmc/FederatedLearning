@@ -25,7 +25,8 @@
                                clientInit,
                                clientUpdate, 
                                serverRound,
-                               lambdaStrategy = NULL) {
+                               lambdaStrategy = NULL,
+                               supportsClientSampling = FALSE) {
   if (is.null(lambdaStrategy)) {
     lambdaStrategy <- .lambdaStrategyDefault()
   }
@@ -34,7 +35,8 @@
     clientInit = clientInit,
     clientUpdate = clientUpdate,
     serverRound = serverRound,
-    lambdaStrategy = lambdaStrategy
+    lambdaStrategy = lambdaStrategy,
+    supportsClientSampling = supportsClientSampling
   )
 }
 
