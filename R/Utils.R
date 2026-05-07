@@ -24,9 +24,9 @@ accuracy <- function(y, pHat, cutoff = 0.5) mean((pHat > cutoff) == y)
 # AUC
 auc <- function(y, pHat) {
   if (length(unique(y)) == 2) {
-    pROC::roc(y, pHat)$auc
+    as.numeric(pROC::roc(y, pHat, quiet = TRUE)$auc)
   } else {
     warning("AUC is not defined for non-binary outcomes")
-    NA
+    NA_real_
   }
 }
