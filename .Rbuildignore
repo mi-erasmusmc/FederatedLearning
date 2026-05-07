@@ -1,4 +1,7 @@
 ^\.github$
 ^\.git$
 ^\.gitignore$
-^\\.\\.Rcheck$
+^.*\.Rcheck$
+^src/.*\.o$
+^src/.*\.so$
+^src/symbols\.rds$
