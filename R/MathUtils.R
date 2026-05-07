@@ -1,6 +1,6 @@
-#' Soft‐threshold ℓ1‐proximal operator
+#' Soft-threshold l1-proximal operator
 #' @param z numeric vector (dual state)
-#' @param alphaLambda nonnegative scalar (α·λ)
+#' @param alphaLambda nonnegative scalar (alpha * lambda)
 #' @param intercept wether there is an intercept
 #' @return numeric vector (primal state)
 #' @export
@@ -23,13 +23,13 @@ proxL1Ridge <- function(z, A, mu, gamma, lambda, intercept = FALSE) {
   # combined quadratic coefficient
   denom <- mu * A + 2 * gamma
 
-  # un‐regularized update
+  # unregularized update
   u <- -z / denom
 
-  # soft‐threshold by (lambda * A)/denom
+  # soft-threshold by (lambda * A)/denom
   w <- sign(u) * pmax(abs(u) - (lambda * A) / denom, 0)
 
-  # leave intercept un‐shrunk
+  # leave intercept unshrunk
   if (intercept) {
     w[1] <- u[1]
   }
@@ -38,12 +38,12 @@ proxL1Ridge <- function(z, A, mu, gamma, lambda, intercept = FALSE) {
 }
 #' Stochastic gradient of logistic loss
 #' @param weights   numeric vector of parameters
-#' @param xMatrix   numeric matrix (n × p)
-#' @param yLabels   numeric vector (length n, in {0,1})
+#' @param xMatrix   numeric matrix (n by p)
+#' @param yLabels   numeric vector of binary labels
 #' @return numeric vector (length p)
 #' @export
 gradLogistic <- function(weights, xMatrix, yLabels) {
-  eta <- stats::plogis(as.vector(xMatrix %*% weights)) # σ(Xw)
+  eta <- stats::plogis(as.vector(xMatrix %*% weights))
   res <- eta - yLabels
   as.numeric(crossprod(xMatrix, res)) / length(yLabels)
 }

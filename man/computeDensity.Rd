@@ -6,6 +6,14 @@
 \usage{
 computeDensity(w, threshold = 1e-04)
 }
+\arguments{
+\item{w}{numeric model coefficient vector}
+
+\item{threshold}{absolute value threshold for nonzero coefficients}
+}
+\value{
+fraction of coefficients above the threshold
+}
 \description{
 Compute density = fraction of |w|>threshold
 }

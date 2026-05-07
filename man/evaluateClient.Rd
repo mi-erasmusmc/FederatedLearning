@@ -11,7 +11,7 @@ evaluateClient(cl, w, config)
 
 \item{w}{numeric vector of model coefficients}
 
-\item{columnMap}{map for covariateId to column index}
+\item{config}{model configuration list}
 }
 \value{
 named list of metrics: accuracy, auc, logloss, density

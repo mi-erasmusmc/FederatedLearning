@@ -30,9 +30,13 @@ getClientFeatures <- function(plpData) {
   covariateRef
 }
 
-#' Create a global covariateId → columnId mapping
+#' Create a global covariateId to columnId mapping
 #' @param covRefList a list of data.frames, each with a column `covariateId`
 #' @param type       "union" or "intersection"
+#' @param featureSet optional named feature set: "all", "ageSex", "phenotypes",
+#'   or "ageSexPhenotypes"
+#' @param covariateIds optional explicit covariate ids to retain
+#' @param analysisIds optional explicit analysis ids to retain
 #' @return data.frame with covariateId and columnId (1..P_global)
 #' @export
 createGlobalMap <- function(covRefList,
@@ -97,6 +101,10 @@ filterCovariateRef <- function(covariateRef,
   covariateRef[keep, , drop = FALSE]
 }
 
+#' Create a local sparse design matrix from PLP data and a global map
+#' @param plpData a PLP data object with a populated `population`
+#' @param config list containing `mapping` and `intercept`
+#' @return list with `xMatrix`, summary vectors, labels, and row count
 #' @export
 createClientMatrix <- function(plpData, config) {
   sp <- PatientLevelPrediction::toSparseM(plpData,

@@ -4,11 +4,14 @@
 }
 
 #' Compute density = fraction of |w|>threshold
+#' @param w numeric model coefficient vector
+#' @param threshold absolute value threshold for nonzero coefficients
+#' @return fraction of coefficients above the threshold
 computeDensity <- function(w, threshold = 1e-4) {
   mean(abs(w) > threshold)
 }
 
-# Cross‐entropy loss
+# Cross-entropy loss
 logLoss <- function(y, pHat) {
   eps <- 1e-15
   pHat <- pmin(pmax(pHat, eps), 1 - eps)

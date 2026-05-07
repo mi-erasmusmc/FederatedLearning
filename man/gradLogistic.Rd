@@ -9,9 +9,9 @@ gradLogistic(weights, xMatrix, yLabels)
 \arguments{
 \item{weights}{numeric vector of parameters}
 
-\item{xMatrix}{numeric matrix (n × p)}
+\item{xMatrix}{numeric matrix (n by p)}
 
-\item{yLabels}{numeric vector (length n, in {0,1})}
+\item{yLabels}{numeric vector of binary labels}
 }
 \value{
 numeric vector (length p)

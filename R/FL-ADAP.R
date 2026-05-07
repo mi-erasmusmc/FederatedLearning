@@ -1,14 +1,12 @@
-#' ADAP-baseline (two-round) federated lasso-logistic
-#' from: https://doi.org/10.1038/s41598-022-14029-9
-#'
-#' Round 0:
-#'   - Clients fit local lasso-logistic (glmnet) and return (bhat_i, n_i)
-#'   - Server computes bbar (sample-size-weighted average) and broadcasts
-#' Round 1:
-#'   - Clients compute grad_i(bbar) and diag(H)_i(bbar), averaged per-sample
-#'   - Server aggregates G, Hdiag and solves a diagonal-penalized quadratic in closed form:
-#'       minimize 0.5 β' H β + a' β + λ ||β_{-1}||_1, where a = G - H bbar
-#'     Solution: β_j = soft(-(a_j)/H_jj, λ/H_jj), with intercept unpenalized.
+# ADAP-baseline (two-round) federated lasso-logistic
+# from: https://doi.org/10.1038/s41598-022-14029-9
+#
+# Round 0:
+#   - Clients fit local lasso-logistic (glmnet) and return (bhat_i, n_i)
+#   - Server computes bbar (sample-size-weighted average) and broadcasts
+# Round 1:
+#   - Clients compute grad_i(bbar) and diag(H)_i(bbar), averaged per-sample
+#   - Server aggregates G, Hdiag and solves a diagonal-penalized quadratic.
 .serverInitADAP <- function(config) {
   p <- config$p + as.integer(isTRUE(config$intercept))
   list(

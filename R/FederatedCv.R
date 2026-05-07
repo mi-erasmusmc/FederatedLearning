@@ -13,13 +13,17 @@ subsetCluster <- function(cl, idx) {
 }
 
 #' Outer + inner CV for federated hyperparameter tuning
-#' @param dataList   list of length M, each element $X,$y
-#' @param w0         initial parameter vector
-#' @param hyperGrid  data.frame or list of lists of hyper‐parameters to try
-#' @param k          clientFrac
+#' @param clientHosts worker host names or addresses
+#' @param clientPaths paths to client PLP data folders
+#' @param popSettings PatientLevelPrediction population settings
+#' @param algorithm registered federated learning algorithm name
+#' @param hyperGrid  data.frame or list of lists of hyper-parameters to try
 #' @param rounds     outer rounds
-#' @param popSettings        (only if you need to re‐build population)
-#' @return a data.frame of outer‐fold test metrics + best hyperparams
+#' @param clientFrac fraction of clients sampled per round
+#' @param resultDirectory directory for logs and results
+#' @param epsilon convergence tolerance
+#' @param mirai if TRUE, use `mirai`; otherwise use PSOCK workers
+#' @return a data.frame of outer-fold test metrics + best hyperparams
 #' @importFrom Metrics auc
 #' @export
 federatedNestedCv <- function(clientHosts,
@@ -127,7 +131,7 @@ federatedNestedCv <- function(clientHosts,
 #' Evaluate model weights on a single client
 #' @param cl cluster object
 #' @param w numeric vector of model coefficients
-#' @param columnMap map for covariateId to column index
+#' @param config model configuration list
 #' @return named list of metrics: accuracy, auc, logloss, density
 evaluateClient <- function(cl, w, config) {
   clusterCreateMatrices(cl, config)

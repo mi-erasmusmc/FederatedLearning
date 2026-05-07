@@ -6,6 +6,7 @@
 #' @name FederatedLearning
 #' @keywords internal
 #' @importFrom rlang .data
+#' @importFrom stats plogis sd
 #' @import Rcpp
 #' @import RcppEigen
 #' @useDynLib FederatedLearning, .registration=TRUE

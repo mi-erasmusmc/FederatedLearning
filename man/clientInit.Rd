@@ -7,10 +7,10 @@
 clientInit(w0)
 }
 \arguments{
-\item{w0}{initial primal (p‐vector)}
+\item{w0}{initial primal p-vector}
 }
 \value{
-named list with z = ∇h(w0) (for Euclid h=½∥w∥² this is
+named list with z = gradient h(w0)
 z=w0)
 }
 \description{

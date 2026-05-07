@@ -2,7 +2,7 @@
 % Please edit documentation in R/Orchestrator.R
 \name{fitFederated}
 \alias{fitFederated}
-\title{Run \emph{any} registered FL algorithm end‐to‐end}
+\title{Run any registered federated learning algorithm end-to-end}
 \usage{
 fitFederated(cl, algorithm, config, verbose = TRUE)
 }
@@ -11,11 +11,13 @@ fitFederated(cl, algorithm, config, verbose = TRUE)
 
 \item{algorithm}{name, e.g. "DualAvg", "FedAvg"}
 
-\item{config}{list(etaClient, etaServer, K, rounds, lambda, clientFrac)}
+\item{config}{algorithm configuration list}
+
+\item{verbose}{if TRUE, print optimization progress}
 }
 \value{
 w
 }
 \description{
-Run \emph{any} registered FL algorithm end‐to‐end
+Run any registered federated learning algorithm end-to-end
 }

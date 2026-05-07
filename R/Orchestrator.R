@@ -1,8 +1,9 @@
-#' Run *any* registered FL algorithm end‐to‐end
+#' Run any registered federated learning algorithm end-to-end
 #'
 #' @param cl          cluster object
 #' @param algorithm    name, e.g. "DualAvg", "FedAvg"
-#' @param config       list(etaClient, etaServer, K, rounds, lambda, clientFrac)
+#' @param config       algorithm configuration list
+#' @param verbose      if TRUE, print optimization progress
 #' @return w
 #' @export
 fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
