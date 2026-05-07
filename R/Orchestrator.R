@@ -68,10 +68,13 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
 
   getLocalObjective <- function(w) {
     n <- nrow(clientData$xMatrix)
-    linearPred <- as.numeric(clientData$xMatrix %*% w)
-    loss <- sum(clientData$yLabels * linearPred - log1p(exp(linearPred)))
     list(
-      objective = loss,
+      objective = logisticNegLogLik(
+        weights = w,
+        xMatrix = clientData$xMatrix,
+        yLabels = clientData$yLabels,
+        meanLoss = FALSE
+      ),
       n = n
     )
   }
@@ -143,8 +146,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
         getLocalObjective(serverReport$w)
       )
       lossVec <- vapply(localObjectives, `[[`, numeric(1), "objective")
-      globalLoss <- sum(lossVec)
-      globalObjective <- globalLoss
+      globalObjective <- sum(lossVec)
 
       if (!is.null(previousObjective)) {
         deltaAbs <- globalObjective - previousObjective

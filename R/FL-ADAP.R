@@ -266,8 +266,7 @@
 
 .negLogLikMean <- function(beta, xDesign, y) {
   lin <- as.numeric(xDesign %*% beta)
-  logTerm <- ifelse(lin > 0, lin + log1p(exp(-lin)), log1p(exp(lin)))
-  val <- -mean(y * lin - logTerm)
+  val <- binaryLogLoss(lin, y, meanLoss = TRUE)
   if (is.finite(val)) val else .Machine$double.xmax / 1e100
 }
 
