@@ -165,7 +165,7 @@ The usual setup is simulated federation on one machine: one coordinating R proce
 
 `mirai = TRUE` currently creates a `mirai` cluster with `n = length(clientHosts)`. Treat this as process-based execution unless you have separately configured and validated remote `mirai` daemons.
 
-Worker processes store loaded PLP data and matrices in worker global state. Reuse worker clusters carefully between experiments.
+Worker processes store loaded PLP data and matrices in worker global state. `clusterLoadData()` clears prior package worker state before loading new PLP data, and `clusterCreateMatrices()` replaces any previous model matrix before creating a new one. Use `clusterClearState(cl)` when reusing a cluster across unrelated experiments or after a failed run.
 
 ## What Is Shared
 

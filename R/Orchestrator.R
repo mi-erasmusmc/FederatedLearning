@@ -59,6 +59,10 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   }
 
   clientUpdate <- function(serverBroadcast) {
+    .assertWorkerState(
+      "clientData",
+      action = "Run clusterCreateMatrices() before client updates."
+    )
     report <- algo$clientUpdate(
       clientData,
       serverBroadcast,
@@ -67,6 +71,10 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   }
 
   getLocalObjective <- function(w) {
+    .assertWorkerState(
+      "clientData",
+      action = "Run clusterCreateMatrices() before objective evaluation."
+    )
     n <- nrow(clientData$xMatrix)
     list(
       objective = logisticNegLogLik(
@@ -83,6 +91,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     c(
       "algo",
       "config",
+      ".assertWorkerState",
       "clientUpdate",
       "getLocalObjective"
     ),
