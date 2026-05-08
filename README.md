@@ -82,13 +82,15 @@ metrics
 
 ## Preparing External PLP Data
 
-The `extras/fetchTaskData.R` helper can fetch ATLAS cohort JSON, generate cohorts, extract PLP data, and save the expected folder layout. Use a private manifest copied from the template:
+The `extras/fetchTaskData.R` helper can fetch ATLAS cohort JSON, generate cohorts, extract PLP data, and save the expected folder layout. It follows the standard OHDSI split between shareable study settings, local execution settings, and private data-source connection settings:
 
 ```bash
-cp extras/task_manifest_template.csv extras/task_manifest.csv
+cp extras/fetch_study_template.yml extras/fetch_study.yml
+cp extras/fetch_execution_template.yml extras/fetch_execution.yml
+cp extras/fetch_data_sources_template.yml private/fetch_data_sources.yml
 ```
 
-`extras/task_manifest.csv` is ignored by git. Put real database schemas, task IDs, cohort IDs, and environment-variable names there. Keep passwords and tokens in environment variables, for example:
+Commit only generic study settings when appropriate. Keep real data-source schemas, JDBC details, and environment-variable names in private ignored files. Keep passwords and tokens in environment variables, for example:
 
 ```bash
 export ATLAS_BASE_URL="https://atlas.example.org/WebAPI"
@@ -100,14 +102,13 @@ Run extraction:
 
 ```bash
 Rscript extras/fetchTaskData.R \
-  --manifest=extras/task_manifest.csv \
-  --output-root=data \
-  --atlas-base-url="$ATLAS_BASE_URL" \
-  --generate-cohorts=true \
+  --study=extras/fetch_study.yml \
+  --execution=extras/fetch_execution.yml \
+  --data-sources=private/fetch_data_sources.yml \
   --overwrite=false
 ```
 
-The script passes manifest connection fields to `DatabaseConnector::createConnectionDetails()`. If a database requires a custom JDBC connection string or driver path, extend the private manifest/script configuration rather than committing secrets or environment-specific paths.
+The script builds standard OHDSI objects internally: `DatabaseConnector::createConnectionDetails()`, `PatientLevelPrediction::createDatabaseDetails()`, `PatientLevelPrediction::createStudyPopulationSettings()`, `FeatureExtraction` covariate settings, and `CohortGenerator` cohort tables. DatabaseConnector fields can be supplied directly, through `*Env` keys, or through a `connectionStringTemplate` in the private data-source config.
 
 ## Comparison Runner
 

@@ -1,0 +1,35 @@
+connectionProfiles:
+  sharedCluster:
+    dbms: postgresql
+    serverEnv: DB_SERVER
+    userEnv: DB_USER
+    passwordEnv: DB_PASSWORD
+    pathToDriverEnv: DATABASECONNECTOR_JAR_FOLDER
+  customJdbc:
+    dbms: spark
+    userEnv: DB_USER
+    passwordEnv: DB_PASSWORD
+    pathToDriverEnv: JDBC_DRIVER_PATH
+    connectionStringTemplate: "jdbc:spark://{databaseHost}:443/{database};transportMode=http;ssl=1"
+
+dataSources:
+  databaseA:
+    connectionProfile: sharedCluster
+    cdmDatabaseSchema: database_a_cdm
+    cdmDatabaseName: Database A
+    cohortDatabaseSchema: scratch
+    cohortTable: fl_cohort
+    outcomeDatabaseSchema: scratch
+    outcomeTable: fl_cohort
+    covariateCohortDatabaseSchema: scratch
+    covariateCohortTable: fl_covariate_cohort
+  databaseB:
+    connectionProfile: sharedCluster
+    cdmDatabaseSchema: database_b_cdm
+    cdmDatabaseName: Database B
+    cohortDatabaseSchema: scratch
+    cohortTable: fl_cohort
+    outcomeDatabaseSchema: scratch
+    outcomeTable: fl_cohort
+    covariateCohortDatabaseSchema: scratch
+    covariateCohortTable: fl_covariate_cohort

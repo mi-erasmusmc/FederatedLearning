@@ -1,0 +1,8 @@
+outputRoot: data
+atlasBaseUrlEnv: ATLAS_BASE_URL
+generateCohorts: true
+createCohortTables: true
+generateStats: false
+incremental: true
+jsonDirectory: extras/atlas_json
+overwrite: false

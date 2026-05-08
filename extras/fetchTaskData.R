@@ -1,18 +1,15 @@
 # Fetch PLP task/client data into the directory layout expected by runComparisonMatrix.R.
 #
-# Manifest columns:
-# task,clientId,dbms,server,user,password,passwordEnvVar,port,
-# cdmDatabaseSchema,cdmDatabaseName,cohortDatabaseSchema,cohortTable,
-# outcomeDatabaseSchema,outcomeTable,targetId,outcomeId,riskWindowStart,riskWindowEnd,
-# removeSubjectsWithPriorOutcome,priorOutcomeLookback,requireTimeAtRisk,minTimeAtRisk,covariatePreset,
-# covariateCohortDatabaseSchema,covariateCohortTable,covariateCohortIds,covariateAnalysisId
+# This helper follows the OHDSI pattern of separating:
+# - study settings: cohorts, risk windows, and covariate profiles;
+# - execution settings: output folders, ATLAS URL, and generation switches;
+# - data-source settings: local schemas and DatabaseConnector connection inputs.
 #
 # Example:
 # Rscript extras/fetchTaskData.R \
-#   --manifest=extras/task_manifest.csv \
-#   --output-root=data \
-#   --atlas-base-url="$ATLAS_BASE_URL" \
-#   --generate-cohorts=true \
+#   --study=extras/fetch_study_template.yml \
+#   --data-sources=extras/fetch_data_sources_template.yml \
+#   --execution=extras/fetch_execution_template.yml \
 #   --overwrite=false
 
 parseArgs <- function(args = commandArgs(trailingOnly = TRUE)) {
@@ -28,10 +25,10 @@ parseArgs <- function(args = commandArgs(trailingOnly = TRUE)) {
 }
 
 logicalArg <- function(x, default = FALSE) {
-  if (is.null(x) || !nzchar(x)) {
+  if (is.null(x) || !nzchar(as.character(x))) {
     return(default)
   }
-  tolower(x) %in% c("true", "t", "1", "yes", "y")
+  tolower(as.character(x)) %in% c("true", "t", "1", "yes", "y")
 }
 
 firstNonEmpty <- function(...) {
@@ -64,29 +61,100 @@ integerField <- function(row, name, default) {
   as.integer(value)
 }
 
-readManifest <- function(path) {
-  manifest <- utils::read.csv(path, stringsAsFactors = FALSE, na.strings = c("", "NA"))
-  required <- c(
-    "task", "clientId", "dbms", "server", "cdmDatabaseSchema",
-    "cohortDatabaseSchema", "cohortTable", "outcomeDatabaseSchema",
-    "outcomeTable", "targetId", "outcomeId"
-  )
-  missing <- setdiff(required, names(manifest))
-  if (length(missing) > 0L) {
-    stop("Manifest is missing required columns: ", paste(missing, collapse = ", "))
+asNamedList <- function(x, label) {
+  if (is.null(x) || !is.list(x) || is.null(names(x)) || any(!nzchar(names(x)))) {
+    stop(label, " must be a named YAML mapping")
   }
-  manifest
+  x
 }
 
-getPassword <- function(row) {
-  envVar <- field(row, "passwordEnvVar")
-  if (!is.null(envVar)) {
-    value <- Sys.getenv(envVar)
+readYamlConfig <- function(path) {
+  if (!requireNamespace("yaml", quietly = TRUE)) {
+    stop("yaml is required to read split fetch configuration")
+  }
+  yaml::read_yaml(path)
+}
+
+readFetchConfig <- function(studyPath, dataSourcesPath, executionPath) {
+  list(
+    study = readYamlConfig(studyPath),
+    dataSources = readYamlConfig(dataSourcesPath),
+    execution = readYamlConfig(executionPath)
+  )
+}
+
+envField <- function(x, name) {
+  envName <- firstNonEmpty(x[[paste0(name, "Env")]])
+  if (!is.null(envName)) {
+    value <- Sys.getenv(envName)
     if (nzchar(value)) {
       return(value)
     }
   }
-  field(row, "password")
+  firstNonEmpty(x[[name]])
+}
+
+renderTemplate <- function(template, values) {
+  out <- template
+  for (nm in names(values)) {
+    value <- values[[nm]]
+    if (is.null(value) || length(value) != 1L || is.na(value)) {
+      next
+    }
+    out <- gsub(paste0("\\{", nm, "\\}"), as.character(value), out)
+  }
+  out
+}
+
+scalarOrNull <- function(x) {
+  if (is.null(x) || length(x) == 0L || is.na(x[[1]])) {
+    return(NULL)
+  }
+  x[[1]]
+}
+
+mergeLists <- function(...) {
+  parts <- list(...)
+  out <- list()
+  for (part in parts) {
+    if (is.null(part)) {
+      next
+    }
+    for (nm in names(part)) {
+      out[[nm]] <- part[[nm]]
+    }
+  }
+  out
+}
+
+makeConnectionDetails <- function(dataSource, connectionProfiles = list()) {
+  profileName <- scalarOrNull(dataSource$connectionProfile)
+  profile <- if (!is.null(profileName)) {
+    connectionProfiles[[profileName]] %||%
+      stop("Unknown connectionProfile '", profileName, "' for data source")
+  } else {
+    list()
+  }
+  connection <- mergeLists(profile, dataSource$connection)
+  values <- mergeLists(dataSource, connection)
+  connectionString <- envField(connection, "connectionString")
+  template <- firstNonEmpty(connection$connectionStringTemplate)
+  if (is.null(connectionString) && !is.null(template)) {
+    connectionString <- renderTemplate(template, values)
+  }
+  args <- list(
+    dbms = envField(connection, "dbms"),
+    server = envField(connection, "server"),
+    user = envField(connection, "user"),
+    password = envField(connection, "password"),
+    port = suppressWarnings(as.integer(envField(connection, "port"))),
+    extraSettings = envField(connection, "extraSettings"),
+    oracleDriver = envField(connection, "oracleDriver"),
+    connectionString = connectionString,
+    pathToDriver = envField(connection, "pathToDriver")
+  )
+  args <- args[!vapply(args, is.null, logical(1))]
+  do.call(DatabaseConnector::createConnectionDetails, args)
 }
 
 csvValues <- function(x) {
@@ -104,10 +172,20 @@ csvValues <- function(x) {
   }), use.names = FALSE)
 }
 
+cohortVector <- function(x) {
+  if (is.null(x)) {
+    return(integer())
+  }
+  if (length(x) == 1L && is.character(x)) {
+    return(as.integer(csvValues(x)))
+  }
+  as.integer(unlist(x, use.names = FALSE))
+}
+
 getCohortCovariateSettings <- function(row) {
-  ids <- as.integer(csvValues(field(row, "covariateCohortIds")))
+  ids <- cohortVector(row$covariateCohortIds)
   if (length(ids) == 0L || any(is.na(ids))) {
-    stop("covariatePreset requires numeric covariateCohortIds")
+    stop("Cohort covariate profiles require numeric covariateCohortIds")
   }
   cohortNames <- paste0("cohort_", ids)
   covariateCohorts <- data.frame(
@@ -116,18 +194,22 @@ getCohortCovariateSettings <- function(row) {
     stringsAsFactors = FALSE
   )
   FeatureExtraction::createCohortBasedCovariateSettings(
-    analysisId = as.integer(field(row, "covariateAnalysisId") %||% 49L),
-    covariateCohortDatabaseSchema = field(row, "covariateCohortDatabaseSchema") %||%
+    analysisId = as.integer(row$covariateAnalysisId %||% 49L),
+    covariateCohortDatabaseSchema = row$covariateCohortDatabaseSchema %||%
       row$cohortDatabaseSchema,
-    covariateCohortTable = field(row, "covariateCohortTable") %||% row$cohortTable,
+    covariateCohortTable = row$covariateCohortTable %||% row$cohortTable,
     covariateCohorts = covariateCohorts
   )
 }
 
 cohortIdsForRow <- function(row) {
   ids <- c(as.integer(row$targetId), as.integer(row$outcomeId))
-  ids <- c(ids, as.integer(csvValues(field(row, "covariateCohortIds"))))
+  ids <- c(ids, cohortVector(row$covariateCohortIds))
   sort(unique(ids[is.finite(ids)]))
+}
+
+taskCohortIdsForRow <- function(row) {
+  sort(unique(as.integer(c(row$targetId, row$outcomeId))))
 }
 
 cohortJson <- function(definition) {
@@ -155,7 +237,7 @@ fetchCohortDefinitionSet <- function(cohortIds, row, atlasBaseUrl, jsonDirectory
                                      cohortTable = row$cohortTable,
                                      generateStats = FALSE) {
   if (is.null(atlasBaseUrl) || !nzchar(atlasBaseUrl)) {
-    stop("atlas-base-url is required when generate-cohorts=true")
+    stop("atlasBaseUrl is required when generateCohorts=true")
   }
   cohortRows <- lapply(cohortIds, function(cohortId) {
     definition <- ROhdsiWebApi::getCohortDefinition(
@@ -212,18 +294,19 @@ generateCohortTable <- function(connectionDetails, row, cohortDefinitionSet,
   )
 }
 
-prepareCohorts <- function(row, connectionDetails, args) {
-  if (!logicalArg(args[["generate-cohorts"]], FALSE)) {
+prepareCohorts <- function(row, connectionDetails, execution) {
+  if (!isTRUE(execution$generateCohorts)) {
     return(invisible(NULL))
   }
-  atlasBaseUrl <- args[["atlas-base-url"]] %||% Sys.getenv("ATLAS_BASE_URL")
-  jsonRoot <- args[["json-directory"]] %||% file.path("extras", "atlas_json")
-  generateStats <- logicalArg(args[["generate-stats"]], FALSE)
-  incremental <- logicalArg(args[["incremental"]], TRUE)
-  createTables <- logicalArg(args[["create-cohort-tables"]], TRUE)
-  incrementalFolder <- field(row, "incrementalFolder") %||%
+  atlasBaseUrl <- execution$atlasBaseUrl
+  jsonRoot <- execution$jsonDirectory %||% file.path("extras", "atlas_json")
+  generateStats <- isTRUE(execution$generateStats)
+  incremental <- isTRUE(execution$incremental)
+  createTables <- isTRUE(execution$createCohortTables)
+  incrementalFolder <- row$incrementalFolder %||%
+    execution$incrementalFolder %||%
     file.path(tempdir(), "FederatedLearningCohortGenerator")
-  taskIds <- unique(as.integer(c(row$targetId, row$outcomeId)))
+  taskIds <- taskCohortIdsForRow(row)
 
   message("Fetching ATLAS target/outcome definitions for ", row$task, "/", row$clientId)
   taskSet <- fetchCohortDefinitionSet(
@@ -246,10 +329,10 @@ prepareCohorts <- function(row, connectionDetails, args) {
     incrementalFolder = incrementalFolder
   )
 
-  covariateIds <- as.integer(csvValues(field(row, "covariateCohortIds")))
+  covariateIds <- cohortVector(row$covariateCohortIds)
   if (length(covariateIds) > 0L) {
-    covariateSchema <- field(row, "covariateCohortDatabaseSchema") %||% row$cohortDatabaseSchema
-    covariateTable <- field(row, "covariateCohortTable") %||% row$cohortTable
+    covariateSchema <- row$covariateCohortDatabaseSchema %||% row$cohortDatabaseSchema
+    covariateTable <- row$covariateCohortTable %||% row$cohortTable
     message("Fetching ATLAS covariate cohort definitions for ", row$task, "/", row$clientId)
     covSet <- fetchCohortDefinitionSet(
       cohortIds = covariateIds,
@@ -276,72 +359,140 @@ prepareCohorts <- function(row, connectionDetails, args) {
 }
 
 getCovariateSettings <- function(row) {
-  preset <- field(row, "covariatePreset") %||% "demographics"
-  if (identical(preset, "none")) {
-    return(NULL)
+  profile <- row$covariateProfileDef %||% list(demographicsAge = TRUE, demographicsGender = TRUE)
+  baseSettings <- NULL
+  if (isTRUE(profile$demographicsAge) || isTRUE(profile$demographicsGender) ||
+      isTRUE(profile$conditionsLongTerm)) {
+    baseSettings <- FeatureExtraction::createCovariateSettings(
+      useDemographicsGender = isTRUE(profile$demographicsGender),
+      useDemographicsAge = isTRUE(profile$demographicsAge),
+      useConditionOccurrenceLongTerm = isTRUE(profile$conditionsLongTerm)
+    )
   }
-  if (identical(preset, "demographics")) {
-    return(FeatureExtraction::createCovariateSettings(
-      useDemographicsGender = TRUE,
-      useDemographicsAge = TRUE
-    ))
+  hasCohorts <- length(cohortVector(row$covariateCohortIds)) > 0L
+  if (!hasCohorts) {
+    return(baseSettings)
   }
-  if (identical(preset, "conditions")) {
-    return(FeatureExtraction::createCovariateSettings(
-      useDemographicsGender = TRUE,
-      useDemographicsAge = TRUE,
-      useConditionOccurrenceLongTerm = TRUE
-    ))
+  cohortSettings <- getCohortCovariateSettings(row)
+  if (is.null(baseSettings)) {
+    cohortSettings
+  } else {
+    list(baseSettings, cohortSettings)
   }
-  if (identical(preset, "demographicsAndConditions")) {
-    return(FeatureExtraction::createCovariateSettings(
-      useDemographicsGender = TRUE,
-      useDemographicsAge = TRUE,
-      useConditionOccurrenceLongTerm = TRUE
-    ))
-  }
-  if (identical(preset, "cohorts") || identical(preset, "phenotypes")) {
-    return(getCohortCovariateSettings(row))
-  }
-  if (identical(preset, "demographicsAndCohorts") ||
-      identical(preset, "demographicsAndPhenotypes")) {
-    return(list(
-      FeatureExtraction::createCovariateSettings(
-        useDemographicsGender = TRUE,
-        useDemographicsAge = TRUE
-      ),
-      getCohortCovariateSettings(row)
-    ))
-  }
-  stop("Unsupported covariatePreset: ", preset)
 }
 
-makeConnectionDetails <- function(row) {
-  args <- list(
-    dbms = row$dbms,
-    server = row$server,
-    user = field(row, "user"),
-    password = getPassword(row),
-    port = suppressWarnings(as.integer(field(row, "port")))
+normalizeExecutionSettings <- function(execution) {
+  execution <- execution %||% list()
+  atlasBaseUrl <- firstNonEmpty(execution$atlasBaseUrl)
+  atlasBaseUrlEnv <- firstNonEmpty(execution$atlasBaseUrlEnv)
+  if (is.null(atlasBaseUrl) && !is.null(atlasBaseUrlEnv)) {
+    atlasBaseUrl <- Sys.getenv(atlasBaseUrlEnv)
+    if (!nzchar(atlasBaseUrl)) {
+      atlasBaseUrl <- NULL
+    }
+  }
+  list(
+    outputRoot = firstNonEmpty(execution$outputRoot) %||% "data",
+    atlasBaseUrl = atlasBaseUrl,
+    generateCohorts = logicalArg(execution$generateCohorts, FALSE),
+    createCohortTables = logicalArg(execution$createCohortTables, TRUE),
+    generateStats = logicalArg(execution$generateStats, FALSE),
+    incremental = logicalArg(execution$incremental, TRUE),
+    jsonDirectory = firstNonEmpty(execution$jsonDirectory) %||% file.path("extras", "atlas_json"),
+    incrementalFolder = firstNonEmpty(execution$incrementalFolder),
+    overwrite = logicalArg(execution$overwrite, FALSE)
   )
-  args <- args[!vapply(args, is.null, logical(1))]
-  do.call(DatabaseConnector::createConnectionDetails, args)
 }
 
-fetchOne <- function(row, outputRoot, overwrite = FALSE, fetchArgs = list()) {
-  outputDir <- file.path(outputRoot, row$task, as.character(row$clientId))
-  if (dir.exists(outputDir) && !overwrite) {
+requireScalar <- function(x, name) {
+  value <- scalarOrNull(x)
+  if (is.null(value)) {
+    stop("Missing required setting: ", name)
+  }
+  value
+}
+
+rowForTaskSource <- function(taskName, task, profile, sourceName, dataSource) {
+  targetId <- task$targetId %||% task$targetAtlasId
+  outcomeId <- task$outcomeId %||% task$outcomeAtlasId
+  if (is.null(targetId) || is.null(outcomeId)) {
+    stop("Task '", taskName, "' must define targetId/targetAtlasId and outcomeId/outcomeAtlasId")
+  }
+  cohortCovariates <- profile$cohortCovariates %||% list()
+  list(
+    task = taskName,
+    clientId = sourceName,
+    targetId = as.integer(targetId),
+    outcomeId = as.integer(outcomeId),
+    riskWindowStart = as.integer(task$riskWindowStart %||% 1L),
+    riskWindowEnd = as.integer(task$riskWindowEnd %||% 30L),
+    removeSubjectsWithPriorOutcome = task$removeSubjectsWithPriorOutcome %||% TRUE,
+    priorOutcomeLookback = as.integer(task$priorOutcomeLookback %||% 99999L),
+    requireTimeAtRisk = task$requireTimeAtRisk %||% FALSE,
+    minTimeAtRisk = as.integer(task$minTimeAtRisk %||% 1L),
+    covariateProfile = task$covariateProfile %||% "demographics",
+    covariateProfileDef = profile,
+    covariateCohortIds = cohortVector(cohortCovariates$atlasIds %||% cohortCovariates$cohortIds),
+    covariateAnalysisId = as.integer(cohortCovariates$analysisId %||% 49L),
+    covariateCohortDatabaseSchema = dataSource$covariateCohortDatabaseSchema %||%
+      dataSource$cohortDatabaseSchema,
+    covariateCohortTable = dataSource$covariateCohortTable %||% dataSource$cohortTable,
+    cdmDatabaseSchema = requireScalar(dataSource$cdmDatabaseSchema, paste0(sourceName, ".cdmDatabaseSchema")),
+    cdmDatabaseName = dataSource$cdmDatabaseName %||% sourceName,
+    cohortDatabaseSchema = requireScalar(dataSource$cohortDatabaseSchema, paste0(sourceName, ".cohortDatabaseSchema")),
+    cohortTable = requireScalar(dataSource$cohortTable, paste0(sourceName, ".cohortTable")),
+    outcomeDatabaseSchema = dataSource$outcomeDatabaseSchema %||% dataSource$cohortDatabaseSchema,
+    outcomeTable = dataSource$outcomeTable %||% dataSource$cohortTable,
+    connectionProfile = dataSource$connectionProfile,
+    connection = dataSource$connection,
+    incrementalFolder = dataSource$incrementalFolder
+  )
+}
+
+expandFetchRows <- function(study, dataSources) {
+  tasks <- asNamedList(study$tasks, "study$tasks")
+  profiles <- asNamedList(study$covariateProfiles, "study$covariateProfiles")
+  sources <- asNamedList(dataSources$dataSources, "dataSources$dataSources")
+  rows <- list()
+  for (taskName in names(tasks)) {
+    task <- tasks[[taskName]]
+    profileName <- task$covariateProfile %||% "demographics"
+    profile <- profiles[[profileName]] %||%
+      stop("Task '", taskName, "' references unknown covariateProfile '", profileName, "'")
+    for (sourceName in names(sources)) {
+      rows[[length(rows) + 1L]] <- rowForTaskSource(
+        taskName = taskName,
+        task = task,
+        profile = profile,
+        sourceName = sourceName,
+        dataSource = sources[[sourceName]]
+      )
+    }
+  }
+  rows
+}
+
+fetchOne <- function(row, dataSources, execution) {
+  outputDir <- file.path(execution$outputRoot, row$task, as.character(row$clientId))
+  if (dir.exists(outputDir) && !execution$overwrite) {
     message("Skipping existing ", outputDir)
     return(outputDir)
   }
   dir.create(dirname(outputDir), recursive = TRUE, showWarnings = FALSE)
 
-  connectionDetails <- makeConnectionDetails(row)
-  prepareCohorts(row, connectionDetails, fetchArgs)
+  connectionProfiles <- dataSources$connectionProfiles %||% list()
+  connectionDetails <- makeConnectionDetails(
+    dataSource = mergeLists(
+      dataSources$dataSources[[row$clientId]],
+      list(connection = row$connection)
+    ),
+    connectionProfiles = connectionProfiles
+  )
+  prepareCohorts(row, connectionDetails, execution)
   databaseDetails <- PatientLevelPrediction::createDatabaseDetails(
     connectionDetails = connectionDetails,
     cdmDatabaseSchema = row$cdmDatabaseSchema,
-    cdmDatabaseName = field(row, "cdmDatabaseName") %||% row$cdmDatabaseSchema,
+    cdmDatabaseName = row$cdmDatabaseName %||% row$cdmDatabaseSchema,
     cohortDatabaseSchema = row$cohortDatabaseSchema,
     cohortTable = row$cohortTable,
     outcomeDatabaseSchema = row$outcomeDatabaseSchema,
@@ -363,19 +514,19 @@ fetchOne <- function(row, outputRoot, overwrite = FALSE, fetchArgs = list()) {
   )
 
   populationSettings <- PatientLevelPrediction::createStudyPopulationSettings(
-    requireTimeAtRisk = logicalField(row, "requireTimeAtRisk", FALSE),
-    minTimeAtRisk = integerField(row, "minTimeAtRisk", 1L),
-    riskWindowStart = integerField(row, "riskWindowStart", 1L),
-    riskWindowEnd = integerField(row, "riskWindowEnd", 30L),
-    removeSubjectsWithPriorOutcome = logicalField(row, "removeSubjectsWithPriorOutcome", TRUE),
-    priorOutcomeLookback = integerField(row, "priorOutcomeLookback", 99999L)
+    requireTimeAtRisk = logicalArg(row$requireTimeAtRisk, FALSE),
+    minTimeAtRisk = as.integer(row$minTimeAtRisk %||% 1L),
+    riskWindowStart = as.integer(row$riskWindowStart %||% 1L),
+    riskWindowEnd = as.integer(row$riskWindowEnd %||% 30L),
+    removeSubjectsWithPriorOutcome = logicalArg(row$removeSubjectsWithPriorOutcome, TRUE),
+    priorOutcomeLookback = as.integer(row$priorOutcomeLookback %||% 99999L)
   )
   plpData$population <- PatientLevelPrediction::createStudyPopulation(
     populationSettings = populationSettings,
     plpData = plpData
   )
 
-  if (dir.exists(outputDir) && overwrite) {
+  if (dir.exists(outputDir) && execution$overwrite) {
     unlink(outputDir, recursive = TRUE)
   }
   PatientLevelPrediction::savePlpData(plpData, file = outputDir)
@@ -392,25 +543,33 @@ runFetch <- function(args) {
   if (!requireNamespace("PatientLevelPrediction", quietly = TRUE)) {
     stop("PatientLevelPrediction is required")
   }
-  if (logicalArg(args[["generate-cohorts"]], FALSE)) {
+
+  studyPath <- args[["study"]] %||% "extras/fetch_study.yml"
+  dataSourcesPath <- args[["data-sources"]] %||% "extras/fetch_data_sources.yml"
+  executionPath <- args[["execution"]] %||% "extras/fetch_execution.yml"
+  config <- readFetchConfig(studyPath, dataSourcesPath, executionPath)
+  execution <- normalizeExecutionSettings(config$execution)
+  if (!is.null(args[["output-root"]])) {
+    execution$outputRoot <- args[["output-root"]]
+  }
+  if (!is.null(args[["overwrite"]])) {
+    execution$overwrite <- logicalArg(args[["overwrite"]], execution$overwrite)
+  }
+  if (!is.null(args[["atlas-base-url"]])) {
+    execution$atlasBaseUrl <- args[["atlas-base-url"]]
+  }
+  if (!is.null(args[["generate-cohorts"]])) {
+    execution$generateCohorts <- logicalArg(args[["generate-cohorts"]], execution$generateCohorts)
+  }
+  if (isTRUE(execution$generateCohorts)) {
     for (pkg in c("ROhdsiWebApi", "CirceR", "CohortGenerator", "jsonlite")) {
       if (!requireNamespace(pkg, quietly = TRUE)) {
-        stop(pkg, " is required when generate-cohorts=true")
+        stop(pkg, " is required when generateCohorts=true")
       }
     }
   }
-  manifestPath <- args[["manifest"]] %||% "extras/task_manifest.csv"
-  outputRoot <- args[["output-root"]] %||% "data"
-  overwrite <- logicalArg(args[["overwrite"]], FALSE)
-  manifest <- readManifest(manifestPath)
-  outputs <- lapply(seq_len(nrow(manifest)), function(i) {
-    fetchOne(
-      manifest[i, , drop = FALSE],
-      outputRoot = outputRoot,
-      overwrite = overwrite,
-      fetchArgs = args
-    )
-  })
+  rows <- expandFetchRows(config$study, config$dataSources)
+  outputs <- lapply(rows, fetchOne, dataSources = config$dataSources, execution = execution)
   invisible(unlist(outputs))
 }
 

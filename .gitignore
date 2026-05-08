@@ -1,7 +1,10 @@
 .aider*
 results
 data
-extras/task_manifest.csv
+private/
+extras/fetch_study.yml
+extras/fetch_execution.yml
+extras/fetch_data_sources.yml
 extras/atlas_json
 *.o
 *.so

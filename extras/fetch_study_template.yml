@@ -1,0 +1,38 @@
+tasks:
+  taskA:
+    targetAtlasId: 100001
+    outcomeAtlasId: 200001
+    riskWindowStart: 1
+    riskWindowEnd: 365
+    removeSubjectsWithPriorOutcome: true
+    priorOutcomeLookback: 99999
+    requireTimeAtRisk: false
+    minTimeAtRisk: 1
+    covariateProfile: ageSexPhenotypes
+  taskB:
+    targetAtlasId: 100002
+    outcomeAtlasId: 200002
+    riskWindowStart: 1
+    riskWindowEnd: 30
+    removeSubjectsWithPriorOutcome: true
+    priorOutcomeLookback: 99999
+    requireTimeAtRisk: false
+    minTimeAtRisk: 1
+    covariateProfile: ageSexPhenotypes
+
+covariateProfiles:
+  ageSex:
+    demographicsAge: true
+    demographicsGender: true
+  ageSexPhenotypes:
+    demographicsAge: true
+    demographicsGender: true
+    cohortCovariates:
+      analysisId: 49
+      atlasIds:
+        - 300001
+        - 300002
+  demographicsAndConditions:
+    demographicsAge: true
+    demographicsGender: true
+    conditionsLongTerm: true
