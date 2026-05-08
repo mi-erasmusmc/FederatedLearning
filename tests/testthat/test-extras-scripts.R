@@ -56,6 +56,15 @@ test_that("fetch task helpers expand cohort ranges and keep one row per cohort",
   json <- fetchEnv$cohortJson(list(expression = list(ConceptSets = list())))
   expect_type(json, "character")
   expect_false(inherits(json, "json"))
+
+  json <- fetchEnv$cohortJson(list(expression = list(
+    PrimaryCriteria = list(ObservationWindow = c(PriorDays = 0, PostDays = 0))
+  )))
+  expect_match(json, '"ObservationWindow"\\s*:\\s*\\{')
+  expect_match(json, '"PriorDays"\\s*:\\s*0')
+  expect_match(json, '"PostDays"\\s*:\\s*0')
+  expect_false(grepl('"ObservationWindow"\\s*:\\s*\\[', json))
+
   profiles <- list(
     a = list(dbms = "postgresql"),
     b = list(dbms = "spark")

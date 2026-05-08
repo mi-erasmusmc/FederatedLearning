@@ -233,7 +233,7 @@ taskCohortIdsForRow <- function(row) {
 
 cohortJson <- function(definition) {
   expr <- definition$expression %||% definition$json %||% definition
-  as.character(jsonlite::toJSON(expr, auto_unbox = TRUE, null = "null", pretty = TRUE))
+  RJSONIO::toJSON(expr, digits = 23, pretty = TRUE)
 }
 
 buildSqlFromJson <- function(json, cohortId, cdmDatabaseSchema, cohortDatabaseSchema,
