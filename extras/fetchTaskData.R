@@ -629,7 +629,13 @@ runFetch <- function(args) {
 }
 
 `%||%` <- function(x, y) {
-  if (is.null(x) || length(x) == 0L || is.na(x[[1]])) y else x
+  if (is.null(x) || length(x) == 0L) {
+    return(y)
+  }
+  if (is.atomic(x) && length(x) == 1L && is.na(x)) {
+    return(y)
+  }
+  x
 }
 
 if (sys.nframe() == 0L) {
