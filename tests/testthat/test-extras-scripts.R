@@ -53,6 +53,13 @@ test_that("fetch task helpers expand cohort ranges and keep one row per cohort",
   fetchEnv <- loadFetchEnv()
 
   expect_equal(fetchEnv$csvValues("100:102,200"), c("100", "101", "102", "200"))
+  profiles <- list(
+    a = list(dbms = "postgresql"),
+    b = list(dbms = "spark")
+  )
+  expect_identical(fetchEnv$`%||%`(profiles, list()), profiles)
+  expect_identical(fetchEnv$`%||%`(NULL, list(default = TRUE)), list(default = TRUE))
+  expect_identical(fetchEnv$`%||%`(NA_character_, "fallback"), "fallback")
 
   row <- list(targetId = 300L, outcomeId = 200L, covariateCohortIds = "100:102")
   expect_equal(fetchEnv$cohortIdsForRow(row), c(100L, 101L, 102L, 200L, 300L))
