@@ -11,6 +11,12 @@ connectionProfiles:
     passwordEnv: DB_PASSWORD
     pathToDriverEnv: JDBC_DRIVER_PATH
     connectionStringTemplate: "jdbc:spark://{databaseHost}:443/{database};transportMode=http;ssl=1"
+  keyringExample:
+    dbms: spark
+    user: token
+    server: "keyring:database/server"
+    password: "keyring:database/password"
+    pathToDriver: "keyring:database/jdbc_driver_path"
 
 dataSources:
   databaseA:
