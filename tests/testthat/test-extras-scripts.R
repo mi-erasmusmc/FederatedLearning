@@ -163,6 +163,72 @@ test_that("keyring resolvers can be used inside connection profiles", {
   expect_equal(details$password(), "secret_a")
 })
 
+test_that("WebAPI auth supports db credentials resolved from keyring", {
+  skip_if_not_installed("keyring")
+  fetchEnv <- loadFetchEnv()
+
+  captured <- NULL
+  testthat::local_mocked_bindings(
+    key_get = function(service, username) {
+      values <- list(
+        "webapi::username" = "atlas_user",
+        "webapi::password" = "atlas_secret"
+      )
+      values[[paste(service, username, sep = "::")]]
+    },
+    .package = "keyring"
+  )
+  testthat::local_mocked_bindings(
+    authorizeWebApi = function(baseUrl, authMethod, webApiUsername = NULL, webApiPassword = NULL) {
+      captured <<- list(
+        baseUrl = baseUrl,
+        authMethod = authMethod,
+        webApiUsername = webApiUsername,
+        webApiPassword = webApiPassword
+      )
+      invisible(NULL)
+    },
+    .package = "ROhdsiWebApi"
+  )
+
+  execution <- fetchEnv$normalizeExecutionSettings(list(
+    atlasBaseUrl = "https://atlas.example.org/WebAPI",
+    webApiAuth = list(
+      method = "db",
+      username = "keyring:webapi/username",
+      password = "keyring:webapi/password"
+    )
+  ))
+  fetchEnv$authorizeWebApiIfNeeded(execution)
+
+  expect_equal(captured$baseUrl, "https://atlas.example.org/WebAPI")
+  expect_equal(captured$authMethod, "db")
+  expect_equal(captured$webApiUsername, "atlas_user")
+  expect_equal(captured$webApiPassword, "atlas_secret")
+})
+
+test_that("WebAPI auth supports bearer token headers", {
+  fetchEnv <- loadFetchEnv()
+
+  captured <- NULL
+  testthat::local_mocked_bindings(
+    setAuthHeader = function(baseUrl, authHeader) {
+      captured <<- list(baseUrl = baseUrl, authHeader = authHeader)
+      invisible(NULL)
+    },
+    .package = "ROhdsiWebApi"
+  )
+
+  execution <- fetchEnv$normalizeExecutionSettings(list(
+    atlasBaseUrl = "https://atlas.example.org/WebAPI",
+    webApiAuth = list(bearerToken = "abc123")
+  ))
+  fetchEnv$authorizeWebApiIfNeeded(execution)
+
+  expect_equal(captured$baseUrl, "https://atlas.example.org/WebAPI")
+  expect_equal(captured$authHeader, "Bearer abc123")
+})
+
 test_that("split fetch config fails clearly for invalid references", {
   fetchEnv <- loadFetchEnv()
 

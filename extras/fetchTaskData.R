@@ -402,10 +402,10 @@ getCovariateSettings <- function(row) {
 
 normalizeExecutionSettings <- function(execution) {
   execution <- execution %||% list()
-  atlasBaseUrl <- firstNonEmpty(execution$atlasBaseUrl)
+  atlasBaseUrl <- resolveConfigScalar(execution$atlasBaseUrl)
   atlasBaseUrlEnv <- firstNonEmpty(execution$atlasBaseUrlEnv)
   if (is.null(atlasBaseUrl) && !is.null(atlasBaseUrlEnv)) {
-    atlasBaseUrl <- Sys.getenv(atlasBaseUrlEnv)
+    atlasBaseUrl <- resolveConfigScalar(Sys.getenv(atlasBaseUrlEnv))
     if (!nzchar(atlasBaseUrl)) {
       atlasBaseUrl <- NULL
     }
@@ -419,8 +419,43 @@ normalizeExecutionSettings <- function(execution) {
     incremental = logicalArg(execution$incremental, TRUE),
     jsonDirectory = firstNonEmpty(execution$jsonDirectory) %||% file.path("extras", "atlas_json"),
     incrementalFolder = firstNonEmpty(execution$incrementalFolder),
-    overwrite = logicalArg(execution$overwrite, FALSE)
+    overwrite = logicalArg(execution$overwrite, FALSE),
+    webApiAuth = execution$webApiAuth
   )
+}
+
+authorizeWebApiIfNeeded <- function(execution) {
+  auth <- execution$webApiAuth
+  if (is.null(auth)) {
+    return(invisible(FALSE))
+  }
+  if (is.null(execution$atlasBaseUrl) || !nzchar(execution$atlasBaseUrl)) {
+    stop("atlasBaseUrl is required when webApiAuth is configured")
+  }
+  bearerToken <- resolveConfigScalar(auth$bearerToken)
+  authHeader <- resolveConfigScalar(auth$authHeader)
+  if (!is.null(bearerToken) || !is.null(authHeader)) {
+    token <- authHeader %||% bearerToken
+    if (!grepl("^Bearer\\s+", token)) {
+      token <- paste("Bearer", token)
+    }
+    ROhdsiWebApi::setAuthHeader(
+      baseUrl = execution$atlasBaseUrl,
+      authHeader = token
+    )
+    return(invisible(TRUE))
+  }
+  method <- resolveConfigScalar(auth$method)
+  if (is.null(method)) {
+    stop("webApiAuth must define method, bearerToken, or authHeader")
+  }
+  ROhdsiWebApi::authorizeWebApi(
+    baseUrl = execution$atlasBaseUrl,
+    authMethod = method,
+    webApiUsername = resolveConfigScalar(auth$username),
+    webApiPassword = resolveConfigScalar(auth$password)
+  )
+  invisible(TRUE)
 }
 
 requireScalar <- function(x, name) {
@@ -586,6 +621,7 @@ runFetch <- function(args) {
         stop(pkg, " is required when generateCohorts=true")
       }
     }
+    authorizeWebApiIfNeeded(execution)
   }
   rows <- expandFetchRows(config$study, config$dataSources)
   outputs <- lapply(rows, fetchOne, dataSources = config$dataSources, execution = execution)

@@ -1,5 +1,9 @@
 outputRoot: data
 atlasBaseUrlEnv: ATLAS_BASE_URL
+webApiAuth:
+  method: db
+  username: "keyring:webapi/username"
+  password: "keyring:webapi/password"
 generateCohorts: true
 createCohortTables: true
 generateStats: false
