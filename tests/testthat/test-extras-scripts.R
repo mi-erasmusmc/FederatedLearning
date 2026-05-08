@@ -109,6 +109,60 @@ test_that("connection profiles support env vars and connection string templates"
   expect_equal(details$connectionString(), "jdbc:spark://host_a/db_a;ssl=1")
 })
 
+test_that("connection fields support compact keyring resolvers", {
+  skip_if_not_installed("keyring")
+  fetchEnv <- loadFetchEnv()
+
+  calls <- list()
+  testthat::local_mocked_bindings(
+    key_get = function(service, username) {
+      calls[[length(calls) + 1L]] <<- list(service = service, username = username)
+      paste(service, username, sep = "::")
+    },
+    .package = "keyring"
+  )
+
+  expect_equal(fetchEnv$resolveConfigScalar("literal"), "literal")
+  expect_equal(fetchEnv$resolveConfigScalar("keyring:database/server"), "database::server")
+  expect_equal(calls[[1]]$service, "database")
+  expect_equal(calls[[1]]$username, "server")
+  expect_error(
+    fetchEnv$resolveConfigScalar("keyring:database"),
+    "Invalid keyring resolver"
+  )
+})
+
+test_that("keyring resolvers can be used inside connection profiles", {
+  skip_if_not_installed("keyring")
+  fetchEnv <- loadFetchEnv()
+
+  testthat::local_mocked_bindings(
+    key_get = function(service, username) {
+      values <- list(
+        "database::server" = "server_a",
+        "database::password" = "secret_a"
+      )
+      values[[paste(service, username, sep = "::")]]
+    },
+    .package = "keyring"
+  )
+
+  details <- fetchEnv$makeConnectionDetails(
+    dataSource = list(connectionProfile = "custom"),
+    connectionProfiles = list(custom = list(
+      dbms = "postgresql",
+      server = "keyring:database/server",
+      user = "token",
+      password = "keyring:database/password"
+    ))
+  )
+
+  expect_equal(details$dbms, "postgresql")
+  expect_equal(details$server(), "server_a")
+  expect_equal(details$user(), "token")
+  expect_equal(details$password(), "secret_a")
+})
+
 test_that("split fetch config fails clearly for invalid references", {
   fetchEnv <- loadFetchEnv()
 

@@ -88,10 +88,29 @@ envField <- function(x, name) {
   if (!is.null(envName)) {
     value <- Sys.getenv(envName)
     if (nzchar(value)) {
-      return(value)
+      return(resolveConfigScalar(value))
     }
   }
-  firstNonEmpty(x[[name]])
+  resolveConfigScalar(firstNonEmpty(x[[name]]))
+}
+
+resolveConfigScalar <- function(value) {
+  value <- firstNonEmpty(value)
+  if (is.null(value)) {
+    return(NULL)
+  }
+  if (!startsWith(value, "keyring:")) {
+    return(value)
+  }
+  spec <- sub("^keyring:", "", value)
+  parts <- strsplit(spec, "/", fixed = TRUE)[[1]]
+  if (length(parts) != 2L || any(!nzchar(parts))) {
+    stop("Invalid keyring resolver '", value, "'. Use keyring:<service>/<username>.")
+  }
+  if (!requireNamespace("keyring", quietly = TRUE)) {
+    stop("keyring is required to resolve '", value, "'")
+  }
+  keyring::key_get(service = parts[[1]], username = parts[[2]])
 }
 
 renderTemplate <- function(template, values) {
