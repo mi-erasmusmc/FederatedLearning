@@ -233,11 +233,12 @@ taskCohortIdsForRow <- function(row) {
 
 cohortJson <- function(definition) {
   expr <- definition$expression %||% definition$json %||% definition
-  jsonlite::toJSON(expr, auto_unbox = TRUE, null = "null", pretty = TRUE)
+  as.character(jsonlite::toJSON(expr, auto_unbox = TRUE, null = "null", pretty = TRUE))
 }
 
 buildSqlFromJson <- function(json, cohortId, cdmDatabaseSchema, cohortDatabaseSchema,
                              cohortTable, generateStats = FALSE) {
+  json <- as.character(json)
   expression <- CirceR::cohortExpressionFromJson(json)
   options <- CirceR::createGenerateOptions(
     cohortIdFieldName = "cohort_definition_id",

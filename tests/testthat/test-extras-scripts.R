@@ -53,6 +53,9 @@ test_that("fetch task helpers expand cohort ranges and keep one row per cohort",
   fetchEnv <- loadFetchEnv()
 
   expect_equal(fetchEnv$csvValues("100:102,200"), c("100", "101", "102", "200"))
+  json <- fetchEnv$cohortJson(list(expression = list(ConceptSets = list())))
+  expect_type(json, "character")
+  expect_false(inherits(json, "json"))
   profiles <- list(
     a = list(dbms = "postgresql"),
     b = list(dbms = "spark")
