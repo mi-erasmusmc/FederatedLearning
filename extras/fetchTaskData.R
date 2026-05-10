@@ -334,6 +334,29 @@ phenotypeLibraryDefinitionSet <- function(cohortIds) {
   PhenotypeLibrary::getPlCohortDefinitionSet(cohortIds)
 }
 
+logFetchContext <- function(row, execution, phase) {
+  tempSchema <- row$tempEmulationSchema %||% execution$tempEmulationSchema %||%
+    row$cohortDatabaseSchema
+  message(
+    "[", row$clientId, " / ", row$task, "] ", phase,
+    " | cdm=", row$cdmDatabaseSchema,
+    " | cohort=", row$cohortDatabaseSchema, ".", row$cohortTable,
+    " | outcome=", row$outcomeDatabaseSchema, ".", row$outcomeTable,
+    " | temp=", tempSchema
+  )
+}
+
+logCohortGenerationContext <- function(row, label, schema, table, createTables,
+                                       incremental, tempEmulationSchema) {
+  message(
+    "[", row$clientId, " / ", row$task, "] Generate ", label,
+    " cohorts | table=", schema, ".", table,
+    " | createTables=", createTables,
+    " | incremental=", incremental,
+    " | temp=", tempEmulationSchema %||% "<default>"
+  )
+}
+
 generateCohortTable <- function(connectionDetails, row, cohortDefinitionSet,
                                 cohortDatabaseSchema, cohortTable,
                                 createTables = TRUE,
@@ -377,7 +400,9 @@ prepareCohorts <- function(row, connectionDetails, execution) {
   tempEmulationSchema <- row$tempEmulationSchema %||% execution$tempEmulationSchema
   taskIds <- taskCohortIdsForRow(row)
 
-  message("Fetching ATLAS target/outcome definitions for ", row$task, "/", row$clientId)
+  logFetchContext(row, execution, "Prepare cohorts")
+  message("[", row$clientId, " / ", row$task, "] Fetch ATLAS target/outcome definitions: ",
+          paste(taskIds, collapse = ", "))
   taskSet <- fetchCohortDefinitionSet(
     cohortIds = taskIds,
     row = row,
@@ -387,6 +412,15 @@ prepareCohorts <- function(row, connectionDetails, execution) {
     cohortTable = row$cohortTable,
     generateStats = generateStats,
     cohortRole = "target/outcome"
+  )
+  logCohortGenerationContext(
+    row = row,
+    label = "target/outcome",
+    schema = row$cohortDatabaseSchema,
+    table = row$cohortTable,
+    createTables = createTables,
+    incremental = incremental,
+    tempEmulationSchema = tempEmulationSchema
   )
   generateCohortTable(
     connectionDetails = connectionDetails,
@@ -404,16 +438,27 @@ prepareCohorts <- function(row, connectionDetails, execution) {
   if (length(covariateIds) > 0L) {
     covariateSchema <- row$covariateCohortDatabaseSchema %||% row$cohortDatabaseSchema
     covariateTable <- row$covariateCohortTable %||% row$cohortTable
-    message("Loading PhenotypeLibrary covariate cohort definitions for ", row$task, "/", row$clientId)
+    message("[", row$clientId, " / ", row$task, "] Load PhenotypeLibrary covariate definitions: ",
+            paste(covariateIds, collapse = ", "))
     covSet <- phenotypeLibraryDefinitionSet(covariateIds)
+    covariateCreateTables <- createTables && (!identical(covariateSchema, row$cohortDatabaseSchema) ||
+      !identical(covariateTable, row$cohortTable))
+    logCohortGenerationContext(
+      row = row,
+      label = "covariate",
+      schema = covariateSchema,
+      table = covariateTable,
+      createTables = covariateCreateTables,
+      incremental = incremental,
+      tempEmulationSchema = tempEmulationSchema
+    )
     generateCohortTable(
       connectionDetails = connectionDetails,
       row = row,
       cohortDefinitionSet = covSet,
       cohortDatabaseSchema = covariateSchema,
       cohortTable = covariateTable,
-      createTables = createTables && (!identical(covariateSchema, row$cohortDatabaseSchema) ||
-        !identical(covariateTable, row$cohortTable)),
+      createTables = covariateCreateTables,
       incremental = incremental,
       incrementalFolder = incrementalFolder,
       tempEmulationSchema = tempEmulationSchema
@@ -585,7 +630,7 @@ expandFetchRows <- function(study, dataSources) {
 fetchOne <- function(row, dataSources, execution) {
   outputDir <- file.path(execution$outputRoot, row$task, as.character(row$clientId))
   if (dir.exists(outputDir) && !execution$overwrite) {
-    message("Skipping existing ", outputDir)
+    message("[", row$clientId, " / ", row$task, "] Skipping existing output ", outputDir)
     return(outputDir)
   }
   dir.create(dirname(outputDir), recursive = TRUE, showWarnings = FALSE)
@@ -615,9 +660,8 @@ fetchOne <- function(row, dataSources, execution) {
   covariateSettings <- getCovariateSettings(row)
   restrictPlpDataSettings <- PatientLevelPrediction::createRestrictPlpDataSettings()
 
-  message(sprintf(
-    "Fetching task=%s client=%s target=%s outcome=%s",
-    row$task, row$clientId, row$targetId, row$outcomeId
+  logFetchContext(row, execution, paste0(
+    "Fetch PLP data target=", row$targetId, " outcome=", row$outcomeId
   ))
   plpData <- PatientLevelPrediction::getPlpData(
     databaseDetails = databaseDetails,
