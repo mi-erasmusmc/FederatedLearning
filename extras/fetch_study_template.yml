@@ -29,9 +29,8 @@ covariateProfiles:
     demographicsGender: true
     cohortCovariates:
       analysisId: 49
-      phenotypeLibraryIds:
-        - 1152
-        - 1153
+      # Defaults to PhenotypeLibrary IDs 1152:1215 when omitted.
+      # phenotypeLibraryIds: 1152:1215
   demographicsAndConditions:
     demographicsAge: true
     demographicsGender: true

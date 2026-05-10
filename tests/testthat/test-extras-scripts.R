@@ -47,13 +47,14 @@ test_that("split fetch templates encode generic external task structure", {
   expect_equal(vapply(taskRows, `[[`, integer(1), "riskWindowEnd"), c(365L, 30L))
   expect_equal(vapply(taskRows, `[[`, integer(1), "targetId"), c(100001L, 100002L))
   expect_equal(vapply(taskRows, `[[`, integer(1), "outcomeId"), c(200001L, 200002L))
-  expect_equal(fetchEnv$cohortIdsForRow(rows[[1]]), c(1152L, 1153L, 100001L, 200001L))
+  expect_equal(fetchEnv$cohortIdsForRow(rows[[1]]), c(1152:1215, 100001L, 200001L))
 })
 
 test_that("fetch task helpers expand cohort ranges and keep one row per cohort", {
   fetchEnv <- loadFetchEnv()
 
   expect_equal(fetchEnv$csvValues("100:102,200"), c("100", "101", "102", "200"))
+  expect_equal(fetchEnv$defaultPhenotypeLibraryIds(), 1152:1215)
   json <- fetchEnv$cohortJson(list(expression = list(ConceptSets = list())))
   expect_type(json, "character")
   expect_false(inherits(json, "json"))

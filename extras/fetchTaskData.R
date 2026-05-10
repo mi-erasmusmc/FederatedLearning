@@ -216,6 +216,10 @@ cohortVector <- function(x) {
   as.integer(unlist(x, use.names = FALSE))
 }
 
+defaultPhenotypeLibraryIds <- function() {
+  1152:1215
+}
+
 getCohortCovariateSettings <- function(row) {
   ids <- cohortVector(row$covariateCohortIds)
   if (length(ids) == 0L || any(is.na(ids))) {
@@ -520,6 +524,9 @@ rowForTaskSource <- function(taskName, task, profile, sourceName, dataSource) {
       cohortCovariates$cohortIds %||%
       cohortCovariates$atlasIds
   )
+  if (length(covariateCohortIds) == 0L && length(cohortCovariates) > 0L) {
+    covariateCohortIds <- defaultPhenotypeLibraryIds()
+  }
   list(
     task = taskName,
     clientId = sourceName,
