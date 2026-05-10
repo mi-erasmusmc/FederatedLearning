@@ -40,6 +40,7 @@ test_that("split fetch templates encode generic external task structure", {
   expect_true(all(vapply(rows, `[[`, integer(1), "priorOutcomeLookback") == 99999L))
   expect_equal(execution$outputRoot, "data")
   expect_true(execution$generateCohorts)
+  expect_equal(execution$tempEmulationSchema, "scratch")
 
   taskRows <- rows[!duplicated(vapply(rows, `[[`, character(1), "task"))]
   expect_equal(vapply(taskRows, `[[`, character(1), "task"), c("taskA", "taskB"))
@@ -338,14 +339,16 @@ test_that("cohort preparation passes expected schemas and cohort ids to OHDSI he
                                            cohortDatabaseSchema, cohortTable,
                                            createTables = TRUE,
                                            incremental = TRUE,
-                                           incrementalFolder = NULL) {
+                                           incrementalFolder = NULL,
+                                           tempEmulationSchema = NULL) {
     generated[[length(generated) + 1L]] <<- list(
       cohortIds = cohortDefinitionSet$cohortId,
       cohortDatabaseSchema = cohortDatabaseSchema,
       cohortTable = cohortTable,
       createTables = createTables,
       incremental = incremental,
-      incrementalFolder = incrementalFolder
+      incrementalFolder = incrementalFolder,
+      tempEmulationSchema = tempEmulationSchema
     )
     invisible(NULL)
   }
@@ -359,6 +362,7 @@ test_that("cohort preparation passes expected schemas and cohort ids to OHDSI he
     cdmDatabaseSchema = "cdm",
     cohortDatabaseSchema = "scratch",
     cohortTable = "cohort",
+    tempEmulationSchema = "scratch_temp",
     covariateCohortDatabaseSchema = "scratch_cov",
     covariateCohortTable = "covariate_cohort"
   )
@@ -372,7 +376,8 @@ test_that("cohort preparation passes expected schemas and cohort ids to OHDSI he
       generateStats = FALSE,
       incremental = TRUE,
       createCohortTables = TRUE,
-      incrementalFolder = "incremental"
+      incrementalFolder = "incremental",
+      tempEmulationSchema = "execution_temp"
     )
   )
 
@@ -380,9 +385,11 @@ test_that("cohort preparation passes expected schemas and cohort ids to OHDSI he
   expect_equal(generated[[1]]$cohortIds, c(10L, 20L))
   expect_equal(generated[[1]]$cohortDatabaseSchema, "scratch")
   expect_equal(generated[[1]]$cohortTable, "cohort")
+  expect_equal(generated[[1]]$tempEmulationSchema, "scratch_temp")
   expect_equal(generated[[2]]$cohortIds, c(30L, 31L))
   expect_equal(generated[[2]]$cohortDatabaseSchema, "scratch_cov")
   expect_equal(generated[[2]]$cohortTable, "covariate_cohort")
+  expect_equal(generated[[2]]$tempEmulationSchema, "scratch_temp")
 })
 
 test_that("fetch rows preserve PLP database and population settings", {
@@ -411,6 +418,7 @@ test_that("fetch rows preserve PLP database and population settings", {
     cdmDatabaseName = "CDM A",
     cohortDatabaseSchema = "scratch",
     cohortTable = "cohort",
+    tempEmulationSchema = "scratch_temp",
     outcomeDatabaseSchema = "outcome_scratch",
     outcomeTable = "outcome_cohort",
     covariateCohortDatabaseSchema = "cov_scratch",
@@ -423,6 +431,7 @@ test_that("fetch rows preserve PLP database and population settings", {
   expect_equal(row$cdmDatabaseSchema, "cdm")
   expect_equal(row$cdmDatabaseName, "CDM A")
   expect_equal(row$cohortDatabaseSchema, "scratch")
+  expect_equal(row$tempEmulationSchema, "scratch_temp")
   expect_equal(row$outcomeDatabaseSchema, "outcome_scratch")
   expect_equal(row$riskWindowEnd, 365L)
   expect_true(row$removeSubjectsWithPriorOutcome)

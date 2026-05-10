@@ -9,4 +9,7 @@ createCohortTables: true
 generateStats: false
 incremental: true
 jsonDirectory: extras/atlas_json
+# Optional schema used by SqlRender to emulate temporary tables for dialects
+# such as Spark/Databricks. Can also be set per data source.
+tempEmulationSchema: scratch
 overwrite: false

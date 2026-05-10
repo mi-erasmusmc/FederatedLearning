@@ -25,6 +25,7 @@ dataSources:
     cdmDatabaseName: Database A
     cohortDatabaseSchema: scratch
     cohortTable: fl_cohort
+    tempEmulationSchema: scratch
     outcomeDatabaseSchema: scratch
     outcomeTable: fl_cohort
     covariateCohortDatabaseSchema: scratch
@@ -35,6 +36,7 @@ dataSources:
     cdmDatabaseName: Database B
     cohortDatabaseSchema: scratch
     cohortTable: fl_cohort
+    tempEmulationSchema: scratch
     outcomeDatabaseSchema: scratch
     outcomeTable: fl_cohort
     covariateCohortDatabaseSchema: scratch

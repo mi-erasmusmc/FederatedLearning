@@ -307,7 +307,8 @@ generateCohortTable <- function(connectionDetails, row, cohortDefinitionSet,
                                 cohortDatabaseSchema, cohortTable,
                                 createTables = TRUE,
                                 incremental = TRUE,
-                                incrementalFolder = NULL) {
+                                incrementalFolder = NULL,
+                                tempEmulationSchema = NULL) {
   cohortTableNames <- CohortGenerator::getCohortTableNames(cohortTable = cohortTable)
   if (createTables) {
     CohortGenerator::createCohortTables(
@@ -320,6 +321,7 @@ generateCohortTable <- function(connectionDetails, row, cohortDefinitionSet,
   CohortGenerator::generateCohortSet(
     connectionDetails = connectionDetails,
     cdmDatabaseSchema = row$cdmDatabaseSchema,
+    tempEmulationSchema = tempEmulationSchema,
     cohortDatabaseSchema = cohortDatabaseSchema,
     cohortTableNames = cohortTableNames,
     cohortDefinitionSet = cohortDefinitionSet,
@@ -341,6 +343,7 @@ prepareCohorts <- function(row, connectionDetails, execution) {
   incrementalFolder <- row$incrementalFolder %||%
     execution$incrementalFolder %||%
     file.path(tempdir(), "FederatedLearningCohortGenerator")
+  tempEmulationSchema <- row$tempEmulationSchema %||% execution$tempEmulationSchema
   taskIds <- taskCohortIdsForRow(row)
 
   message("Fetching ATLAS target/outcome definitions for ", row$task, "/", row$clientId)
@@ -361,7 +364,8 @@ prepareCohorts <- function(row, connectionDetails, execution) {
     cohortTable = row$cohortTable,
     createTables = createTables,
     incremental = incremental,
-    incrementalFolder = incrementalFolder
+    incrementalFolder = incrementalFolder,
+    tempEmulationSchema = tempEmulationSchema
   )
 
   covariateIds <- cohortVector(row$covariateCohortIds)
@@ -387,7 +391,8 @@ prepareCohorts <- function(row, connectionDetails, execution) {
       createTables = createTables && (!identical(covariateSchema, row$cohortDatabaseSchema) ||
         !identical(covariateTable, row$cohortTable)),
       incremental = incremental,
-      incrementalFolder = incrementalFolder
+      incrementalFolder = incrementalFolder,
+      tempEmulationSchema = tempEmulationSchema
     )
   }
   invisible(NULL)
@@ -435,6 +440,7 @@ normalizeExecutionSettings <- function(execution) {
     incremental = logicalArg(execution$incremental, TRUE),
     jsonDirectory = firstNonEmpty(execution$jsonDirectory) %||% file.path("extras", "atlas_json"),
     incrementalFolder = firstNonEmpty(execution$incrementalFolder),
+    tempEmulationSchema = firstNonEmpty(execution$tempEmulationSchema),
     overwrite = logicalArg(execution$overwrite, FALSE),
     webApiAuth = execution$webApiAuth
   )
@@ -513,6 +519,7 @@ rowForTaskSource <- function(taskName, task, profile, sourceName, dataSource) {
     cohortTable = requireScalar(dataSource$cohortTable, paste0(sourceName, ".cohortTable")),
     outcomeDatabaseSchema = dataSource$outcomeDatabaseSchema %||% dataSource$cohortDatabaseSchema,
     outcomeTable = dataSource$outcomeTable %||% dataSource$cohortTable,
+    tempEmulationSchema = dataSource$tempEmulationSchema,
     connectionProfile = dataSource$connectionProfile,
     connection = dataSource$connection,
     incrementalFolder = dataSource$incrementalFolder
