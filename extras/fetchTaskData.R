@@ -221,7 +221,7 @@ getCohortCovariateSettings <- function(row) {
   if (length(ids) == 0L || any(is.na(ids))) {
     stop("Cohort covariate profiles require numeric covariateCohortIds")
   }
-  cohortNames <- paste0("cohort_", ids)
+  cohortNames <- row$covariateCohortNames %||% paste0("cohort_", ids)
   covariateCohorts <- data.frame(
     cohortId = ids,
     cohortName = cohortNames,
@@ -277,14 +277,27 @@ buildSqlFromJson <- function(json, cohortId, cdmDatabaseSchema, cohortDatabaseSc
 fetchCohortDefinitionSet <- function(cohortIds, row, atlasBaseUrl, jsonDirectory = NULL,
                                      cohortDatabaseSchema = row$cohortDatabaseSchema,
                                      cohortTable = row$cohortTable,
-                                     generateStats = FALSE) {
+                                     generateStats = FALSE,
+                                     cohortRole = "cohort") {
   if (is.null(atlasBaseUrl) || !nzchar(atlasBaseUrl)) {
     stop("atlasBaseUrl is required when generateCohorts=true")
   }
   cohortRows <- lapply(cohortIds, function(cohortId) {
-    definition <- ROhdsiWebApi::getCohortDefinition(
-      cohortId = as.integer(cohortId),
-      baseUrl = atlasBaseUrl
+    message("Fetching ATLAS ", cohortRole, " cohort definition ", cohortId,
+            " for ", row$task, "/", row$clientId)
+    definition <- tryCatch(
+      ROhdsiWebApi::getCohortDefinition(
+        cohortId = as.integer(cohortId),
+        baseUrl = atlasBaseUrl
+      ),
+      error = function(e) {
+        stop(
+          "Failed to fetch ATLAS ", cohortRole, " cohort definition ", cohortId,
+          " for ", row$task, "/", row$clientId, " from ", atlasBaseUrl, ": ",
+          conditionMessage(e),
+          call. = FALSE
+        )
+      }
     )
     json <- cohortJson(definition)
     if (!is.null(jsonDirectory)) {
@@ -308,6 +321,13 @@ fetchCohortDefinitionSet <- function(cohortIds, row, atlasBaseUrl, jsonDirectory
     )
   })
   do.call(rbind, cohortRows)
+}
+
+phenotypeLibraryDefinitionSet <- function(cohortIds) {
+  if (!requireNamespace("PhenotypeLibrary", quietly = TRUE)) {
+    stop("PhenotypeLibrary is required for cohort covariates from PhenotypeLibrary")
+  }
+  PhenotypeLibrary::getPlCohortDefinitionSet(cohortIds)
 }
 
 generateCohortTable <- function(connectionDetails, row, cohortDefinitionSet,
@@ -361,7 +381,8 @@ prepareCohorts <- function(row, connectionDetails, execution) {
     jsonDirectory = file.path(jsonRoot, row$task),
     cohortDatabaseSchema = row$cohortDatabaseSchema,
     cohortTable = row$cohortTable,
-    generateStats = generateStats
+    generateStats = generateStats,
+    cohortRole = "target/outcome"
   )
   generateCohortTable(
     connectionDetails = connectionDetails,
@@ -379,16 +400,8 @@ prepareCohorts <- function(row, connectionDetails, execution) {
   if (length(covariateIds) > 0L) {
     covariateSchema <- row$covariateCohortDatabaseSchema %||% row$cohortDatabaseSchema
     covariateTable <- row$covariateCohortTable %||% row$cohortTable
-    message("Fetching ATLAS covariate cohort definitions for ", row$task, "/", row$clientId)
-    covSet <- fetchCohortDefinitionSet(
-      cohortIds = covariateIds,
-      row = row,
-      atlasBaseUrl = atlasBaseUrl,
-      jsonDirectory = file.path(jsonRoot, row$task),
-      cohortDatabaseSchema = covariateSchema,
-      cohortTable = covariateTable,
-      generateStats = generateStats
-    )
+    message("Loading PhenotypeLibrary covariate cohort definitions for ", row$task, "/", row$clientId)
+    covSet <- phenotypeLibraryDefinitionSet(covariateIds)
     generateCohortTable(
       connectionDetails = connectionDetails,
       row = row,
@@ -502,6 +515,11 @@ rowForTaskSource <- function(taskName, task, profile, sourceName, dataSource) {
     stop("Task '", taskName, "' must define targetId/targetAtlasId and outcomeId/outcomeAtlasId")
   }
   cohortCovariates <- profile$cohortCovariates %||% list()
+  covariateCohortIds <- cohortVector(
+    cohortCovariates$phenotypeLibraryIds %||%
+      cohortCovariates$cohortIds %||%
+      cohortCovariates$atlasIds
+  )
   list(
     task = taskName,
     clientId = sourceName,
@@ -515,7 +533,8 @@ rowForTaskSource <- function(taskName, task, profile, sourceName, dataSource) {
     minTimeAtRisk = as.integer(task$minTimeAtRisk %||% 1L),
     covariateProfile = task$covariateProfile %||% "demographics",
     covariateProfileDef = profile,
-    covariateCohortIds = cohortVector(cohortCovariates$atlasIds %||% cohortCovariates$cohortIds),
+    covariateCohortIds = covariateCohortIds,
+    covariateCohortNames = cohortCovariates$cohortNames,
     covariateAnalysisId = as.integer(cohortCovariates$analysisId %||% 49L),
     covariateCohortDatabaseSchema = dataSource$covariateCohortDatabaseSchema %||%
       dataSource$cohortDatabaseSchema,

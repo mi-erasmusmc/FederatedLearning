@@ -47,7 +47,7 @@ test_that("split fetch templates encode generic external task structure", {
   expect_equal(vapply(taskRows, `[[`, integer(1), "riskWindowEnd"), c(365L, 30L))
   expect_equal(vapply(taskRows, `[[`, integer(1), "targetId"), c(100001L, 100002L))
   expect_equal(vapply(taskRows, `[[`, integer(1), "outcomeId"), c(200001L, 200002L))
-  expect_equal(fetchEnv$cohortIdsForRow(rows[[1]]), c(100001L, 200001L, 300001L, 300002L))
+  expect_equal(fetchEnv$cohortIdsForRow(rows[[1]]), c(1152L, 1153L, 100001L, 200001L))
 })
 
 test_that("fetch task helpers expand cohort ranges and keep one row per cohort", {
@@ -347,13 +347,28 @@ test_that("cohort preparation passes expected schemas and cohort ids to OHDSI he
   fetchEnv <- loadFetchEnv()
 
   generated <- list()
+  fetched <- list()
   fetchEnv$fetchCohortDefinitionSet <- function(cohortIds, row, atlasBaseUrl, jsonDirectory = NULL,
                                                 cohortDatabaseSchema = row$cohortDatabaseSchema,
                                                 cohortTable = row$cohortTable,
-                                                generateStats = FALSE) {
+                                                generateStats = FALSE,
+                                                cohortRole = "cohort") {
+    fetched[[length(fetched) + 1L]] <<- list(
+      cohortIds = as.integer(cohortIds),
+      cohortRole = cohortRole
+    )
     data.frame(
       cohortId = as.integer(cohortIds),
       cohortName = paste0("cohort_", cohortIds),
+      sql = "select 1",
+      json = "{}",
+      stringsAsFactors = FALSE
+    )
+  }
+  fetchEnv$phenotypeLibraryDefinitionSet <- function(cohortIds) {
+    data.frame(
+      cohortId = as.integer(cohortIds),
+      cohortName = paste0("phenotype_", cohortIds),
       sql = "select 1",
       json = "{}",
       stringsAsFactors = FALSE
@@ -406,6 +421,9 @@ test_that("cohort preparation passes expected schemas and cohort ids to OHDSI he
   )
 
   expect_equal(length(generated), 2L)
+  expect_equal(length(fetched), 1L)
+  expect_equal(fetched[[1]]$cohortIds, c(10L, 20L))
+  expect_equal(fetched[[1]]$cohortRole, "target/outcome")
   expect_equal(generated[[1]]$cohortIds, c(10L, 20L))
   expect_equal(generated[[1]]$cohortDatabaseSchema, "scratch")
   expect_equal(generated[[1]]$cohortTable, "cohort")
@@ -434,7 +452,7 @@ test_that("fetch rows preserve PLP database and population settings", {
     covariateProfiles = list(ageSexPhenotypes = list(
       demographicsAge = TRUE,
       demographicsGender = TRUE,
-      cohortCovariates = list(analysisId = 49L, atlasIds = c(30L, 31L))
+      cohortCovariates = list(analysisId = 49L, phenotypeLibraryIds = c(30L, 31L))
     ))
   )
   dataSources <- list(dataSources = list(siteA = list(

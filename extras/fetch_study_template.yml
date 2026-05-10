@@ -29,9 +29,9 @@ covariateProfiles:
     demographicsGender: true
     cohortCovariates:
       analysisId: 49
-      atlasIds:
-        - 300001
-        - 300002
+      phenotypeLibraryIds:
+        - 1152
+        - 1153
   demographicsAndConditions:
     demographicsAge: true
     demographicsGender: true
