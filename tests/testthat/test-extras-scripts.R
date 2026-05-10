@@ -101,7 +101,9 @@ test_that("connection profiles support env vars and connection string templates"
   Sys.setenv(
     FL_TEST_USER = "user_a",
     FL_TEST_PASSWORD = "secret",
-    FL_TEST_DRIVER = tempdir()
+    FL_TEST_DRIVER = tempdir(),
+    FL_TEST_SERVER = "server.example.org",
+    FL_TEST_HTTP_PATH = "/sql/1.0/warehouses/abc"
   )
 
   details <- fetchEnv$makeConnectionDetails(
@@ -116,7 +118,9 @@ test_that("connection profiles support env vars and connection string templates"
         userEnv = "FL_TEST_USER",
         passwordEnv = "FL_TEST_PASSWORD",
         pathToDriverEnv = "FL_TEST_DRIVER",
-        connectionStringTemplate = "jdbc:spark://{databaseHost}/{database};ssl=1"
+        serverEnv = "FL_TEST_SERVER",
+        httpPathEnv = "FL_TEST_HTTP_PATH",
+        connectionStringTemplate = "jdbc:databricks://{server};httpPath={httpPath};database={database};ssl=1"
       )
     )
   )
@@ -125,7 +129,7 @@ test_that("connection profiles support env vars and connection string templates"
   expect_equal(details$user(), "user_a")
   expect_equal(details$password(), "secret")
   expect_equal(details$pathToDriver, tempdir())
-  expect_equal(details$connectionString(), "jdbc:spark://host_a/db_a;ssl=1")
+  expect_equal(details$connectionString(), "jdbc:databricks://server.example.org;httpPath=/sql/1.0/warehouses/abc;database=db_a;ssl=1")
 })
 
 test_that("connection fields support compact keyring resolvers", {

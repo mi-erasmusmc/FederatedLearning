@@ -125,6 +125,21 @@ renderTemplate <- function(template, values) {
   out
 }
 
+templateValues <- function(values) {
+  namesToResolve <- unique(c(
+    names(values)[!endsWith(names(values), "Env")],
+    sub("Env$", "", names(values)[endsWith(names(values), "Env")])
+  ))
+  out <- values
+  for (nm in namesToResolve) {
+    value <- envField(values, nm)
+    if (!is.null(value)) {
+      out[[nm]] <- value
+    }
+  }
+  out
+}
+
 scalarOrNull <- function(x) {
   if (is.null(x) || length(x) == 0L || is.na(x[[1]])) {
     return(NULL)
@@ -159,7 +174,7 @@ makeConnectionDetails <- function(dataSource, connectionProfiles = list()) {
   connectionString <- envField(connection, "connectionString")
   template <- firstNonEmpty(connection$connectionStringTemplate)
   if (is.null(connectionString) && !is.null(template)) {
-    connectionString <- renderTemplate(template, values)
+    connectionString <- renderTemplate(template, templateValues(values))
   }
   args <- list(
     dbms = envField(connection, "dbms"),
