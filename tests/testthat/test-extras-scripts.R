@@ -65,6 +65,8 @@ test_that("fetch task helpers expand cohort ranges and keep one row per cohort",
   expect_match(json, '"PriorDays"\\s*:\\s*0')
   expect_match(json, '"PostDays"\\s*:\\s*0')
   expect_false(grepl('"ObservationWindow"\\s*:\\s*\\[', json))
+  expect_equal(fetchEnv$qualifiedTableName("scratch.username", "cohort"), "scratch.username.cohort")
+  expect_equal(fetchEnv$qualifiedTableName("scratch.username", "other.cohort"), "other.cohort")
 
   profiles <- list(
     a = list(dbms = "postgresql"),
@@ -86,6 +88,28 @@ test_that("fetch task helpers expand cohort ranges and keep one row per cohort",
   )
   expect_equal(nrow(cohortRow), 1L)
   expect_equal(cohortRow$sql, "select 1\nselect 2")
+})
+
+test_that("Circe cohort SQL qualifies target cohort table", {
+  skip_if_not_installed("CirceR")
+  skip_if_not_installed("CohortGenerator")
+  fetchEnv <- loadFetchEnv()
+
+  jsonPath <- system.file("testdata/id/cohorts/1.json", package = "CohortGenerator")
+  skip_if(!nzchar(jsonPath), "CohortGenerator test cohort JSON is unavailable")
+
+  sql <- fetchEnv$buildSqlFromJson(
+    json = paste(readLines(jsonPath, warn = FALSE), collapse = "\n"),
+    cohortId = 1L,
+    cdmDatabaseSchema = "cdm_schema",
+    cohortDatabaseSchema = "scratch.username",
+    cohortTable = "federated_learning",
+    generateStats = FALSE
+  )
+
+  expect_match(sql, "DELETE FROM scratch\\.username\\.federated_learning")
+  expect_match(sql, "INSERT INTO scratch\\.username\\.federated_learning")
+  expect_false(grepl("DELETE FROM federated_learning", sql, fixed = TRUE))
 })
 
 test_that("connection profiles support env vars and connection string templates", {

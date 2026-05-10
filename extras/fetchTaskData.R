@@ -251,6 +251,13 @@ cohortJson <- function(definition) {
   RJSONIO::toJSON(expr, digits = 23, pretty = TRUE)
 }
 
+qualifiedTableName <- function(schema, table) {
+  if (grepl(".", table, fixed = TRUE)) {
+    return(table)
+  }
+  paste(schema, table, sep = ".")
+}
+
 buildSqlFromJson <- function(json, cohortId, cdmDatabaseSchema, cohortDatabaseSchema,
                              cohortTable, generateStats = FALSE) {
   json <- as.character(json)
@@ -259,7 +266,7 @@ buildSqlFromJson <- function(json, cohortId, cdmDatabaseSchema, cohortDatabaseSc
     cohortIdFieldName = "cohort_definition_id",
     cohortId = as.integer(cohortId),
     cdmSchema = cdmDatabaseSchema,
-    targetTable = cohortTable,
+    targetTable = qualifiedTableName(cohortDatabaseSchema, cohortTable),
     resultSchema = cohortDatabaseSchema,
     vocabularySchema = cdmDatabaseSchema,
     generateStats = generateStats
