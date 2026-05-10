@@ -538,6 +538,7 @@ test_that("fetchOne passes expected database and population settings to PLP", {
     cdmDatabaseName = "CDM A",
     cohortDatabaseSchema = "scratch",
     cohortTable = "cohort",
+    tempEmulationSchema = "scratch_temp",
     outcomeDatabaseSchema = "outcome_scratch",
     outcomeTable = "outcome_cohort",
     riskWindowStart = 1L,
@@ -557,6 +558,7 @@ test_that("fetchOne passes expected database and population settings to PLP", {
   expect_equal(out, file.path(outputRoot, "taskA", "siteA"))
   expect_equal(captured$databaseDetails$cdmDatabaseSchema, "cdm")
   expect_equal(captured$databaseDetails$cdmDatabaseName, "CDM A")
+  expect_equal(captured$databaseDetails$tempEmulationSchema, "scratch_temp")
   expect_equal(captured$databaseDetails$cohortDatabaseSchema, "scratch")
   expect_equal(captured$databaseDetails$cohortTable, "cohort")
   expect_equal(captured$databaseDetails$outcomeDatabaseSchema, "outcome_scratch")

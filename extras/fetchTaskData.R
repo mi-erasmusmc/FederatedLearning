@@ -603,6 +603,8 @@ fetchOne <- function(row, dataSources, execution) {
     connectionDetails = connectionDetails,
     cdmDatabaseSchema = row$cdmDatabaseSchema,
     cdmDatabaseName = row$cdmDatabaseName %||% row$cdmDatabaseSchema,
+    tempEmulationSchema = row$tempEmulationSchema %||% execution$tempEmulationSchema %||%
+      row$cohortDatabaseSchema,
     cohortDatabaseSchema = row$cohortDatabaseSchema,
     cohortTable = row$cohortTable,
     outcomeDatabaseSchema = row$outcomeDatabaseSchema,
