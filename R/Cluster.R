@@ -230,6 +230,14 @@ clusterPredict <- function(cl, w) {
         "clientData",
         action = "Run fitFederated() or clusterCreateMatrices() before prediction."
       )
+      if (ncol(clientData$xMatrix) != length(w)) {
+        stop(
+          "clusterPredict dimension mismatch: xMatrix has ",
+          ncol(clientData$xMatrix), " columns but weights has length ",
+          length(w),
+          call. = FALSE
+        )
+      }
       preds <- stats::plogis(as.numeric(clientData$xMatrix %*% w))
       .evaluateBinaryMetrics(clientData$yLabels, preds, w)$auc
     },
@@ -304,6 +312,14 @@ clusterEvaluateModel <- function(cl, w, threshold = 1e-4) {
         "clientData",
         action = "Run fitFederated() or clusterCreateMatrices() before evaluation."
       )
+      if (ncol(clientData$xMatrix) != length(w)) {
+        stop(
+          "clusterEvaluateModel dimension mismatch: xMatrix has ",
+          ncol(clientData$xMatrix), " columns but weights has length ",
+          length(w),
+          call. = FALSE
+        )
+      }
       lin <- as.numeric(clientData$xMatrix %*% w)
       preds <- stats::plogis(lin)
       y <- clientData$yLabels

@@ -43,9 +43,23 @@ proxL1Ridge <- function(z, A, mu, gamma, lambda, intercept = FALSE) {
 #' @return numeric vector (length p)
 #' @export
 gradLogistic <- function(weights, xMatrix, yLabels) {
+  assertConformableWeights(weights, xMatrix, context = "gradLogistic")
   eta <- stats::plogis(as.vector(xMatrix %*% weights))
   res <- eta - yLabels
   as.numeric(crossprod(xMatrix, res)) / length(yLabels)
+}
+
+assertConformableWeights <- function(weights, xMatrix, context = "model") {
+  p <- ncol(xMatrix)
+  wLen <- length(weights)
+  if (!identical(as.integer(p), as.integer(wLen))) {
+    stop(
+      context, " dimension mismatch: xMatrix has ", p,
+      " columns but weights has length ", wLen,
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
 }
 
 binaryLogLoss <- function(eta, yLabels, meanLoss = TRUE) {
@@ -59,6 +73,7 @@ binaryLogLoss <- function(eta, yLabels, meanLoss = TRUE) {
 }
 
 logisticNegLogLik <- function(weights, xMatrix, yLabels, meanLoss = FALSE) {
+  assertConformableWeights(weights, xMatrix, context = "logisticNegLogLik")
   linearPred <- as.numeric(xMatrix %*% weights)
   binaryLogLoss(linearPred, yLabels, meanLoss = meanLoss)
 }
