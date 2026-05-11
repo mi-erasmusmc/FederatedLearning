@@ -32,6 +32,34 @@ test_that("logistic objective names have explicit sign conventions", {
   )
 })
 
+test_that("Cyclops gradient convergence objective matches sparse linear predictor event sum", {
+  xDense <- cbind(
+    1,
+    c(-2, -1, 0, 1, 2),
+    c(0, 1, 0, 1, 1)
+  )
+  xSparse <- Matrix::Matrix(xDense, sparse = TRUE)
+  y <- c(0, 1, 0, 1, 1)
+  beta <- c(-0.2, 0.4, 0.7)
+  expected <- sum(as.numeric(xDense %*% beta) * y)
+
+  expect_equal(
+    FederatedLearning:::cyclopsGradientObjective(beta, xSparse, y),
+    expected,
+    tolerance = 1e-12
+  )
+  expect_equal(
+    FederatedLearning:::cyclopsGradientObjectiveCpp(methods::as(xSparse, "dgCMatrix"), beta, y),
+    expected,
+    tolerance = 1e-12
+  )
+  expect_equal(
+    FederatedLearning:::cyclopsGradientObjective(beta, xDense, y),
+    expected,
+    tolerance = 1e-12
+  )
+})
+
 test_that("logistic gradient matches finite differences of stable mean objective", {
   set.seed(501)
   x <- Matrix::Matrix(cbind(1, matrix(rnorm(40), nrow = 10)), sparse = TRUE)

@@ -34,6 +34,22 @@ static Eigen::ArrayXd clipped_probabilities(const Eigen::VectorXd& eta,
 }
 
 // [[Rcpp::export]]
+double cyclopsGradientObjectiveCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
+                                   const Eigen::VectorXd& beta,
+                                   const Eigen::VectorXd& y) {
+  if (x.cols() != beta.size()) {
+    stop("cyclopsGradientObjectiveCpp dimension mismatch: xMatrix has %d columns but weights has length %d",
+         static_cast<int>(x.cols()), static_cast<int>(beta.size()));
+  }
+  if (x.rows() != y.size()) {
+    stop("cyclopsGradientObjectiveCpp dimension mismatch: xMatrix has %d rows but y has length %d",
+         static_cast<int>(x.rows()), static_cast<int>(y.size()));
+  }
+  const Eigen::VectorXd eta = x * beta;
+  return eta.dot(y);
+}
+
+// [[Rcpp::export]]
 Eigen::VectorXd logisticGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                                     const Eigen::VectorXd& beta,
                                     const Eigen::VectorXd& y,

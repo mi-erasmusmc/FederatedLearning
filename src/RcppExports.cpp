@@ -48,6 +48,19 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// cyclopsGradientObjectiveCpp
+double cyclopsGradientObjectiveCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, const Eigen::VectorXd& y);
+RcppExport SEXP _FederatedLearning_cyclopsGradientObjectiveCpp(SEXP xSEXP, SEXP betaSEXP, SEXP ySEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::SparseMatrix<double> >& >::type x(xSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type y(ySEXP);
+    rcpp_result_gen = Rcpp::wrap(cyclopsGradientObjectiveCpp(x, beta, y));
+    return rcpp_result_gen;
+END_RCPP
+}
 // logisticGradientCpp
 Eigen::VectorXd logisticGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, const Eigen::VectorXd& y, double eps);
 RcppExport SEXP _FederatedLearning_logisticGradientCpp(SEXP xSEXP, SEXP betaSEXP, SEXP ySEXP, SEXP epsSEXP) {
@@ -121,6 +134,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_FederatedLearning_serverInitDualAveragingCpp", (DL_FUNC) &_FederatedLearning_serverInitDualAveragingCpp, 1},
     {"_FederatedLearning_clientUpdateDualAveragingCpp", (DL_FUNC) &_FederatedLearning_clientUpdateDualAveragingCpp, 3},
     {"_FederatedLearning_serverRoundDualAveragingCpp", (DL_FUNC) &_FederatedLearning_serverRoundDualAveragingCpp, 3},
+    {"_FederatedLearning_cyclopsGradientObjectiveCpp", (DL_FUNC) &_FederatedLearning_cyclopsGradientObjectiveCpp, 3},
     {"_FederatedLearning_logisticGradientCpp", (DL_FUNC) &_FederatedLearning_logisticGradientCpp, 4},
     {"_FederatedLearning_logisticGradientHessianDiagCpp", (DL_FUNC) &_FederatedLearning_logisticGradientHessianDiagCpp, 4},
     {"_FederatedLearning_logisticHessianDiagCpp", (DL_FUNC) &_FederatedLearning_logisticHessianDiagCpp, 3},

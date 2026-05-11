@@ -216,6 +216,75 @@ test_that("fitFederated sends client updates only to selected active workers", {
   expect_equal(length(fit$ids), 2L)
 })
 
+test_that("fitFederated can monitor Cyclops-style gradient objective", {
+  skip_on_cran()
+  testthat::local_mocked_bindings(
+    clusterCreateMatrices = function(cl, config) NULL,
+    .package = "FederatedLearning"
+  )
+
+  ns <- asNamespace("FederatedLearning")
+  registryLocked <- bindingIsLocked(".algRegistry", ns)
+  if (registryLocked) {
+    unlockBinding(".algRegistry", ns)
+  }
+  oldRegistry <- get(".algRegistry", envir = ns)
+  on.exit({
+    if (bindingIsLocked(".algRegistry", ns)) {
+      unlockBinding(".algRegistry", ns)
+    }
+    assign(".algRegistry", oldRegistry, envir = ns)
+    if (registryLocked) {
+      lockBinding(".algRegistry", ns)
+    }
+  }, add = TRUE)
+  FederatedLearning:::.registerAlgorithm(
+    "CyclopsConvergenceObjectiveTest",
+    serverInit = function(config) list(),
+    clientInit = NULL,
+    clientUpdate = function(clientData, serverBroadcast, config) list(n = clientData$n),
+    serverRound = function(serverState, clientReports, config) {
+      list(state = serverState, report = list(w = c(0.5, 1.0)))
+    },
+    supportsClientSampling = TRUE
+  )
+
+  cl <- parallel::makeCluster(1)
+  on.exit(parallel::stopCluster(cl), add = TRUE)
+  parallel::clusterEvalQ(cl, {
+    library(FederatedLearning)
+    clientData <- list(
+      xMatrix = matrix(
+        c(
+          1, -1,
+          1, 0,
+          1, 2
+        ),
+        ncol = 2,
+        byrow = TRUE
+      ),
+      yLabels = c(0, 1, 1),
+      n = 3
+    )
+    assign("clientData", clientData, envir = .GlobalEnv)
+    NULL
+  })
+
+  fit <- fitFederated(
+    cl = cl,
+    algorithm = "CyclopsConvergenceObjectiveTest",
+    config = list(
+      mapping = data.frame(covariateId = 1:2, columnId = 1:2),
+      rounds = 1L,
+      clientFrac = 1,
+      convergenceObjective = "cyclopsGradient"
+    ),
+    verbose = FALSE
+  )
+
+  expect_equal(fit$globalObjective, 3.0, tolerance = 1e-12)
+})
+
 test_that("phase-based algorithms reject partial client participation", {
   expect_error(
     fitFederated(

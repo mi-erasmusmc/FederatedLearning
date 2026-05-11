@@ -19,6 +19,7 @@ test_that("clusterClearState removes package worker globals", {
     logLoss <- "logLoss"
     clientUpdate <- "clientUpdate"
     getLocalObjective <- "objective"
+    getLocalConvergenceObjective <- "convergenceObjective"
     assign("plpData", plpData, envir = .GlobalEnv)
     assign("clientData", clientData, envir = .GlobalEnv)
     assign("clientState", clientState, envir = .GlobalEnv)
@@ -33,6 +34,7 @@ test_that("clusterClearState removes package worker globals", {
     assign("logLoss", logLoss, envir = .GlobalEnv)
     assign("clientUpdate", clientUpdate, envir = .GlobalEnv)
     assign("getLocalObjective", getLocalObjective, envir = .GlobalEnv)
+    assign("getLocalConvergenceObjective", getLocalConvergenceObjective, envir = .GlobalEnv)
     options(FederatedLearning.localId = 1L)
     NULL
   })
@@ -68,7 +70,8 @@ test_that("clusterClearState removes package worker globals", {
         ".evaluateBinaryMetrics",
         "logLoss",
         "clientUpdate",
-        "getLocalObjective"
+        "getLocalObjective",
+        "getLocalConvergenceObjective"
       ),
       exists,
       logical(1),

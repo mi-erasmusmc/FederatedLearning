@@ -70,6 +70,17 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     }
   }
 
+  convergenceObjective <- config$convergenceObjective %||% "negLogLikelihood"
+  validConvergenceObjectives <- c("negLogLikelihood", "cyclopsGradient", "none")
+  if (!is.character(convergenceObjective) || length(convergenceObjective) != 1L ||
+      !(convergenceObjective %in% validConvergenceObjectives)) {
+    stop(
+      "config$convergenceObjective must be one of: ",
+      paste(validConvergenceObjectives, collapse = ", ")
+    )
+  }
+  config$convergenceObjective <- convergenceObjective
+
   clientUpdate <- function(serverBroadcast) {
     .assertWorkerState(
       "clientData",
@@ -82,19 +93,28 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     )
   }
 
-  getLocalObjective <- function(w) {
+  getLocalConvergenceObjective <- function(w) {
     .assertWorkerState(
       "clientData",
       action = "Run clusterCreateMatrices() before objective evaluation."
     )
     n <- nrow(clientData$xMatrix)
-    list(
-      objective = logisticNegLogLik(
+    objective <- switch(config$convergenceObjective,
+      negLogLikelihood = logisticNegLogLik(
         weights = w,
         xMatrix = clientData$xMatrix,
         yLabels = clientData$yLabels,
         meanLoss = FALSE
       ),
+      cyclopsGradient = cyclopsGradientObjective(
+        weights = w,
+        xMatrix = clientData$xMatrix,
+        yLabels = clientData$yLabels
+      ),
+      none = NA_real_
+    )
+    list(
+      objective = objective,
       n = n
     )
   }
@@ -105,13 +125,25 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
       "config",
       ".assertWorkerState",
       "clientUpdate",
-      "getLocalObjective"
+      "getLocalConvergenceObjective"
     ),
     envir = environment()
   )
+  objectiveHelperNames <- c(
+    "assertConformableWeights",
+    "binaryLogLoss",
+    "logisticNegLogLik",
+    "cyclopsGradientObjective",
+    "cyclopsGradientObjectiveCpp",
+    ".asDgCMatrix"
+  )
+  ns <- getNamespace("FederatedLearning")
+  objectiveHelpers <- objectiveHelperNames[objectiveHelperNames %in% ls(envir = ns, all.names = TRUE)]
+  if (length(objectiveHelpers) > 0) {
+    parallel::clusterExport(cl, objectiveHelpers, envir = ns)
+  }
   if (identical(algorithm, "ADAP2")) {
     helperNames <- c(".leadOptimizeSurrogate", ".leadSurrogateCV", ".leadLambdaRange")
-    ns <- getNamespace("FederatedLearning")
     available <- helperNames[helperNames %in% ls(envir = ns, all.names = TRUE)]
     if (length(available) > 0) {
       parallel::clusterExport(cl, available, envir = ns)
@@ -180,12 +212,14 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     serverReport <- srv$report
     serverReport$activeClients <- activeClients
     parallel::clusterExport(cl, c("serverReport"), envir = environment())
-    hasWeights <- !is.null(serverReport$w) && !isTRUE(serverReport$skipConvergence)
+    hasWeights <- !is.null(serverReport$w) &&
+      !isTRUE(serverReport$skipConvergence) &&
+      !identical(config$convergenceObjective, "none")
     criteria <- NA_real_
     if (hasWeights) {
       localObjectives <- parallel::clusterEvalQ(
         cl,
-        getLocalObjective(serverReport$w)
+        getLocalConvergenceObjective(serverReport$w)
       )
       lossVec <- vapply(localObjectives, `[[`, numeric(1), "objective")
       globalObjective <- sum(lossVec)

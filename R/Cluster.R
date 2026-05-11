@@ -32,7 +32,8 @@ clusterInit <- function(clientHosts, clientPaths, mirai = TRUE) {
   ".evaluateBinaryMetrics",
   "logLoss",
   "clientUpdate",
-  "getLocalObjective"
+  "getLocalObjective",
+  "getLocalConvergenceObjective"
 )
 
 .assertWorkerState <- function(..., action = NULL) {

@@ -90,6 +90,14 @@ logisticNegLogLik <- function(weights, xMatrix, yLabels, meanLoss = FALSE) {
   binaryLogLoss(linearPred, yLabels, meanLoss = meanLoss)
 }
 
+cyclopsGradientObjective <- function(weights, xMatrix, yLabels) {
+  assertConformableWeights(weights, xMatrix, context = "cyclopsGradientObjective")
+  if (inherits(xMatrix, "sparseMatrix")) {
+    return(cyclopsGradientObjectiveCpp(.asDgCMatrix(xMatrix), weights, yLabels))
+  }
+  sum(as.numeric(xMatrix %*% weights) * yLabels)
+}
+
 logisticLoss <- function(weights, xMatrix, yLabels) {
   -logisticNegLogLik(weights, xMatrix, yLabels, meanLoss = FALSE)
 }
