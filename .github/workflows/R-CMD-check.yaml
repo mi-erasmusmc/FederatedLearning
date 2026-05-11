@@ -54,7 +54,7 @@ jobs:
           cache: always
           extra-packages: |
             any::rcmdcheck
-            github::Penncil/pda
+            any::pda
           needs: check
 
       - uses: r-lib/actions/check-r-package@v2
