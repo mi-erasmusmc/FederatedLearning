@@ -1,5 +1,5 @@
 serverInitProxNewton <- function(config) {
-  p <- config$p + as.integer(config$intercept)
+  p <- config[["p"]] + as.integer(config$intercept)
   w0 <- numeric(p)
   list(w = w0)
 }

@@ -1,7 +1,7 @@
 .adap2CacheEnv <- new.env(parent = emptyenv())
 
 .serverInitADAP2 <- function(config) {
-  p <- config$p + as.integer(isTRUE(config$intercept))
+  p <- config[["p"]] + as.integer(isTRUE(config$intercept))
   hessian <- config$hessian %||% "full"
   maxFullHessianP <- config$maxFullHessianP %||% 250L
   if (identical(hessian, "full") && p > maxFullHessianP) {

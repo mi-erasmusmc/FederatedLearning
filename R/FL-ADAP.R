@@ -8,7 +8,7 @@
 #   - Clients compute grad_i(bbar) and diag(H)_i(bbar), averaged per-sample
 #   - Server aggregates G, Hdiag and solves a diagonal-penalized quadratic.
 .serverInitADAP <- function(config) {
-  p <- config$p + as.integer(isTRUE(config$intercept))
+  p <- config[["p"]] + as.integer(isTRUE(config$intercept))
   list(
     phase = 0L,
     bbar  = rep(0, p),
@@ -853,7 +853,7 @@
 }
 
 .serverInitPdaAdap <- function(config) {
-  p <- config$p + 1L
+  p <- config[["p"]] + 1L
   list(
     phase = 0L,
     p = p,
@@ -1109,7 +1109,7 @@
 
 .serverInitPdaAdapReduced <- function(config, mode = c("first", "diag")) {
   mode <- match.arg(mode)
-  p <- config$p + 1L
+  p <- config[["p"]] + 1L
   list(
     phase = 0L,
     p = p,

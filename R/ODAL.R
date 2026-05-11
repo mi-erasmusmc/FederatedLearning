@@ -1,5 +1,5 @@
 .serverInitODAL <- function(config) {
-  p <- config$p + 1L
+  p <- config[["p"]] + 1L
   list(
     phase = 0L,
     p = p,

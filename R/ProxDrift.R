@@ -1,5 +1,5 @@
 serverInitProxDrift <- function(config) {
-  p <- config$p + as.integer(config$intercept)
+  p <- config[["p"]] + as.integer(config$intercept)
   x0 <- rep(0, p) # global model
   # compute the proximal drift point once
   pX0 <- proxL1(x0,

@@ -4,7 +4,7 @@ serverInitFastDA <- function(config) {
   } else {
     intercept <- 0
   }
-  p <- config$p + intercept
+  p <- config[["p"]] + intercept
   wtilde <- numeric(p)
   g <- numeric(p)
   w <- numeric(p)

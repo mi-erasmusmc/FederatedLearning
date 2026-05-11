@@ -37,8 +37,8 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   if (is.null(globalMap) || nrow(globalMap) == 0) {
     stop("Global feature map is empty for the requested feature set")
   }
-  if (is.null(config$p)) {
-    config$p <- nrow(globalMap)
+  if (is.null(config[["p"]])) {
+    config[["p"]] <- nrow(globalMap)
   }
   clusterCreateMatrices(cl, config)
   parallel::clusterApply(

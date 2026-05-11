@@ -4,7 +4,7 @@ serverInitDA <- function(config) {
   } else {
     intercept <- 0
   }
-  z <- rep(0, config$p + intercept)
+  z <- rep(0, config[["p"]] + intercept)
   list(z = z)
 }
 
