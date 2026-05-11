@@ -5,7 +5,7 @@
 #   --data-root=data \
 #   --tasks=taskA,taskB \
 #   --feature-sets=ageSex,ageSexPhenotypes \
-#   --methods=DualAvg,ODAL,ADAP,ADAP_PDA,ADAP1,ADAPDiag,PooledCyclops \
+#   --methods=DualAvg,ODAL,ADAP,ADAP_PDA,ADAP1,ADAPDiag,PooledLasso \
 #   --result-directory=results/comparisonMatrix \
 #   --clients=5 \
 #   --client-ids=databaseA,databaseB,databaseC,databaseD,databaseE \
@@ -97,14 +97,7 @@ methodRounds <- function(method, args) {
   )
 }
 
-baselineMethods <- c(
-  "PooledCyclops",
-  "LocalAvgCyclops",
-  "BiggestSiteCyclops",
-  "PooledLasso",
-  "LocalAvgLasso",
-  "BiggestSiteLasso"
-)
+baselineMethods <- c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")
 
 methodConfig <- function(method, featureSet, args) {
   cfg <- list(
@@ -248,25 +241,6 @@ fitBaselineWeights <- function(clientDataList, args, seed) {
   )
 }
 
-canonicalBaselineMethod <- function(method) {
-  switch(method,
-    PooledLasso = "PooledCyclops",
-    LocalAvgLasso = "LocalAvgCyclops",
-    BiggestSiteLasso = "BiggestSiteCyclops",
-    method
-  )
-}
-
-baselineDisplayMethod <- function(method) {
-  if (method %in% c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")) {
-    warning(sprintf(
-      "Method '%s' is deprecated; use the Cyclops method name instead.",
-      method
-    ))
-  }
-  canonicalBaselineMethod(method)
-}
-
 assertCyclopsMethod <- function(method) {
   if (!method %in% baselineMethods) {
     return(invisible(NULL))
@@ -284,7 +258,6 @@ assertCyclopsMethod <- function(method) {
 fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
                             args, task, featureSet, fold, trainClientIds,
                             testClientIds, testClientIndexes) {
-  method <- baselineDisplayMethod(method)
   assertCyclopsMethod(method)
 
   trainPlp <- lapply(trainPaths, FederatedLearning::loadClientData, popSettings = popSettings)
@@ -303,7 +276,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   matrixConfig$p <- nrow(trainMap)
   trainData <- lapply(trainPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
 
-  if (identical(method, "PooledCyclops")) {
+  if (identical(method, "PooledLasso")) {
     fit <- fitBaselineWeights(
       trainData,
       args = args,
@@ -323,7 +296,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       )
     })
     trainN <- vapply(trainData[localIndexes], `[[`, numeric(1), "n")
-    if (identical(method, "BiggestSiteCyclops")) {
+    if (identical(method, "BiggestSiteLasso")) {
       fit <- localFits[[which.max(trainN)]]
       fit$leadIndex <- localIndexes[[which.max(trainN)]]
     } else {
