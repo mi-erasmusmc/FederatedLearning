@@ -97,6 +97,8 @@ methodRounds <- function(method, args) {
   )
 }
 
+baselineMethods <- c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")
+
 methodConfig <- function(method, featureSet, args) {
   cfg <- list(
     mapType = args[["map-type"]] %||% "intersection",
@@ -132,6 +134,185 @@ methodConfig <- function(method, featureSet, args) {
     cfg$maxFullHessianP <- intArg(args[["max-full-hessian-p"]], 2000L)
   }
   cfg
+}
+
+evaluateWeights <- function(clientData, w, clientId, clientIndex) {
+  FederatedLearning:::assertConformableWeights(
+    w,
+    clientData$xMatrix,
+    context = "baseline evaluation"
+  )
+  preds <- stats::plogis(as.numeric(clientData$xMatrix %*% w))
+  y <- clientData$yLabels
+  auc <- if (length(unique(y)) == 2) {
+    as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
+  } else {
+    NA_real_
+  }
+  eps <- 1e-15
+  pClip <- pmin(pmax(preds, eps), 1 - eps)
+  calFit <- if (length(unique(y)) == 2) {
+    suppressWarnings(tryCatch(
+      stats::glm(y ~ stats::qlogis(pClip), family = stats::binomial()),
+      error = function(e) NULL
+    ))
+  } else {
+    NULL
+  }
+  data.frame(
+    client = clientIndex,
+    auc = auc,
+    logLoss = FederatedLearning:::logLoss(y, preds),
+    calibrationIntercept = if (!is.null(calFit)) unname(stats::coef(calFit)[[1]]) else NA_real_,
+    calibrationSlope = if (!is.null(calFit)) unname(stats::coef(calFit)[[2]]) else NA_real_,
+    density = mean(abs(w) > 1e-4),
+    n = length(y),
+    outcomes = sum(y),
+    clientId = clientId,
+    stringsAsFactors = FALSE
+  )
+}
+
+fitGlmnetWeights <- function(clientDataList, args, seed) {
+  if (!requireNamespace("glmnet", quietly = TRUE)) {
+    stop("glmnet is required for pooled/local lasso baselines")
+  }
+  x <- do.call(rbind, lapply(clientDataList, `[[`, "xMatrix"))
+  y <- unlist(lapply(clientDataList, `[[`, "yLabels"), use.names = FALSE)
+  if (length(unique(y)) < 2) {
+    stop("Cannot fit logistic lasso: training data has only one outcome class")
+  }
+  lambda <- if (!is.null(args[["baseline-lambda"]])) {
+    numArg(args[["baseline-lambda"]], NA_real_)
+  } else {
+    NA_real_
+  }
+  start <- Sys.time()
+  if (is.finite(lambda)) {
+    fit <- glmnet::glmnet(
+      x = x,
+      y = y,
+      family = "binomial",
+      alpha = 1,
+      lambda = lambda,
+      intercept = FALSE,
+      standardize = FALSE,
+      maxit = intArg(args[["baseline-maxit"]], 100000L)
+    )
+    w <- as.numeric(stats::coef(fit, s = lambda))[-1]
+    selectedLambda <- lambda
+  } else {
+    set.seed(seed)
+    fit <- glmnet::cv.glmnet(
+      x = x,
+      y = y,
+      family = "binomial",
+      alpha = 1,
+      nfolds = intArg(args[["baseline-folds"]], 5L),
+      intercept = FALSE,
+      standardize = FALSE,
+      type.measure = args[["baseline-measure"]] %||% "deviance",
+      maxit = intArg(args[["baseline-maxit"]], 100000L)
+    )
+    selectedLambda <- fit$lambda.min
+    w <- as.numeric(stats::coef(fit, s = "lambda.min"))[-1]
+  }
+  list(
+    w = w,
+    selectedLambda = selectedLambda,
+    elapsedSeconds = as.numeric(difftime(Sys.time(), start, units = "secs"))
+  )
+}
+
+fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
+                            args, task, featureSet, fold, trainClientIds,
+                            testClientIds, testClientIndexes) {
+  trainPlp <- lapply(trainPaths, FederatedLearning::loadClientData, popSettings = popSettings)
+  trainMap <- FederatedLearning::createGlobalMap(
+    lapply(trainPlp, FederatedLearning::getClientFeatures),
+    type = config$mapType,
+    featureSet = featureSet,
+    covariateIds = config$covariateIds,
+    analysisIds = config$analysisIds
+  )
+  if (nrow(trainMap) == 0L) {
+    stop("Global feature map is empty for the requested feature set")
+  }
+  matrixConfig <- config
+  matrixConfig$mapping <- trainMap
+  matrixConfig$p <- nrow(trainMap)
+  trainData <- lapply(trainPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
+
+  if (identical(method, "PooledLasso")) {
+    fit <- fitGlmnetWeights(
+      trainData,
+      args = args,
+      seed = intArg(args[["baseline-seed"]], 42L) + fold
+    )
+  } else {
+    eligible <- vapply(trainData, function(x) length(unique(x$yLabels)) == 2, logical(1))
+    if (!any(eligible)) {
+      stop("Cannot fit local lasso baseline: no training client has both outcome classes")
+    }
+    localIndexes <- which(eligible)
+    localFits <- lapply(localIndexes, function(i) {
+      fitGlmnetWeights(
+        list(trainData[[i]]),
+        args = args,
+        seed = intArg(args[["baseline-seed"]], 42L) + fold + i
+      )
+    })
+    trainN <- vapply(trainData[localIndexes], `[[`, numeric(1), "n")
+    if (identical(method, "BiggestSiteLasso")) {
+      fit <- localFits[[which.max(trainN)]]
+      fit$leadIndex <- localIndexes[[which.max(trainN)]]
+    } else {
+      weights <- trainN / sum(trainN)
+      fit <- list(
+        w = Reduce("+", Map(function(localFit, wi) localFit$w * wi, localFits, weights)),
+        selectedLambda = NA_real_,
+        elapsedSeconds = sum(vapply(localFits, `[[`, numeric(1), "elapsedSeconds")),
+        leadIndex = NA_integer_
+      )
+    }
+  }
+
+  testPlp <- lapply(testPaths, FederatedLearning::loadClientData, popSettings = popSettings)
+  testData <- lapply(testPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
+  evalRows <- do.call(rbind, Map(
+    evaluateWeights,
+    clientData = testData,
+    clientId = testClientIds,
+    clientIndex = testClientIndexes,
+    MoreArgs = list(w = fit$w)
+  ))
+
+  cbind(
+    data.frame(
+      method = method,
+      featureSet = featureSet,
+      fold = fold,
+      p = length(fit$w),
+      selectedLambda = fit$selectedLambda %||% NA_real_,
+      lambdaPathFile = NA_character_,
+      leadIndex = fit$leadIndex %||% NA_integer_,
+      trainObjective = NA_real_,
+      hessianDim = NA_character_,
+      hessianDiagMin = NA_real_,
+      hessianDiagMax = NA_real_,
+      hessianCondition = NA_real_,
+      elapsedSeconds = fit$elapsedSeconds,
+      stringsAsFactors = FALSE
+    ),
+    evalRows,
+    data.frame(
+      messages = 0,
+      numbers = 0,
+      task = task,
+      error = NA_character_,
+      stringsAsFactors = FALSE
+    )
+  )
 }
 
 summarizeResults <- function(rows) {
@@ -305,18 +486,35 @@ runComparison <- function(args) {
               config <- methodConfig(method, featureSet, args)
               config$trainClientPaths <- trainPaths
               res <- tryCatch(
-                fitFederatedFold(
-                  method = method,
-                  clTrain = clTrain,
-                  clTest = clTest,
-                  config = config,
-                  resultDirectory = resultDirectory,
-                  task = task,
-                  featureSet = featureSet,
-                  fold = fold,
-                  testClientIds = clientIds[testIds],
-                  verbose = verbose
-                ),
+                if (method %in% baselineMethods) {
+                  fitBaselineFold(
+                    method = method,
+                    trainPaths = trainPaths,
+                    testPaths = testPaths,
+                    popSettings = popSettings,
+                    config = config,
+                    args = args,
+                    task = task,
+                    featureSet = featureSet,
+                    fold = fold,
+                    trainClientIds = clientIds[trainIds],
+                    testClientIds = clientIds[testIds],
+                    testClientIndexes = testIds
+                  )
+                } else {
+                  fitFederatedFold(
+                    method = method,
+                    clTrain = clTrain,
+                    clTest = clTest,
+                    config = config,
+                    resultDirectory = resultDirectory,
+                    task = task,
+                    featureSet = featureSet,
+                    fold = fold,
+                    testClientIds = clientIds[testIds],
+                    verbose = verbose
+                  )
+                },
                 error = function(e) {
                   message(sprintf(
                     "[%s] ERROR task=%s fold=%s featureSet=%s method=%s: %s",
