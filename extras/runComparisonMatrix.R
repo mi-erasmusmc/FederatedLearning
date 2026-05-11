@@ -86,6 +86,8 @@ taskRiskWindow <- function(task) {
 methodRounds <- function(method, args) {
   switch(method,
     DualAvg = intArg(args[["dualavg-rounds"]], 10000L),
+    DualAvgCpp = intArg(args[["dualavg-rounds"]], 10000L),
+    DualAvgR = intArg(args[["dualavg-rounds"]], 10000L),
     FastDualAvg = intArg(args[["dualavg-rounds"]], 10000L),
     ADAP2 = intArg(args[["pda-rounds"]], 3L),
     ODAL = intArg(args[["pda-rounds"]], 3L),
@@ -104,7 +106,7 @@ methodConfig <- function(method, featureSet, args) {
     mapType = args[["map-type"]] %||% "intersection",
     featureSet = featureSet,
     intercept = logicalArg(args[["intercept"]], TRUE),
-    profile = FALSE,
+    profile = logicalArg(args[["profile"]], FALSE),
     epsilon = numArg(args[["epsilon"]], 1e-6),
     clientFrac = 1,
     rounds = methodRounds(method, args),
@@ -116,7 +118,7 @@ methodConfig <- function(method, featureSet, args) {
     lambdaGridLen = intArg(args[["lambda-grid-len"]], 100L)
   )
 
-  if (method %in% c("DualAvg", "FastDualAvg")) {
+  if (method %in% c("DualAvg", "DualAvgCpp", "DualAvgR", "FastDualAvg")) {
     cfg$etaClient <- numArg(args[["eta-client"]], 1)
     cfg$etaServer <- numArg(args[["eta-server"]], 1)
     cfg$k <- intArg(args[["k"]], 10L)
