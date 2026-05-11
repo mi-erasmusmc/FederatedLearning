@@ -1,5 +1,25 @@
-test_that("pda ADAP primitives match local logistic derivatives", {
+skip_if_no_pda_reference <- function() {
   skip_if_not(requireNamespace("pda", quietly = TRUE), "pda is not installed")
+  pdaNs <- asNamespace("pda")
+  required <- c(
+    "grad_nll",
+    "hess_full_nll",
+    "hess_diag_nll",
+    "nll",
+    "ADAP.initialize",
+    "ADAP.derive",
+    "ADAP.estimate",
+    "ODAL.derive"
+  )
+  missing <- required[!vapply(required, exists, logical(1), envir = pdaNs, inherits = FALSE)]
+  skip_if(
+    length(missing) > 0L,
+    paste("installed pda does not expose reference ADAP helpers:", paste(missing, collapse = ", "))
+  )
+}
+
+test_that("pda ADAP primitives match local logistic derivatives", {
+  skip_if_no_pda_reference()
 
   set.seed(101)
   xRaw <- matrix(rnorm(36), nrow = 12)
@@ -31,7 +51,7 @@ test_that("pda ADAP primitives match local logistic derivatives", {
 })
 
 test_that("pda ADAP derive matches local phase-one summaries", {
-  skip_if_not(requireNamespace("pda", quietly = TRUE), "pda is not installed")
+  skip_if_no_pda_reference()
 
   set.seed(102)
   xRaw <- matrix(rnorm(45), nrow = 15)
@@ -74,7 +94,7 @@ test_that("pda ADAP derive matches local phase-one summaries", {
 })
 
 test_that("pda ADAP initialize matches local glmnet initialization when settings match", {
-  skip_if_not(requireNamespace("pda", quietly = TRUE), "pda is not installed")
+  skip_if_no_pda_reference()
 
   set.seed(103)
   xRaw <- matrix(rnorm(120), nrow = 40)
@@ -105,7 +125,7 @@ test_that("pda ADAP initialize matches local glmnet initialization when settings
 })
 
 test_that("pda ODAL derivatives match local negative-log-likelihood sign convention", {
-  skip_if_not(requireNamespace("pda", quietly = TRUE), "pda is not installed")
+  skip_if_no_pda_reference()
 
   set.seed(105)
   xDesign <- cbind(1, matrix(rnorm(40), nrow = 10))
@@ -134,7 +154,7 @@ test_that("pda ODAL derivatives match local negative-log-likelihood sign convent
 })
 
 test_that("ADAP_PDA final lead-site estimate matches pda ADAP.estimate", {
-  skip_if_not(requireNamespace("pda", quietly = TRUE), "pda is not installed")
+  skip_if_no_pda_reference()
 
   set.seed(106)
   n1 <- 24
@@ -208,7 +228,7 @@ test_that("ADAP_PDA final lead-site estimate matches pda ADAP.estimate", {
 })
 
 test_that("ADAPDiag pda style matches pda ADAP.estimate with diagonal Hessian", {
-  skip_if_not(requireNamespace("pda", quietly = TRUE), "pda is not installed")
+  skip_if_no_pda_reference()
 
   set.seed(108)
   n1 <- 25
