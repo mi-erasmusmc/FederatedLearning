@@ -5,3 +5,14 @@
 ^src/.*\.o$
 ^src/.*\.so$
 ^src/symbols\.rds$
+^data$
+^data/
+^results$
+^results/
+^private$
+^private/
+^extras/atlas_json$
+^extras/atlas_json/
+^extras/fetch_study\.yml$
+^extras/fetch_execution\.yml$
+^extras/fetch_data_sources\.yml$
