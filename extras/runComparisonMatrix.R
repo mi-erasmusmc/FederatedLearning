@@ -5,7 +5,7 @@
 #   --data-root=data \
 #   --tasks=taskA,taskB \
 #   --feature-sets=ageSex,ageSexPhenotypes \
-#   --methods=DualAvg,ODAL,ADAP,ADAP_PDA,ADAP1,ADAPDiag \
+#   --methods=DualAvg,ODAL,ADAP,ADAP_PDA,ADAP1,ADAPDiag,PooledCyclops \
 #   --result-directory=results/comparisonMatrix \
 #   --clients=5 \
 #   --client-ids=databaseA,databaseB,databaseC,databaseD,databaseE \
@@ -97,7 +97,14 @@ methodRounds <- function(method, args) {
   )
 }
 
-baselineMethods <- c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")
+baselineMethods <- c(
+  "PooledCyclops",
+  "LocalAvgCyclops",
+  "BiggestSiteCyclops",
+  "PooledLasso",
+  "LocalAvgLasso",
+  "BiggestSiteLasso"
+)
 
 methodConfig <- function(method, featureSet, args) {
   cfg <- list(
@@ -173,60 +180,113 @@ evaluateWeights <- function(clientData, w, clientId, clientIndex) {
   )
 }
 
-fitGlmnetWeights <- function(clientDataList, args, seed) {
-  if (!requireNamespace("glmnet", quietly = TRUE)) {
-    stop("glmnet is required for pooled/local lasso baselines")
+fitCyclopsWeights <- function(clientDataList, args, seed) {
+  if (!requireNamespace("Cyclops", quietly = TRUE)) {
+    stop("Cyclops is required for pooled/local baseline models")
   }
   x <- do.call(rbind, lapply(clientDataList, `[[`, "xMatrix"))
   y <- unlist(lapply(clientDataList, `[[`, "yLabels"), use.names = FALSE)
   if (length(unique(y)) < 2) {
-    stop("Cannot fit logistic lasso: training data has only one outcome class")
+    stop("Cannot fit Cyclops logistic model: training data has only one outcome class")
   }
-  lambda <- if (!is.null(args[["baseline-lambda"]])) {
-    numArg(args[["baseline-lambda"]], NA_real_)
-  } else {
-    NA_real_
-  }
+
   start <- Sys.time()
-  if (is.finite(lambda)) {
-    fit <- glmnet::glmnet(
-      x = x,
-      y = y,
-      family = "binomial",
-      alpha = 1,
-      lambda = lambda,
-      intercept = FALSE,
-      standardize = FALSE,
-      maxit = intArg(args[["baseline-maxit"]], 100000L)
-    )
-    w <- as.numeric(stats::coef(fit, s = lambda))[-1]
-    selectedLambda <- lambda
+
+  cyclopsData <- Cyclops::createCyclopsData(y = y, sx = x, modelType = "lr")
+  useCv <- logicalArg(args[["cyclops-cv"]], FALSE)
+  variance <- numArg(args[["cyclops-variance"]], numArg(args[["baseline-variance"]], 1))
+  prior <- Cyclops::createPrior(
+    "laplace",
+    variance = variance,
+    useCrossValidation = useCv
+  )
+  control <- Cyclops::createControl(
+    maxIterations = intArg(args[["cyclops-max-iterations"]], intArg(args[["baseline-maxit"]], 3000L)),
+    tolerance = numArg(args[["cyclops-tolerance"]], 2e-6),
+    cvType = args[["cyclops-cv-type"]] %||% "auto",
+    fold = intArg(args[["cyclops-folds"]], intArg(args[["baseline-folds"]], 10L)),
+    lowerLimit = numArg(args[["cyclops-lower-limit"]], 0.01),
+    upperLimit = numArg(args[["cyclops-upper-limit"]], 20),
+    noiseLevel = args[["cyclops-noise-level"]] %||% "silent",
+    threads = intArg(args[["cyclops-threads"]], 1L),
+    seed = seed,
+    selectorType = args[["cyclops-selector-type"]] %||% "auto"
+  )
+
+  fit <- Cyclops::fitCyclopsModel(
+    cyclopsData,
+    prior = prior,
+    control = control,
+    warnings = logicalArg(args[["cyclops-warnings"]], TRUE)
+  )
+  w <- as.numeric(stats::coef(fit))
+  if (length(w) != ncol(x)) {
+    stop(sprintf(
+      "Cyclops coefficient dimension mismatch: expected %s coefficients but got %s",
+      ncol(x),
+      length(w)
+    ))
+  }
+
+  selectedVariance <- if (!is.null(fit$variance)) {
+    as.numeric(fit$variance)[[1]]
   } else {
-    set.seed(seed)
-    fit <- glmnet::cv.glmnet(
-      x = x,
-      y = y,
-      family = "binomial",
-      alpha = 1,
-      nfolds = intArg(args[["baseline-folds"]], 5L),
-      intercept = FALSE,
-      standardize = FALSE,
-      type.measure = args[["baseline-measure"]] %||% "deviance",
-      maxit = intArg(args[["baseline-maxit"]], 100000L)
-    )
-    selectedLambda <- fit$lambda.min
-    w <- as.numeric(stats::coef(fit, s = "lambda.min"))[-1]
+    variance
   }
   list(
     w = w,
-    selectedLambda = selectedLambda,
+    selectedLambda = selectedVariance,
     elapsedSeconds = as.numeric(difftime(Sys.time(), start, units = "secs"))
   )
+}
+
+fitBaselineWeights <- function(clientDataList, args, seed) {
+  fitCyclopsWeights(
+    clientDataList = clientDataList,
+    args = args,
+    seed = seed
+  )
+}
+
+canonicalBaselineMethod <- function(method) {
+  switch(method,
+    PooledLasso = "PooledCyclops",
+    LocalAvgLasso = "LocalAvgCyclops",
+    BiggestSiteLasso = "BiggestSiteCyclops",
+    method
+  )
+}
+
+baselineDisplayMethod <- function(method) {
+  if (method %in% c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")) {
+    warning(sprintf(
+      "Method '%s' is deprecated; use the Cyclops method name instead.",
+      method
+    ))
+  }
+  canonicalBaselineMethod(method)
+}
+
+assertCyclopsMethod <- function(method) {
+  if (!method %in% baselineMethods) {
+    return(invisible(NULL))
+  }
+  if (!requireNamespace("Cyclops", quietly = TRUE)) {
+    stop(
+      "Cyclops is required for baseline method '",
+      method,
+      "'. Install Cyclops or remove the baseline from --methods."
+    )
+  }
+  invisible(NULL)
 }
 
 fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
                             args, task, featureSet, fold, trainClientIds,
                             testClientIds, testClientIndexes) {
+  method <- baselineDisplayMethod(method)
+  assertCyclopsMethod(method)
+
   trainPlp <- lapply(trainPaths, FederatedLearning::loadClientData, popSettings = popSettings)
   trainMap <- FederatedLearning::createGlobalMap(
     lapply(trainPlp, FederatedLearning::getClientFeatures),
@@ -243,8 +303,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   matrixConfig$p <- nrow(trainMap)
   trainData <- lapply(trainPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
 
-  if (identical(method, "PooledLasso")) {
-    fit <- fitGlmnetWeights(
+  if (identical(method, "PooledCyclops")) {
+    fit <- fitBaselineWeights(
       trainData,
       args = args,
       seed = intArg(args[["baseline-seed"]], 42L) + fold
@@ -252,18 +312,18 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   } else {
     eligible <- vapply(trainData, function(x) length(unique(x$yLabels)) == 2, logical(1))
     if (!any(eligible)) {
-      stop("Cannot fit local lasso baseline: no training client has both outcome classes")
+      stop("Cannot fit local Cyclops baseline: no training client has both outcome classes")
     }
     localIndexes <- which(eligible)
     localFits <- lapply(localIndexes, function(i) {
-      fitGlmnetWeights(
+      fitBaselineWeights(
         list(trainData[[i]]),
         args = args,
         seed = intArg(args[["baseline-seed"]], 42L) + fold + i
       )
     })
     trainN <- vapply(trainData[localIndexes], `[[`, numeric(1), "n")
-    if (identical(method, "BiggestSiteLasso")) {
+    if (identical(method, "BiggestSiteCyclops")) {
       fit <- localFits[[which.max(trainN)]]
       fit$leadIndex <- localIndexes[[which.max(trainN)]]
     } else {

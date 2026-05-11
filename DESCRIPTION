@@ -20,7 +20,7 @@ Imports:
     ParallelLogger,
     parallelly,
     mirai,
-    glmnet,
+    Cyclops,
     digest,
     Rcpp,
     RcppEigen,
