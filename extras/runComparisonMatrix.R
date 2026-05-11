@@ -55,6 +55,13 @@ logicalArg <- function(x, default = FALSE) {
   tolower(x) %in% c("true", "t", "1", "yes", "y")
 }
 
+maxOrNa <- function(x) {
+  if (all(is.na(x))) {
+    return(NA_real_)
+  }
+  max(x, na.rm = TRUE)
+}
+
 foldArg <- function(x, nClients) {
   if (is.null(x) || !nzchar(x)) {
     return(seq_len(nClients))
@@ -145,8 +152,8 @@ summarizeResults <- function(rows) {
       meanCalIntercept = mean(x$calibrationIntercept, na.rm = TRUE),
       meanCalSlope = mean(x$calibrationSlope, na.rm = TRUE),
       meanElapsed = mean(x$elapsedSeconds, na.rm = TRUE),
-      messages = max(x$messages, na.rm = TRUE),
-      numbers = max(x$numbers, na.rm = TRUE),
+      messages = maxOrNa(x$messages),
+      numbers = maxOrNa(x$numbers),
       stringsAsFactors = FALSE
     )
   })
@@ -311,6 +318,11 @@ runComparison <- function(args) {
                   verbose = verbose
                 ),
                 error = function(e) {
+                  message(sprintf(
+                    "[%s] ERROR task=%s fold=%s featureSet=%s method=%s: %s",
+                    format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method,
+                    conditionMessage(e)
+                  ))
                   data.frame(
                     method = method,
                     featureSet = featureSet,
