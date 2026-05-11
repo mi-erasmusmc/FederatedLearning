@@ -119,6 +119,19 @@ test_that("DualAvgCpp supports partial client participation", {
   expect_true(FederatedLearning:::.getAlgorithm("DualAvgCpp")$supportsClientSampling)
 })
 
+test_that("DualAvg defaults to C++ implementation and keeps R reference available", {
+  dualAvg <- FederatedLearning:::.getAlgorithm("DualAvg")
+  dualAvgCpp <- FederatedLearning:::.getAlgorithm("DualAvgCpp")
+  dualAvgR <- FederatedLearning:::.getAlgorithm("DualAvgR")
+
+  expect_identical(dualAvg$serverInit, dualAvgCpp$serverInit)
+  expect_identical(dualAvg$clientUpdate, dualAvgCpp$clientUpdate)
+  expect_identical(dualAvg$serverRound, dualAvgCpp$serverRound)
+  expect_true(dualAvg$supportsClientSampling)
+  expect_false(is.null(dualAvgR))
+  expect_identical(dualAvgR$serverRound, serverRoundDA)
+})
+
 test_that("fitFederated rejects unknown algorithms clearly", {
   expect_error(
     fitFederated(

@@ -8,6 +8,48 @@ test_that("ADAP reduced variants are registered", {
   expect_type(FederatedLearning:::.getAlgorithm("ADAPDiagClosedForm"), "list")
 })
 
+expect_lasso_kkt <- function(beta, grad, lambda, penalize = NULL, tol = 1e-4) {
+  if (is.null(penalize)) {
+    penalize <- rep(TRUE, length(beta))
+    penalize[1] <- FALSE
+  }
+  expect_true(all(is.finite(beta)))
+  expect_true(all(is.finite(grad)))
+  for (j in seq_along(beta)) {
+    if (!isTRUE(penalize[j])) {
+      expect_lte(abs(grad[j]), tol)
+    } else if (abs(beta[j]) > sqrt(tol)) {
+      expect_lte(abs(grad[j] + lambda * sign(beta[j])), tol)
+    } else {
+      expect_lte(abs(grad[j]), lambda + tol)
+    }
+  }
+}
+
+make_adap_phase2_fixture <- function(n = 30L, p = 4L, seed = 100L) {
+  set.seed(seed)
+  x <- matrix(stats::rnorm(n * p), nrow = n)
+  eta <- -0.2 + 0.5 * x[, 1] - 0.25 * x[, 2]
+  y <- stats::rbinom(n, 1, stats::plogis(eta))
+  xSparse <- Matrix::Matrix(x, sparse = TRUE)
+  xDesign <- cbind(Matrix::Matrix(1, n, 1, sparse = TRUE), xSparse)
+  betaBar <- rep(0, p + 1L)
+  betaLead <- rep(0.05, p + 1L)
+  globalGrad <- FederatedLearning:::.logisticNegGradient(betaBar, xDesign, y)
+  globalHess <- FederatedLearning:::.logisticNegHessian(betaBar, xDesign)
+  list(
+    clientData = list(xMatrix = xSparse, yLabels = y, n = n),
+    xDesign = xDesign,
+    y = y,
+    betaBar = betaBar,
+    betaLead = betaLead,
+    globalGrad = globalGrad,
+    globalHess = globalHess,
+    globalHessDiag = diag(globalHess),
+    totalN = n
+  )
+}
+
 test_that("logistic gradient and Hessian match finite differences", {
   set.seed(10)
   x <- Matrix::Matrix(cbind(1, matrix(rnorm(48), nrow = 12)), sparse = TRUE)
@@ -344,7 +386,320 @@ test_that("ADAPDiag can switch from local-full diagonal correction to pda diagon
   expect_length(pdaDiag$w, length(betaBar))
   expect_true(all(is.finite(localFull$w)))
   expect_true(all(is.finite(pdaDiag$w)))
+  expect_equal(localFull$selectedLambda, 0.01)
+  expect_equal(localFull$lambdaSeq, 0.01)
+  expect_true(is.na(localFull$cvScores))
+  expect_equal(pdaDiag$selectedLambda, 0.01)
+  expect_equal(pdaDiag$lambdaSeq, 0.01)
+  expect_true(is.na(pdaDiag$cvScores))
   expect_false(isTRUE(all.equal(localFull$w, pdaDiag$w, tolerance = 1e-10)))
+})
+
+test_that("fixed ADAP lambda bypasses lead-site cross-validation in all ADAP styles", {
+  fixture <- make_adap_phase2_fixture(seed = 15L)
+  fixedLambda <- 0.03
+  baseBroadcast <- list(
+    phase = 2L,
+    leadIndex = 1L,
+    betaBar = fixture$betaBar,
+    betaLead = fixture$betaLead,
+    globalGrad = fixture$globalGrad,
+    globalHess = fixture$globalHess,
+    globalHessDiag = fixture$globalHessDiag,
+    totalN = fixture$totalN,
+    lambdaSeq = c(0.2, 0.1, 0.05)
+  )
+  config <- list(
+    intercept = FALSE,
+    lambda = fixedLambda,
+    foldsK = 3L,
+    maxIter = 25L,
+    maxOuter = 3L,
+    maxInner = 25L,
+    tol = 1e-6
+  )
+  old <- getOption("FederatedLearning.localId")
+  on.exit(options(FederatedLearning.localId = old), add = TRUE)
+  options(FederatedLearning.localId = 1L)
+
+  updates <- list(
+    full = FederatedLearning:::.clientUpdatePdaAdap(fixture$clientData, baseBroadcast, config),
+    pda = FederatedLearning:::.clientUpdatePdaAdap(
+      fixture$clientData,
+      modifyList(baseBroadcast, list(adapSolveStyle = "pda")),
+      config
+    ),
+    first = FederatedLearning:::.clientUpdatePdaAdapReduced(
+      fixture$clientData,
+      modifyList(baseBroadcast, list(adapReducedMode = "first")),
+      config
+    ),
+    diag = FederatedLearning:::.clientUpdatePdaAdapReduced(
+      fixture$clientData,
+      modifyList(baseBroadcast, list(adapReducedMode = "diag")),
+      config
+    ),
+    diagPda = FederatedLearning:::.clientUpdatePdaAdapReduced(
+      fixture$clientData,
+      modifyList(baseBroadcast, list(adapReducedMode = "diag", adapDiagStyle = "pda")),
+      config
+    )
+  )
+
+  for (update in updates) {
+    expect_equal(update$selectedLambda, fixedLambda)
+    expect_equal(update$lambdaSeq, fixedLambda)
+    expect_true(is.na(update$cvScores))
+    expect_length(update$w, length(fixture$betaBar))
+    expect_true(all(is.finite(update$w)))
+  }
+})
+
+test_that("lead-site ADAP variants select lambdas from configured CV path", {
+  fixture <- make_adap_phase2_fixture(seed = 16L)
+  lambdaSeq <- c(0.12, 0.04)
+  baseBroadcast <- list(
+    phase = 2L,
+    leadIndex = 1L,
+    betaBar = fixture$betaBar,
+    betaLead = fixture$betaLead,
+    globalGrad = fixture$globalGrad,
+    globalHess = fixture$globalHess,
+    globalHessDiag = fixture$globalHessDiag,
+    totalN = fixture$totalN,
+    lambdaSeq = lambdaSeq
+  )
+  config <- list(
+    intercept = FALSE,
+    foldsK = 3L,
+    cvSeed = 44L,
+    maxIter = 30L,
+    maxOuter = 4L,
+    maxInner = 30L,
+    tol = 1e-6
+  )
+  old <- getOption("FederatedLearning.localId")
+  on.exit(options(FederatedLearning.localId = old), add = TRUE)
+  options(FederatedLearning.localId = 1L)
+
+  updates <- list(
+    full = FederatedLearning:::.clientUpdatePdaAdap(fixture$clientData, baseBroadcast, config),
+    first = FederatedLearning:::.clientUpdatePdaAdapReduced(
+      fixture$clientData,
+      modifyList(baseBroadcast, list(adapReducedMode = "first")),
+      config
+    ),
+    diag = FederatedLearning:::.clientUpdatePdaAdapReduced(
+      fixture$clientData,
+      modifyList(baseBroadcast, list(adapReducedMode = "diag")),
+      config
+    )
+  )
+
+  for (update in updates) {
+    expect_true(update$selectedLambda %in% lambdaSeq)
+    expect_equal(update$lambdaSeq, lambdaSeq)
+    expect_length(update$cvScores, length(lambdaSeq))
+    expect_true(all(is.finite(update$cvScores)))
+    expect_length(update$w, length(fixture$betaBar))
+    expect_true(all(is.finite(update$w)))
+  }
+})
+
+test_that("cached ADAP surrogate terms match uncached calculations", {
+  fixture <- make_adap_phase2_fixture(seed = 17L)
+  betaEval <- fixture$betaLead
+  betaBar <- fixture$betaBar
+  gradBar <- FederatedLearning:::.logisticNegGradient(betaBar, fixture$xDesign, fixture$y)
+  hBar <- FederatedLearning:::.logisticNegHessian(betaBar, fixture$xDesign)
+  hBarDiag <- diag(hBar)
+
+  fullUncached <- FederatedLearning:::.adapSurrogateComponents(
+    betaEval, betaBar, fixture$xDesign, fixture$y, fixture$globalGrad, fixture$globalHess
+  )
+  fullCached <- FederatedLearning:::.adapSurrogateComponents(
+    betaEval, betaBar, fixture$xDesign, fixture$y, fixture$globalGrad, fixture$globalHess,
+    gradBar = gradBar,
+    hBar = hBar
+  )
+  firstUncached <- FederatedLearning:::.adapFirstOrderSurrogateComponents(
+    betaEval, betaBar, fixture$xDesign, fixture$y, fixture$globalGrad
+  )
+  firstCached <- FederatedLearning:::.adapFirstOrderSurrogateComponents(
+    betaEval, betaBar, fixture$xDesign, fixture$y, fixture$globalGrad,
+    gradBar = gradBar
+  )
+  diagUncached <- FederatedLearning:::.adapDiagSurrogateComponents(
+    betaEval, betaBar, fixture$xDesign, fixture$y, fixture$globalGrad, fixture$globalHessDiag
+  )
+  diagCached <- FederatedLearning:::.adapDiagSurrogateComponents(
+    betaEval, betaBar, fixture$xDesign, fixture$y, fixture$globalGrad, fixture$globalHessDiag,
+    gradBar = gradBar,
+    hBarDiag = hBarDiag
+  )
+  localFullUncached <- FederatedLearning:::.adapLocalFullRemoteDiagSurrogateComponents(
+    betaEval, betaBar, fixture$xDesign, fixture$y, fixture$globalGrad, fixture$globalHessDiag
+  )
+  localFullCached <- FederatedLearning:::.adapLocalFullRemoteDiagSurrogateComponents(
+    betaEval, betaBar, fixture$xDesign, fixture$y, fixture$globalGrad, fixture$globalHessDiag,
+    gradBar = gradBar,
+    hBarDiag = hBarDiag
+  )
+
+  expect_equal(fullCached, fullUncached, tolerance = 1e-12)
+  expect_equal(firstCached, firstUncached, tolerance = 1e-12)
+  expect_equal(diagCached, diagUncached, tolerance = 1e-12)
+  expect_equal(localFullCached, localFullUncached, tolerance = 1e-12)
+})
+
+test_that("ADAP warm starts do not change CV scores after convergence", {
+  fixture <- make_adap_phase2_fixture(n = 24L, p = 3L, seed = 18L)
+  lambdaSeq <- c(0.08, 0.03)
+  foldsK <- 3L
+  seed <- 19L
+  maxOuter <- 30L
+  maxInner <- 80L
+  tol <- 1e-8
+
+  set.seed(seed)
+  folds <- sample(rep_len(seq_len(foldsK), length(fixture$y)))
+  manualScores <- vapply(lambdaSeq, function(lambda) {
+    foldLoss <- vapply(seq_len(foldsK), function(fold) {
+      idxVal <- which(folds == fold)
+      nVal <- length(idxVal)
+      idxTr <- which(folds != fold)
+      gradVal <- FederatedLearning:::.logisticNegGradient(
+        fixture$betaBar,
+        fixture$xDesign[idxVal, , drop = FALSE],
+        fixture$y[idxVal]
+      )
+      hessVal <- FederatedLearning:::.logisticNegHessian(
+        fixture$betaBar,
+        fixture$xDesign[idxVal, , drop = FALSE]
+      )
+      denom <- max(fixture$totalN - nVal, 1L)
+      fit <- FederatedLearning:::.fitPdaAdapSurrogate(
+        xDesign = fixture$xDesign[idxTr, , drop = FALSE],
+        y = fixture$y[idxTr],
+        betaLead = fixture$betaLead,
+        betaBar = fixture$betaBar,
+        globalGrad = (fixture$globalGrad * fixture$totalN - gradVal * nVal) / denom,
+        globalHess = (fixture$globalHess * fixture$totalN - hessVal * nVal) / denom,
+        lambda = lambda,
+        maxOuter = maxOuter,
+        maxInner = maxInner,
+        tol = tol,
+        betaInit = fixture$betaLead
+      )
+      FederatedLearning:::.negLogLikMean(fit, fixture$xDesign[idxVal, , drop = FALSE], fixture$y[idxVal])
+    }, numeric(1))
+    mean(foldLoss)
+  }, numeric(1))
+  warm <- FederatedLearning:::.pdaAdapLeadCv(
+    xDesign = fixture$xDesign,
+    y = fixture$y,
+    betaLead = fixture$betaLead,
+    betaBar = fixture$betaBar,
+    globalGrad = fixture$globalGrad,
+    globalHess = fixture$globalHess,
+    lambdaSeq = lambdaSeq,
+    totalN = fixture$totalN,
+    foldsK = foldsK,
+    seed = seed,
+    maxOuter = maxOuter,
+    maxInner = maxInner,
+    tol = tol
+  )
+
+  expect_equal(warm$scores, manualScores, tolerance = 1e-6)
+  expect_equal(warm$lambda, lambdaSeq[which.min(manualScores)])
+})
+
+test_that("ADAP optimizers satisfy quadratic KKT checks on well-conditioned data", {
+  fixture <- make_adap_phase2_fixture(n = 34L, p = 4L, seed = 20L)
+  lambda <- 0.04
+  penalize <- rep(TRUE, length(fixture$betaBar))
+  penalize[1] <- FALSE
+
+  fits <- list(
+    full = FederatedLearning:::.fitPdaAdapSurrogate(
+      fixture$xDesign, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, fixture$globalHess, lambda,
+      maxOuter = 60L, maxInner = 120L, tol = 1e-9
+    ),
+    first = FederatedLearning:::.fitPdaAdapFirstOrderSurrogate(
+      fixture$xDesign, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, lambda,
+      maxOuter = 60L, maxInner = 120L, tol = 1e-9
+    ),
+    diag = FederatedLearning:::.fitPdaAdapRemoteDiagSurrogate(
+      fixture$xDesign, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, fixture$globalHessDiag, lambda,
+      maxOuter = 60L, maxInner = 120L, tol = 1e-9
+    )
+  )
+
+  fullComp <- FederatedLearning:::.adapSurrogateComponents(
+    fits$full, fixture$betaBar, fixture$xDesign, fixture$y, fixture$globalGrad, fixture$globalHess
+  )
+  firstComp <- FederatedLearning:::.adapFirstOrderSurrogateComponents(
+    fits$first, fixture$betaBar, fixture$xDesign, fixture$y, fixture$globalGrad
+  )
+  diagComp <- FederatedLearning:::.adapLocalFullRemoteDiagSurrogateComponents(
+    fits$diag, fixture$betaBar, fixture$xDesign, fixture$y, fixture$globalGrad, fixture$globalHessDiag
+  )
+
+  expect_lasso_kkt(fits$full, as.numeric(fullComp$aTilde + fullComp$B %*% fits$full), lambda, penalize, tol = 5e-4)
+  expect_lasso_kkt(fits$first, as.numeric(firstComp$aTilde + firstComp$B %*% fits$first), lambda, penalize, tol = 5e-4)
+  expect_lasso_kkt(fits$diag, as.numeric(diagComp$aTilde + diagComp$B %*% fits$diag), lambda, penalize, tol = 5e-4)
+})
+
+test_that("ADAP optimizers stay finite on rare and near-separated data", {
+  set.seed(20)
+  n1 <- 25L
+  n2 <- 7L
+  y1 <- c(rep(0L, n1 - 1L), 1L)
+  y2 <- c(rep(0L, n2 - 2L), 1L, 1L)
+  make_x <- function(y) {
+    cbind(
+      sep = ifelse(y == 1L, 8, -8) + stats::rnorm(length(y), sd = 0.05),
+      zeros = 0,
+      ones = 1,
+      large = stats::rnorm(length(y), sd = 50),
+      noise = stats::rnorm(length(y))
+    )
+  }
+  x1 <- Matrix::Matrix(cbind(1, make_x(y1)), sparse = TRUE)
+  x2 <- Matrix::Matrix(cbind(1, make_x(y2)), sparse = TRUE)
+  betaBar <- rep(0, ncol(x1))
+  betaLead <- rep(0.01, ncol(x1))
+  terms1 <- FederatedLearning:::.logisticNegGradientHessian(betaBar, x1, y1)
+  terms2 <- FederatedLearning:::.logisticNegGradientHessian(betaBar, x2, y2)
+  weights <- c(n1, n2) / (n1 + n2)
+  globalGrad <- terms1$gradient * weights[1] + terms2$gradient * weights[2]
+  globalHess <- terms1$hessian * weights[1] + terms2$hessian * weights[2]
+  globalHessDiag <- diag(globalHess)
+  lambda <- 0.05
+
+  fits <- list(
+    full = FederatedLearning:::.fitPdaAdapSurrogate(
+      x1, y1, betaLead, betaBar, globalGrad, globalHess, lambda,
+      maxOuter = 40L, maxInner = 100L, tol = 1e-8
+    ),
+    first = FederatedLearning:::.fitPdaAdapFirstOrderSurrogate(
+      x1, y1, betaLead, betaBar, globalGrad, lambda,
+      maxOuter = 40L, maxInner = 100L, tol = 1e-8
+    ),
+    diag = FederatedLearning:::.fitPdaAdapRemoteDiagSurrogate(
+      x1, y1, betaLead, betaBar, globalGrad, globalHessDiag, lambda,
+      maxOuter = 40L, maxInner = 100L, tol = 1e-8
+    ),
+    pda = FederatedLearning:::.fitPdaAdapPdaProx(
+      x1, y1, betaBar, globalGrad, globalHess, lambda,
+      useFull = TRUE, maxIter = 100L, tol = 1e-8
+    )
+  )
+  expect_true(all(vapply(fits, function(beta) all(is.finite(beta)), logical(1))))
 })
 
 test_that("PDA-style ADAP methods complete simulated multi-site workflows", {

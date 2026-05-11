@@ -61,9 +61,39 @@ test_that("gradient remains finite and bounded under extreme logits", {
   y <- c(0, 0, 1, 1, 1)
 
   grad <- FederatedLearning::gradLogistic(beta, x, y)
+  gradCpp <- FederatedLearning:::logisticGradientCpp(methods::as(x, "dgCMatrix"), beta, y)
 
   expect_true(all(is.finite(grad)))
+  expect_equal(gradCpp, grad, tolerance = 1e-12)
   expect_true(all(abs(grad) <= Matrix::colMeans(abs(x)) + 1e-12))
+})
+
+test_that("DualAvg C++ client update stays finite under extreme logits", {
+  x <- Matrix::Matrix(diag(c(1000, 100, 1, 100, 1000)), sparse = TRUE)
+  y <- c(0, 0, 1, 1, 1)
+  clientData <- list(xMatrix = methods::as(x, "dgCMatrix"), yLabels = y, n = length(y))
+  serverBroadcast <- list(z = rep(1, ncol(x)), r = 0L)
+  config <- list(
+    k = 2L,
+    etaClient = 0.1,
+    etaServer = 1,
+    lambda = 0,
+    intercept = FALSE
+  )
+
+  cppUpdate <- FederatedLearning::clientUpdateDualAveragingCpp(
+    clientData,
+    serverBroadcast,
+    config
+  )
+  rUpdate <- FederatedLearning::clientUpdateDA(
+    clientData,
+    serverBroadcast,
+    config
+  )
+
+  expect_true(all(is.finite(cppUpdate$delta)))
+  expect_equal(cppUpdate, rUpdate, tolerance = 1e-12)
 })
 
 test_that("Hessian summaries remain finite under extreme logits", {
@@ -83,9 +113,20 @@ test_that("Hessian summaries remain finite under extreme logits", {
 
   hess <- FederatedLearning:::.logisticNegHessian(beta, x)
   hessDiag <- FederatedLearning:::.logisticNegHessianDiag(beta, x)
+  xDgC <- methods::as(x, "dgCMatrix")
+  hessCpp <- FederatedLearning:::logisticHessianCpp(xDgC, beta)
+  hessDiagCpp <- FederatedLearning:::logisticHessianDiagCpp(xDgC, beta)
+  combinedFull <- FederatedLearning:::logisticGradientHessianCpp(xDgC, beta, c(0, 0, 1, 1, 1))
+  combinedDiag <- FederatedLearning:::logisticGradientHessianDiagCpp(xDgC, beta, c(0, 0, 1, 1, 1))
 
   expect_true(all(is.finite(hess)))
   expect_true(all(is.finite(hessDiag)))
+  expect_true(all(is.finite(hessCpp)))
+  expect_true(all(is.finite(hessDiagCpp)))
+  expect_equal(hessCpp, hess, tolerance = 1e-12)
+  expect_equal(hessDiagCpp, hessDiag, tolerance = 1e-12)
+  expect_equal(combinedFull$hessian, hess, tolerance = 1e-12)
+  expect_equal(combinedDiag$hessianDiag, hessDiag, tolerance = 1e-12)
   expect_equal(diag(hess), hessDiag, tolerance = 1e-12)
   expect_true(all(hessDiag >= 0))
   expect_true(all(diag(hess)[[1]] <= 0.25 + 1e-12))
@@ -180,6 +221,43 @@ test_that("dense and sparse logistic computations agree", {
   )
   expect_equal(
     FederatedLearning:::.logisticNegHessianDiag(beta, xSparse),
+    FederatedLearning:::.logisticNegHessianDiag(beta, xDense),
+    tolerance = 1e-12
+  )
+  expect_equal(
+    FederatedLearning:::.logisticNegHessian(beta, xSparse),
+    FederatedLearning:::.logisticNegHessian(beta, xDense),
+    tolerance = 1e-12
+  )
+  expect_equal(
+    FederatedLearning:::logisticGradientCpp(xSparse, beta, y),
+    FederatedLearning::gradLogistic(beta, xDense, y),
+    tolerance = 1e-12
+  )
+  expect_equal(
+    FederatedLearning:::logisticHessianCpp(xSparse, beta),
+    FederatedLearning:::.logisticNegHessian(beta, xDense),
+    tolerance = 1e-12
+  )
+  combinedFull <- FederatedLearning:::logisticGradientHessianCpp(xSparse, beta, y)
+  combinedDiag <- FederatedLearning:::logisticGradientHessianDiagCpp(xSparse, beta, y)
+  expect_equal(
+    combinedFull$gradient,
+    FederatedLearning::gradLogistic(beta, xDense, y),
+    tolerance = 1e-12
+  )
+  expect_equal(
+    combinedFull$hessian,
+    FederatedLearning:::.logisticNegHessian(beta, xDense),
+    tolerance = 1e-12
+  )
+  expect_equal(
+    combinedDiag$gradient,
+    FederatedLearning::gradLogistic(beta, xDense, y),
+    tolerance = 1e-12
+  )
+  expect_equal(
+    combinedDiag$hessianDiag,
     FederatedLearning:::.logisticNegHessianDiag(beta, xDense),
     tolerance = 1e-12
   )
