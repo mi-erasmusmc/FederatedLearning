@@ -596,3 +596,84 @@ test_that("comparison runner helpers parse external comparison settings", {
   expect_equal(cfg$adapDiagStyle, "pda")
   expect_equal(runnerEnv$taskRiskWindow("taskA"), 30L)
 })
+
+test_that("comparison runner resumes successful combinations and reruns errors", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+
+  rows <- data.frame(
+    task = c("taskA", "taskA", "taskA"),
+    fold = c(1L, 1L, 2L),
+    featureSet = c("ageSex", "ageSex", "ageSex"),
+    method = c("DualAvg", "ADAP", "DualAvg"),
+    auc = c(0.7, NA, 0.6),
+    error = c(NA_character_, "failed fit", ""),
+    stringsAsFactors = FALSE
+  )
+  expect_true(runnerEnv$isCompletedCombination(rows, "taskA", 1L, "ageSex", "DualAvg"))
+  expect_false(runnerEnv$isCompletedCombination(rows, "taskA", 1L, "ageSex", "ADAP"))
+  expect_true(runnerEnv$isCompletedCombination(
+    rows,
+    "taskA",
+    1L,
+    "ageSex",
+    "ADAP",
+    rerunErrors = FALSE
+  ))
+  expect_false(runnerEnv$isCompletedCombination(rows, "taskA", 1L, "ageSexPhenotypes", "DualAvg"))
+
+  replacement <- data.frame(
+    task = "taskA",
+    fold = 1L,
+    featureSet = "ageSex",
+    method = "ADAP",
+    auc = 0.65,
+    error = NA_character_,
+    stringsAsFactors = FALSE
+  )
+  combined <- runnerEnv$appendCombinationRows(rows, replacement, "taskA", 1L, "ageSex", "ADAP")
+
+  expect_equal(nrow(combined), 3L)
+  expect_true(runnerEnv$isCompletedCombination(combined, "taskA", 1L, "ageSex", "ADAP"))
+  expect_equal(
+    combined$auc[combined$task == "taskA" & combined$fold == 1L &
+      combined$featureSet == "ageSex" & combined$method == "ADAP"],
+    0.65
+  )
+  expect_false(any(combined$error == "failed fit", na.rm = TRUE))
+})
+
+test_that("comparison runner reads existing result and diagnostic files", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+
+  tmp <- tempfile("comparison-resume-")
+  dir.create(tmp)
+  resultFile <- file.path(tmp, "comparison_results.csv")
+  diagnosticFile <- file.path(tmp, "diagnostics.csv")
+  rows <- data.frame(
+    task = "taskA",
+    fold = 1L,
+    featureSet = "ageSex",
+    method = "DualAvg",
+    error = NA_character_,
+    stringsAsFactors = FALSE
+  )
+  diagnostics <- data.frame(
+    task = "taskA",
+    fold = 1L,
+    featureSet = "ageSex",
+    n = 10L,
+    stringsAsFactors = FALSE
+  )
+  utils::write.csv(rows, resultFile, row.names = FALSE)
+  utils::write.csv(diagnostics, diagnosticFile, row.names = FALSE)
+
+  expect_null(runnerEnv$readCsvIfExists(file.path(tmp, "missing.csv")))
+  loadedRows <- runnerEnv$readCsvIfExists(resultFile)
+  loadedDiagnostics <- runnerEnv$readCsvIfExists(diagnosticFile)
+
+  expect_true(runnerEnv$isCompletedCombination(loadedRows, "taskA", 1L, "ageSex", "DualAvg"))
+  expect_true(runnerEnv$isCompletedDiagnostic(loadedDiagnostics, "taskA", 1L, "ageSex"))
+  expect_false(runnerEnv$isCompletedDiagnostic(loadedDiagnostics, "taskA", 2L, "ageSex"))
+})

@@ -101,6 +101,77 @@ methodRounds <- function(method, args) {
 
 baselineMethods <- c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")
 
+readCsvIfExists <- function(path) {
+  if (!file.exists(path)) {
+    return(NULL)
+  }
+  utils::read.csv(path, stringsAsFactors = FALSE)
+}
+
+nonEmptyRows <- function(rows) {
+  !is.null(rows) && nrow(rows) > 0L
+}
+
+matchingCombination <- function(rows, task, fold, featureSet, method) {
+  if (!nonEmptyRows(rows)) {
+    return(logical())
+  }
+  required <- c("task", "fold", "featureSet", "method")
+  if (!all(required %in% names(rows))) {
+    return(rep(FALSE, nrow(rows)))
+  }
+  rows$task == task &
+    rows$fold == fold &
+    rows$featureSet == featureSet &
+    rows$method == method
+}
+
+successfulRows <- function(rows) {
+  if (!"error" %in% names(rows)) {
+    return(rep(TRUE, nrow(rows)))
+  }
+  is.na(rows$error) | !nzchar(rows$error)
+}
+
+isCompletedCombination <- function(rows, task, fold, featureSet, method,
+                                   rerunErrors = TRUE) {
+  idx <- matchingCombination(rows, task, fold, featureSet, method)
+  if (!any(idx)) {
+    return(FALSE)
+  }
+  if (isTRUE(rerunErrors)) {
+    return(any(successfulRows(rows)[idx]))
+  }
+  TRUE
+}
+
+dropCombinationRows <- function(rows, task, fold, featureSet, method) {
+  if (!nonEmptyRows(rows)) {
+    return(rows)
+  }
+  idx <- matchingCombination(rows, task, fold, featureSet, method)
+  rows[!idx, , drop = FALSE]
+}
+
+appendCombinationRows <- function(rows, newRows, task, fold, featureSet, method) {
+  rows <- dropCombinationRows(rows, task, fold, featureSet, method)
+  if (!nonEmptyRows(rows)) {
+    return(newRows)
+  }
+  dplyr::bind_rows(rows, newRows)
+}
+
+isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
+  if (!nonEmptyRows(rows)) {
+    return(FALSE)
+  }
+  required <- c("task", "fold", "featureSet")
+  if (!all(required %in% names(rows))) {
+    return(FALSE)
+  }
+  any(rows$task == task & rows$fold == fold & rows$featureSet == featureSet)
+}
+
 methodConfig <- function(method, featureSet, args) {
   cfg <- list(
     mapType = args[["map-type"]] %||% "intersection",
@@ -454,6 +525,9 @@ runComparison <- function(args) {
   dataRoot <- args[["data-root"]] %||% "data"
   resultDirectory <- args[["result-directory"]] %||% "results/comparisonMatrix"
   dir.create(resultDirectory, recursive = TRUE, showWarnings = FALSE)
+  resultFile <- file.path(resultDirectory, "comparison_results.csv")
+  summaryFile <- file.path(resultDirectory, "summary_by_method.csv")
+  diagnosticsFile <- file.path(resultDirectory, "diagnostics.csv")
 
   tasks <- csvArg(args[["tasks"]], c("dementia", "readmission", "lungCancer"))
   featureSets <- csvArg(args[["feature-sets"]], c("ageSex", "ageSexPhenotypes"))
@@ -472,11 +546,25 @@ runComparison <- function(args) {
   stopifnot(length(hosts) == nClients)
   mirai <- logicalArg(args[["mirai"]], FALSE)
   verbose <- logicalArg(args[["verbose"]], TRUE)
+  resume <- logicalArg(args[["resume"]], TRUE)
+  rerunErrors <- logicalArg(args[["rerun-errors"]], TRUE)
 
-  rows <- list()
-  diagnostics <- list()
-  rowIndex <- 1L
-  diagIndex <- 1L
+  rows <- if (isTRUE(resume)) readCsvIfExists(resultFile) else NULL
+  diagnostics <- if (isTRUE(resume)) readCsvIfExists(diagnosticsFile) else NULL
+  if (nonEmptyRows(rows)) {
+    message(sprintf(
+      "Loaded %s existing result rows from %s",
+      nrow(rows),
+      resultFile
+    ))
+  }
+  if (nonEmptyRows(diagnostics)) {
+    message(sprintf(
+      "Loaded %s existing diagnostic rows from %s",
+      nrow(diagnostics),
+      diagnosticsFile
+    ))
+  }
 
   for (task in tasks) {
     clientPaths <- file.path(dataRoot, task, clientIds)
@@ -495,6 +583,38 @@ runComparison <- function(args) {
     )
 
     for (fold in folds) {
+      pending <- expand.grid(
+        featureSet = featureSets,
+        method = methods,
+        stringsAsFactors = FALSE
+      )
+      pending$done <- mapply(
+        function(featureSet, method) {
+          isCompletedCombination(
+            rows = rows,
+            task = task,
+            fold = fold,
+            featureSet = featureSet,
+            method = method,
+            rerunErrors = rerunErrors
+          )
+        },
+        pending$featureSet,
+        pending$method
+      )
+      diagnosticsDone <- vapply(
+        featureSets,
+        function(featureSet) isCompletedDiagnostic(diagnostics, task, fold, featureSet),
+        logical(1)
+      )
+      if (all(pending$done) && all(diagnosticsDone)) {
+        message(sprintf(
+          "[%s] skip task=%s fold=%s: all requested methods and diagnostics are already complete",
+          format(Sys.time(), "%H:%M:%S"), task, fold
+        ))
+        next
+      }
+
       trainIds <- setdiff(seq_len(nClients), fold)
       testIds <- fold
       trainPaths <- clientPaths[trainIds]
@@ -514,6 +634,13 @@ runComparison <- function(args) {
 
           for (featureSet in featureSets) {
             for (method in methods) {
+              if (isCompletedCombination(rows, task, fold, featureSet, method, rerunErrors = rerunErrors)) {
+                message(sprintf(
+                  "[%s] skip task=%s fold=%s featureSet=%s method=%s: existing successful result",
+                  format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method
+                ))
+                next
+              }
               message(sprintf(
                 "[%s] task=%s fold=%s featureSet=%s method=%s",
                 format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method
@@ -587,15 +714,21 @@ runComparison <- function(args) {
                   )
                 }
               )
-              rows[[rowIndex]] <- res
-              rowIndex <- rowIndex + 1L
+              rows <- appendCombinationRows(rows, res, task, fold, featureSet, method)
               utils::write.csv(
-                do.call(rbind, rows),
-                file.path(resultDirectory, "comparison_results.csv"),
+                rows,
+                resultFile,
                 row.names = FALSE
               )
             }
 
+            if (isCompletedDiagnostic(diagnostics, task, fold, featureSet)) {
+              message(sprintf(
+                "[%s] skip diagnostics task=%s fold=%s featureSet=%s: existing diagnostics",
+                format(Sys.time(), "%H:%M:%S"), task, fold, featureSet
+              ))
+              next
+            }
             diagConfig <- methodConfig(methods[[1]], featureSet, args)
             diagConfig$mapping <- FederatedLearning::clusterCollectCovRefs(
               clTrain,
@@ -610,11 +743,10 @@ runComparison <- function(args) {
             diagRows$task <- task
             diagRows$fold <- fold
             diagRows$featureSet <- featureSet
-            diagnostics[[diagIndex]] <- diagRows
-            diagIndex <- diagIndex + 1L
+            diagnostics <- if (nonEmptyRows(diagnostics)) dplyr::bind_rows(diagnostics, diagRows) else diagRows
             utils::write.csv(
-              do.call(rbind, diagnostics),
-              file.path(resultDirectory, "diagnostics.csv"),
+              diagnostics,
+              diagnosticsFile,
               row.names = FALSE
             )
           }
@@ -627,10 +759,10 @@ runComparison <- function(args) {
     }
   }
 
-  allRows <- do.call(rbind, rows)
+  allRows <- if (nonEmptyRows(rows)) rows else data.frame()
   summaryRows <- summarizeResults(allRows)
-  utils::write.csv(allRows, file.path(resultDirectory, "comparison_results.csv"), row.names = FALSE)
-  utils::write.csv(summaryRows, file.path(resultDirectory, "summary_by_method.csv"), row.names = FALSE)
+  utils::write.csv(allRows, resultFile, row.names = FALSE)
+  utils::write.csv(summaryRows, summaryFile, row.names = FALSE)
   invisible(list(results = allRows, summary = summaryRows))
 }
 
