@@ -247,21 +247,66 @@
   }
 }
 
+.fixedAdapLambda <- function(config) {
+  lambda <- config$lambda
+  if (is.null(lambda) || length(lambda) != 1L || !is.finite(lambda) || lambda < 0) {
+    return(NULL)
+  }
+  lambda
+}
+
 .logisticNegGradient <- function(beta, xDesign, y) {
+  if (inherits(xDesign, "sparseMatrix")) {
+    return(as.numeric(logisticGradientCpp(.asDgCMatrix(xDesign), beta, y)))
+  }
   pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
   as.numeric(Matrix::crossprod(xDesign, pVec - y)) / length(y)
 }
 
 .logisticNegHessian <- function(beta, xDesign) {
+  if (inherits(xDesign, "sparseMatrix")) {
+    return(as.matrix(logisticHessianCpp(.asDgCMatrix(xDesign), beta)))
+  }
   pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
   wDiag <- pVec * (1 - pVec)
   as.matrix(Matrix::crossprod(xDesign, Matrix::Diagonal(x = wDiag) %*% xDesign)) / nrow(xDesign)
 }
 
+.logisticNegGradientHessian <- function(beta, xDesign, y) {
+  if (inherits(xDesign, "sparseMatrix")) {
+    out <- logisticGradientHessianCpp(.asDgCMatrix(xDesign), beta, y)
+    return(list(gradient = as.numeric(out$gradient), hessian = as.matrix(out$hessian)))
+  }
+  pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
+  residual <- pVec - y
+  wDiag <- pVec * (1 - pVec)
+  list(
+    gradient = as.numeric(Matrix::crossprod(xDesign, residual)) / length(y),
+    hessian = as.matrix(Matrix::crossprod(xDesign, Matrix::Diagonal(x = wDiag) %*% xDesign)) / nrow(xDesign)
+  )
+}
+
 .logisticNegHessianDiag <- function(beta, xDesign) {
+  if (inherits(xDesign, "sparseMatrix")) {
+    return(as.numeric(logisticHessianDiagCpp(.asDgCMatrix(xDesign), beta)))
+  }
   pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
   wDiag <- pVec * (1 - pVec)
   as.numeric(Matrix::colSums((xDesign^2) * wDiag)) / nrow(xDesign)
+}
+
+.logisticNegGradientHessianDiag <- function(beta, xDesign, y) {
+  if (inherits(xDesign, "sparseMatrix")) {
+    out <- logisticGradientHessianDiagCpp(.asDgCMatrix(xDesign), beta, y)
+    return(list(gradient = as.numeric(out$gradient), hessianDiag = as.numeric(out$hessianDiag)))
+  }
+  pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
+  residual <- pVec - y
+  wDiag <- pVec * (1 - pVec)
+  list(
+    gradient = as.numeric(Matrix::crossprod(xDesign, residual)) / length(y),
+    hessianDiag = as.numeric(Matrix::colSums((xDesign^2) * wDiag)) / nrow(xDesign)
+  )
 }
 
 .negLogLikMean <- function(beta, xDesign, y) {
@@ -327,6 +372,9 @@
       }
       b <- aTilde[j] + sum(B[j, ] * beta) - hjj * beta[j]
       z <- -b / hjj
+      if (!is.finite(z)) {
+        z <- beta[j]
+      }
       beta[j] <- if (penalize[j]) .softScalar(z, lambda / hjj) else z
     }
     diffObj <- as.numeric(t(aTilde) %*% (beta - betaOld) +
@@ -340,23 +388,34 @@
 }
 
 .adapSurrogateComponents <- function(betaEval, betaBar, xDesign, y,
-                                     globalGrad, globalHess) {
-  hEval <- .logisticNegHessian(betaEval, xDesign)
-  hBar <- .logisticNegHessian(betaBar, xDesign)
+                                     globalGrad, globalHess,
+                                     gradBar = NULL, hBar = NULL) {
+  evalTerms <- .logisticNegGradientHessian(betaEval, xDesign, y)
+  hEval <- evalTerms$hessian
+  if (is.null(hBar)) {
+    hBar <- .logisticNegHessian(betaBar, xDesign)
+  }
+  if (is.null(gradBar)) {
+    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  }
   B <- hEval + globalHess - hBar
-  aTilde <- .logisticNegGradient(betaEval, xDesign, y) -
+  aTilde <- evalTerms$gradient -
     as.numeric(t(betaEval) %*% hEval) +
     globalGrad -
-    .logisticNegGradient(betaBar, xDesign, y) -
+    gradBar -
     as.numeric(t(betaBar) %*% (globalHess - hBar))
   list(aTilde = as.numeric(aTilde), B = B)
 }
 
 .adapFirstOrderSurrogateComponents <- function(betaEval, betaBar, xDesign, y,
-                                               globalGrad) {
-  hEval <- .logisticNegHessian(betaEval, xDesign)
-  deltaGrad <- globalGrad - .logisticNegGradient(betaBar, xDesign, y)
-  aTilde <- .logisticNegGradient(betaEval, xDesign, y) -
+                                               globalGrad, gradBar = NULL) {
+  evalTerms <- .logisticNegGradientHessian(betaEval, xDesign, y)
+  hEval <- evalTerms$hessian
+  if (is.null(gradBar)) {
+    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  }
+  deltaGrad <- globalGrad - gradBar
+  aTilde <- evalTerms$gradient -
     as.numeric(t(betaEval) %*% hEval) +
     deltaGrad
   list(aTilde = as.numeric(aTilde), B = hEval)
@@ -364,21 +423,29 @@
 
 .adapDiagSurrogateComponents <- function(betaEval, betaBar, xDesign, y,
                                          globalGrad, globalHessDiag,
-                                         mode = c("second", "first")) {
+                                         mode = c("second", "first"),
+                                         gradBar = NULL,
+                                         hBarDiag = NULL) {
   mode <- match.arg(mode)
-  hEvalDiag <- .logisticNegHessianDiag(betaEval, xDesign)
-  gradEval <- .logisticNegGradient(betaEval, xDesign, y)
+  evalTerms <- .logisticNegGradientHessianDiag(betaEval, xDesign, y)
+  hEvalDiag <- evalTerms$hessianDiag
+  gradEval <- evalTerms$gradient
+  if (is.null(gradBar)) {
+    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  }
   if (identical(mode, "first")) {
     aTilde <- gradEval - betaEval * hEvalDiag +
       globalGrad -
-      .logisticNegGradient(betaBar, xDesign, y)
+      gradBar
     Bdiag <- hEvalDiag
   } else {
-    hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
+    if (is.null(hBarDiag)) {
+      hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
+    }
     Bdiag <- hEvalDiag + globalHessDiag - hBarDiag
     aTilde <- gradEval - betaEval * hEvalDiag +
       globalGrad -
-      .logisticNegGradient(betaBar, xDesign, y) -
+      gradBar -
       betaBar * (globalHessDiag - hBarDiag)
   }
   Bdiag[!is.finite(Bdiag) | Bdiag <= 0] <- 1e-10
@@ -387,16 +454,24 @@
 
 .adapLocalFullRemoteDiagSurrogateComponents <- function(betaEval, betaBar, xDesign, y,
                                                         globalGrad,
-                                                        globalHessDiag) {
-  hEval <- .logisticNegHessian(betaEval, xDesign)
-  hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
+                                                        globalHessDiag,
+                                                        gradBar = NULL,
+                                                        hBarDiag = NULL) {
+  evalTerms <- .logisticNegGradientHessian(betaEval, xDesign, y)
+  hEval <- evalTerms$hessian
+  if (is.null(hBarDiag)) {
+    hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
+  }
+  if (is.null(gradBar)) {
+    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  }
   p <- length(betaEval)
   correctionDiag <- globalHessDiag - hBarDiag
   B <- hEval + diag(correctionDiag, p, p)
-  aTilde <- .logisticNegGradient(betaEval, xDesign, y) -
+  aTilde <- evalTerms$gradient -
     as.numeric(t(betaEval) %*% hEval) +
     globalGrad -
-    .logisticNegGradient(betaBar, xDesign, y) -
+    gradBar -
     betaBar * correctionDiag
   list(aTilde = as.numeric(aTilde), B = B)
 }
@@ -404,10 +479,12 @@
 .fitPdaAdapSurrogate <- function(xDesign, y, betaLead, betaBar,
                                  globalGrad, globalHess, lambda,
                                  maxOuter = 100L, maxInner = 100L,
-                                 tol = 1e-5) {
-  beta <- betaLead
+                                 tol = 1e-5, betaInit = NULL) {
+  beta <- if (is.null(betaInit)) betaLead else betaInit
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
+  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  hBar <- .logisticNegHessian(betaBar, xDesign)
   for (iter in seq_len(maxOuter)) {
     old <- beta
     comp <- .adapSurrogateComponents(
@@ -416,7 +493,9 @@
       xDesign = xDesign,
       y = y,
       globalGrad = globalGrad,
-      globalHess = globalHess
+      globalHess = globalHess,
+      gradBar = gradBar,
+      hBar = hBar
     )
     beta <- .coordDescentQuadraticLasso(
       aTilde = comp$aTilde,
@@ -447,25 +526,25 @@
 .fitPdaAdapPdaProx <- function(xDesign, y, beta0, globalGrad, globalHess,
                                lambda, useFull = TRUE,
                                maxIter = 1000L, tol = 1e-6,
-                               ridge = 1e-4) {
-  beta <- beta0
+                               ridge = 1e-4, betaInit = NULL) {
+  beta <- if (is.null(betaInit)) beta0 else betaInit
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
 
-  gLead0 <- .logisticNegGradient(beta0, xDesign, y)
   if (isTRUE(useFull)) {
-    hLead0 <- .logisticNegHessian(beta0, xDesign)
-    hCorr <- globalHess - hLead0
+    leadTerms <- .logisticNegGradientHessian(beta0, xDesign, y)
+    hCorr <- globalHess - leadTerms$hessian
   } else {
-    hLead0 <- .logisticNegHessianDiag(beta0, xDesign)
-    hCorr <- as.numeric(globalHess - hLead0)
+    leadTerms <- .logisticNegGradientHessianDiag(beta0, xDesign, y)
+    hCorr <- as.numeric(globalHess - leadTerms$hessianDiag)
   }
 
-  bCorr <- globalGrad - gLead0
+  bCorr <- globalGrad - leadTerms$gradient
   for (iter in seq_len(maxIter)) {
     betaOld <- beta
-    gLocal <- .logisticNegGradient(beta, xDesign, y)
-    hLocalDiag <- .logisticNegHessianDiag(beta, xDesign)
+    localTerms <- .logisticNegGradientHessianDiag(beta, xDesign, y)
+    gLocal <- localTerms$gradient
+    hLocalDiag <- localTerms$hessianDiag
     if (isTRUE(useFull)) {
       gTilde <- gLocal + bCorr + as.numeric(hCorr %*% (beta - beta0))
       hDiag <- hLocalDiag + diag(hCorr)
@@ -473,9 +552,13 @@
       gTilde <- gLocal + bCorr + hCorr * (beta - beta0)
       hDiag <- hLocalDiag + hCorr
     }
+    hDiag[!is.finite(hDiag) | hDiag <= 0] <- ridge
     hDiag <- pmax(hDiag, ridge)
     for (j in seq_along(beta)) {
       z <- beta[j] - gTilde[j] / hDiag[j]
+      if (!is.finite(z)) {
+        z <- beta[j]
+      }
       beta[j] <- if (penalize[j]) .softScalar(z, lambda / hDiag[j]) else z
     }
     delta <- max(abs(beta - betaOld), na.rm = TRUE)
@@ -495,6 +578,7 @@
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
   scores <- rep(NA_real_, length(lambdaSeq))
+  warmStarts <- rep(list(betaBar), foldsK)
   for (li in seq_along(lambdaSeq)) {
     foldLoss <- numeric(foldsK)
     for (fold in seq_len(foldsK)) {
@@ -510,8 +594,10 @@
         useFull = useFull,
         maxIter = maxIter,
         tol = tol,
-        ridge = ridge
+        ridge = ridge,
+        betaInit = warmStarts[[fold]]
       )
+      warmStarts[[fold]] <- fit
       foldLoss[fold] <- .negLogLikMean(fit, xDesign[idxVal, , drop = FALSE], y[idxVal])
     }
     scores[li] <- mean(foldLoss, na.rm = TRUE)
@@ -524,10 +610,12 @@
                                            globalGrad, globalHessDiag,
                                            lambda,
                                            maxOuter = 100L, maxInner = 100L,
-                                           tol = 1e-5) {
-  beta <- betaLead
+                                           tol = 1e-5, betaInit = NULL) {
+  beta <- if (is.null(betaInit)) betaLead else betaInit
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
+  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
   for (iter in seq_len(maxOuter)) {
     old <- beta
     comp <- .adapLocalFullRemoteDiagSurrogateComponents(
@@ -536,7 +624,9 @@
       xDesign = xDesign,
       y = y,
       globalGrad = globalGrad,
-      globalHessDiag = globalHessDiag
+      globalHessDiag = globalHessDiag,
+      gradBar = gradBar,
+      hBarDiag = hBarDiag
     )
     beta <- .coordDescentQuadraticLasso(
       aTilde = comp$aTilde,
@@ -558,10 +648,11 @@
 .fitPdaAdapFirstOrderSurrogate <- function(xDesign, y, betaLead, betaBar,
                                            globalGrad, lambda,
                                            maxOuter = 100L, maxInner = 100L,
-                                           tol = 1e-5) {
-  beta <- betaLead
+                                           tol = 1e-5, betaInit = NULL) {
+  beta <- if (is.null(betaInit)) betaLead else betaInit
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
+  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   for (iter in seq_len(maxOuter)) {
     old <- beta
     comp <- .adapFirstOrderSurrogateComponents(
@@ -569,7 +660,8 @@
       betaBar = betaBar,
       xDesign = xDesign,
       y = y,
-      globalGrad = globalGrad
+      globalGrad = globalGrad,
+      gradBar = gradBar
     )
     beta <- .coordDescentQuadraticLasso(
       aTilde = comp$aTilde,
@@ -611,11 +703,14 @@
                                      globalGrad, globalHessDiag = NULL,
                                      lambda,
                                      mode = c("second", "first"),
-                                     maxOuter = 100L, tol = 1e-5) {
+                                     maxOuter = 100L, tol = 1e-5,
+                                     betaInit = NULL) {
   mode <- match.arg(mode)
-  beta <- betaLead
+  beta <- if (is.null(betaInit)) betaLead else betaInit
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
+  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  hBarDiag <- if (identical(mode, "second")) .logisticNegHessianDiag(betaBar, xDesign) else NULL
   for (iter in seq_len(maxOuter)) {
     old <- beta
     comp <- .adapDiagSurrogateComponents(
@@ -625,7 +720,9 @@
       y = y,
       globalGrad = globalGrad,
       globalHessDiag = globalHessDiag,
-      mode = mode
+      mode = mode,
+      gradBar = gradBar,
+      hBarDiag = hBarDiag
     )
     beta <- .fitDiagQuadraticLasso(
       aTilde = comp$aTilde,
@@ -671,31 +768,40 @@
   set.seed(seed)
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
+  foldInfo <- lapply(seq_len(foldsK), function(fold) {
+    idxVal <- which(folds == fold)
+    nVal <- length(idxVal)
+    gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
+    hessVal <- .logisticNegHessian(betaBar, xDesign[idxVal, , drop = FALSE])
+    denom <- max(totalN - nVal, 1L)
+    list(
+      idxVal = idxVal,
+      idxTr = which(folds != fold),
+      gradTrainGlobal = (globalGrad * totalN - gradVal * nVal) / denom,
+      hessTrainGlobal = (globalHess * totalN - hessVal * nVal) / denom
+    )
+  })
   scores <- rep(NA_real_, length(lambdaSeq))
+  warmStarts <- rep(list(betaLead), foldsK)
   for (li in seq_along(lambdaSeq)) {
     foldLoss <- numeric(foldsK)
     for (fold in seq_len(foldsK)) {
-      idxVal <- which(folds == fold)
-      idxTr <- which(folds != fold)
-      nVal <- length(idxVal)
-      gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
-      hessVal <- .logisticNegHessian(betaBar, xDesign[idxVal, , drop = FALSE])
-      denom <- max(totalN - nVal, 1L)
-      gradTrainGlobal <- (globalGrad * totalN - gradVal * nVal) / denom
-      hessTrainGlobal <- (globalHess * totalN - hessVal * nVal) / denom
+      info <- foldInfo[[fold]]
       fit <- .fitPdaAdapSurrogate(
-        xDesign = xDesign[idxTr, , drop = FALSE],
-        y = y[idxTr],
+        xDesign = xDesign[info$idxTr, , drop = FALSE],
+        y = y[info$idxTr],
         betaLead = betaLead,
         betaBar = betaBar,
-        globalGrad = gradTrainGlobal,
-        globalHess = hessTrainGlobal,
+        globalGrad = info$gradTrainGlobal,
+        globalHess = info$hessTrainGlobal,
         lambda = lambdaSeq[li],
         maxOuter = maxOuter,
         maxInner = maxInner,
-        tol = tol
+        tol = tol,
+        betaInit = warmStarts[[fold]]
       )
-      foldLoss[fold] <- .negLogLikMean(fit, xDesign[idxVal, , drop = FALSE], y[idxVal])
+      warmStarts[[fold]] <- fit
+      foldLoss[fold] <- .negLogLikMean(fit, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
     }
     scores[li] <- mean(foldLoss, na.rm = TRUE)
   }
@@ -730,28 +836,37 @@
   set.seed(seed)
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
+  foldInfo <- lapply(seq_len(foldsK), function(fold) {
+    idxVal <- which(folds == fold)
+    nVal <- length(idxVal)
+    gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
+    denom <- max(totalN - nVal, 1L)
+    list(
+      idxVal = idxVal,
+      idxTr = which(folds != fold),
+      gradTrainGlobal = (globalGrad * totalN - gradVal * nVal) / denom
+    )
+  })
   scores <- rep(NA_real_, length(lambdaSeq))
+  warmStarts <- rep(list(betaLead), foldsK)
   for (li in seq_along(lambdaSeq)) {
     foldLoss <- numeric(foldsK)
     for (fold in seq_len(foldsK)) {
-      idxVal <- which(folds == fold)
-      idxTr <- which(folds != fold)
-      nVal <- length(idxVal)
-      gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
-      denom <- max(totalN - nVal, 1L)
-      gradTrainGlobal <- (globalGrad * totalN - gradVal * nVal) / denom
+      info <- foldInfo[[fold]]
       fit <- .fitPdaAdapFirstOrderSurrogate(
-        xDesign = xDesign[idxTr, , drop = FALSE],
-        y = y[idxTr],
+        xDesign = xDesign[info$idxTr, , drop = FALSE],
+        y = y[info$idxTr],
         betaLead = betaLead,
         betaBar = betaBar,
-        globalGrad = gradTrainGlobal,
+        globalGrad = info$gradTrainGlobal,
         lambda = lambdaSeq[li],
         maxOuter = maxOuter,
         maxInner = maxInner,
-        tol = tol
+        tol = tol,
+        betaInit = warmStarts[[fold]]
       )
-      foldLoss[fold] <- .negLogLikMean(fit, xDesign[idxVal, , drop = FALSE], y[idxVal])
+      warmStarts[[fold]] <- fit
+      foldLoss[fold] <- .negLogLikMean(fit, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
     }
     scores[li] <- mean(foldLoss, na.rm = TRUE)
   }
@@ -805,46 +920,59 @@
   set.seed(seed)
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
+  foldInfo <- lapply(seq_len(foldsK), function(fold) {
+    idxVal <- which(folds == fold)
+    nVal <- length(idxVal)
+    gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
+    denom <- max(totalN - nVal, 1L)
+    out <- list(
+      idxVal = idxVal,
+      idxTr = which(folds != fold),
+      gradTrainGlobal = (globalGrad * totalN - gradVal * nVal) / denom,
+      hessTrainGlobalDiag = NULL
+    )
+    if (identical(mode, "second")) {
+      hessValDiag <- .logisticNegHessianDiag(betaBar, xDesign[idxVal, , drop = FALSE])
+      out$hessTrainGlobalDiag <- (globalHessDiag * totalN - hessValDiag * nVal) / denom
+    }
+    out
+  })
   scores <- rep(NA_real_, length(lambdaSeq))
+  warmStarts <- rep(list(betaLead), foldsK)
   for (li in seq_along(lambdaSeq)) {
     foldLoss <- numeric(foldsK)
     for (fold in seq_len(foldsK)) {
-      idxVal <- which(folds == fold)
-      idxTr <- which(folds != fold)
-      nVal <- length(idxVal)
-      gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
-      denom <- max(totalN - nVal, 1L)
-      gradTrainGlobal <- (globalGrad * totalN - gradVal * nVal) / denom
-      hessTrainGlobalDiag <- NULL
+      info <- foldInfo[[fold]]
       if (identical(mode, "second")) {
-        hessValDiag <- .logisticNegHessianDiag(betaBar, xDesign[idxVal, , drop = FALSE])
-        hessTrainGlobalDiag <- (globalHessDiag * totalN - hessValDiag * nVal) / denom
         fit <- .fitPdaAdapRemoteDiagSurrogate(
-          xDesign = xDesign[idxTr, , drop = FALSE],
-          y = y[idxTr],
+          xDesign = xDesign[info$idxTr, , drop = FALSE],
+          y = y[info$idxTr],
           betaLead = betaLead,
           betaBar = betaBar,
-          globalGrad = gradTrainGlobal,
-          globalHessDiag = hessTrainGlobalDiag,
+          globalGrad = info$gradTrainGlobal,
+          globalHessDiag = info$hessTrainGlobalDiag,
           lambda = lambdaSeq[li],
           maxOuter = maxOuter,
-          tol = tol
+          tol = tol,
+          betaInit = warmStarts[[fold]]
         )
       } else {
         fit <- .fitPdaAdapDiagSurrogate(
-          xDesign = xDesign[idxTr, , drop = FALSE],
-          y = y[idxTr],
+          xDesign = xDesign[info$idxTr, , drop = FALSE],
+          y = y[info$idxTr],
           betaLead = betaLead,
           betaBar = betaBar,
-          globalGrad = gradTrainGlobal,
-          globalHessDiag = hessTrainGlobalDiag,
+          globalGrad = info$gradTrainGlobal,
+          globalHessDiag = info$hessTrainGlobalDiag,
           lambda = lambdaSeq[li],
           mode = mode,
           maxOuter = maxOuter,
-          tol = tol
+          tol = tol,
+          betaInit = warmStarts[[fold]]
         )
       }
-      foldLoss[fold] <- .negLogLikMean(fit, xDesign[idxVal, , drop = FALSE], y[idxVal])
+      warmStarts[[fold]] <- fit
+      foldLoss[fold] <- .negLogLikMean(fit, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
     }
     scores[li] <- mean(foldLoss, na.rm = TRUE)
   }
@@ -905,31 +1033,39 @@
     globalGrad <- serverBroadcast$globalGrad
     globalHess <- serverBroadcast$globalHess
     lambdaSeq <- serverBroadcast$lambdaSeq
+    fixedLambda <- .fixedAdapLambda(config)
     solveStyle <- serverBroadcast$adapSolveStyle %||% config$adapSolveStyle %||% "fullQuadratic"
     if (identical(solveStyle, "pda")) {
-      if (is.null(lambdaSeq)) {
-        lambdaSeq <- .pdaAdapPdaLambdaSeq(
+      if (!is.null(fixedLambda)) {
+        lambda <- fixedLambda
+        lambdaSeq <- lambda
+        cvScores <- NA_real_
+      } else {
+        if (is.null(lambdaSeq)) {
+          lambdaSeq <- .pdaAdapPdaLambdaSeq(
+            globalGrad = globalGrad,
+            nLead = length(y),
+            p = length(betaBar),
+            gridLen = config$lambdaGridLen %||% 100L
+          )
+        }
+        cv <- .pdaAdapPdaLeadCv(
+          xDesign = xDesign,
+          y = y,
+          betaBar = betaBar,
           globalGrad = globalGrad,
-          nLead = length(y),
-          p = length(betaBar),
-          gridLen = config$lambdaGridLen %||% 100L
+          globalHess = globalHess,
+          lambdaSeq = lambdaSeq,
+          useFull = TRUE,
+          foldsK = config$foldsK %||% 5L,
+          seed = config$cvSeed %||% 42L,
+          maxIter = config$maxIter %||% 1000L,
+          tol = config$tol %||% 1e-6,
+          ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
         )
+        lambda <- cv$lambda
+        cvScores <- cv$scores
       }
-      cv <- .pdaAdapPdaLeadCv(
-        xDesign = xDesign,
-        y = y,
-        betaBar = betaBar,
-        globalGrad = globalGrad,
-        globalHess = globalHess,
-        lambdaSeq = lambdaSeq,
-        useFull = TRUE,
-        foldsK = config$foldsK %||% 5L,
-        seed = config$cvSeed %||% 42L,
-        maxIter = config$maxIter %||% 1000L,
-        tol = config$tol %||% 1e-6,
-        ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
-      )
-      lambda <- config$lambda %||% cv$lambda
       w <- .fitPdaAdapPdaProx(
         xDesign = xDesign,
         y = y,
@@ -942,35 +1078,42 @@
         tol = config$tol %||% 1e-6,
         ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
       )
-      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cv$scores))
+      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
     }
-    if (is.null(lambdaSeq)) {
-      lambdaSeq <- .pdaAdapLambdaSeq(
-        xDesign,
-        y,
-        betaLead,
-        betaBar,
-        globalGrad,
-        globalHess,
-        gridLen = config$lambdaGridLen %||% 100L
+    if (!is.null(fixedLambda)) {
+      lambda <- fixedLambda
+      lambdaSeq <- lambda
+      cvScores <- NA_real_
+    } else {
+      if (is.null(lambdaSeq)) {
+        lambdaSeq <- .pdaAdapLambdaSeq(
+          xDesign,
+          y,
+          betaLead,
+          betaBar,
+          globalGrad,
+          globalHess,
+          gridLen = config$lambdaGridLen %||% 100L
+        )
+      }
+      cv <- .pdaAdapLeadCv(
+        xDesign = xDesign,
+        y = y,
+        betaLead = betaLead,
+        betaBar = betaBar,
+        globalGrad = globalGrad,
+        globalHess = globalHess,
+        lambdaSeq = lambdaSeq,
+        totalN = serverBroadcast$totalN,
+        foldsK = config$foldsK %||% 5L,
+        seed = config$cvSeed %||% 42L,
+        maxOuter = config$maxOuter %||% 100L,
+        maxInner = config$maxInner %||% 100L,
+        tol = config$tol %||% 1e-5
       )
+      lambda <- cv$lambda
+      cvScores <- cv$scores
     }
-    cv <- .pdaAdapLeadCv(
-      xDesign = xDesign,
-      y = y,
-      betaLead = betaLead,
-      betaBar = betaBar,
-      globalGrad = globalGrad,
-      globalHess = globalHess,
-      lambdaSeq = lambdaSeq,
-      totalN = serverBroadcast$totalN,
-      foldsK = config$foldsK %||% 5L,
-      seed = config$cvSeed %||% 42L,
-      maxOuter = config$maxOuter %||% 100L,
-      maxInner = config$maxInner %||% 100L,
-      tol = config$tol %||% 1e-5
-    )
-    lambda <- config$lambda %||% cv$lambda
     w <- .fitPdaAdapSurrogate(
       xDesign = xDesign,
       y = y,
@@ -983,7 +1126,7 @@
       maxInner = config$maxInner %||% 100L,
       tol = config$tol %||% 1e-5
     )
-    return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cv$scores))
+    return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
   }
 
   list()
@@ -1170,32 +1313,40 @@
     globalGrad <- serverBroadcast$globalGrad
     globalHessDiag <- serverBroadcast$globalHessDiag
     lambdaSeq <- serverBroadcast$lambdaSeq
+    fixedLambda <- .fixedAdapLambda(config)
     if (identical(mode, "first")) {
-      if (is.null(lambdaSeq)) {
-        lambdaSeq <- .pdaAdapFirstLambdaSeq(
+      if (!is.null(fixedLambda)) {
+        lambda <- fixedLambda
+        lambdaSeq <- lambda
+        cvScores <- NA_real_
+      } else {
+        if (is.null(lambdaSeq)) {
+          lambdaSeq <- .pdaAdapFirstLambdaSeq(
+            xDesign = xDesign,
+            y = y,
+            betaLead = betaLead,
+            betaBar = betaBar,
+            globalGrad = globalGrad,
+            gridLen = config$lambdaGridLen %||% 100L
+          )
+        }
+        cv <- .pdaAdapFirstLeadCv(
           xDesign = xDesign,
           y = y,
           betaLead = betaLead,
           betaBar = betaBar,
           globalGrad = globalGrad,
-          gridLen = config$lambdaGridLen %||% 100L
+          lambdaSeq = lambdaSeq,
+          totalN = serverBroadcast$totalN,
+          foldsK = config$foldsK %||% 5L,
+          seed = config$cvSeed %||% 42L,
+          maxOuter = config$maxOuter %||% 100L,
+          maxInner = config$maxInner %||% 100L,
+          tol = config$tol %||% 1e-5
         )
+        lambda <- cv$lambda
+        cvScores <- cv$scores
       }
-      cv <- .pdaAdapFirstLeadCv(
-        xDesign = xDesign,
-        y = y,
-        betaLead = betaLead,
-        betaBar = betaBar,
-        globalGrad = globalGrad,
-        lambdaSeq = lambdaSeq,
-        totalN = serverBroadcast$totalN,
-        foldsK = config$foldsK %||% 5L,
-        seed = config$cvSeed %||% 42L,
-        maxOuter = config$maxOuter %||% 100L,
-        maxInner = config$maxInner %||% 100L,
-        tol = config$tol %||% 1e-5
-      )
-      lambda <- config$lambda %||% cv$lambda
       w <- .fitPdaAdapFirstOrderSurrogate(
         xDesign = xDesign,
         y = y,
@@ -1207,33 +1358,40 @@
         maxInner = config$maxInner %||% 100L,
         tol = config$tol %||% 1e-5
       )
-      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cv$scores))
+      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
     }
 
     if (identical(diagStyle, "pda")) {
-      if (is.null(lambdaSeq)) {
-        lambdaSeq <- .pdaAdapPdaLambdaSeq(
+      if (!is.null(fixedLambda)) {
+        lambda <- fixedLambda
+        lambdaSeq <- lambda
+        cvScores <- NA_real_
+      } else {
+        if (is.null(lambdaSeq)) {
+          lambdaSeq <- .pdaAdapPdaLambdaSeq(
+            globalGrad = globalGrad,
+            nLead = length(y),
+            p = length(betaBar),
+            gridLen = config$lambdaGridLen %||% 100L
+          )
+        }
+        cv <- .pdaAdapPdaLeadCv(
+          xDesign = xDesign,
+          y = y,
+          betaBar = betaBar,
           globalGrad = globalGrad,
-          nLead = length(y),
-          p = length(betaBar),
-          gridLen = config$lambdaGridLen %||% 100L
+          globalHess = globalHessDiag,
+          lambdaSeq = lambdaSeq,
+          useFull = FALSE,
+          foldsK = config$foldsK %||% 5L,
+          seed = config$cvSeed %||% 42L,
+          maxIter = config$maxIter %||% 1000L,
+          tol = config$tol %||% 1e-6,
+          ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
         )
+        lambda <- cv$lambda
+        cvScores <- cv$scores
       }
-      cv <- .pdaAdapPdaLeadCv(
-        xDesign = xDesign,
-        y = y,
-        betaBar = betaBar,
-        globalGrad = globalGrad,
-        globalHess = globalHessDiag,
-        lambdaSeq = lambdaSeq,
-        useFull = FALSE,
-        foldsK = config$foldsK %||% 5L,
-        seed = config$cvSeed %||% 42L,
-        maxIter = config$maxIter %||% 1000L,
-        tol = config$tol %||% 1e-6,
-        ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
-      )
-      lambda <- config$lambda %||% cv$lambda
       w <- .fitPdaAdapPdaProx(
         xDesign = xDesign,
         y = y,
@@ -1246,37 +1404,44 @@
         tol = config$tol %||% 1e-6,
         ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
       )
-      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cv$scores))
+      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
     }
 
-    if (is.null(lambdaSeq)) {
-      lambdaSeq <- .pdaAdapDiagLambdaSeq(
+    if (!is.null(fixedLambda)) {
+      lambda <- fixedLambda
+      lambdaSeq <- lambda
+      cvScores <- NA_real_
+    } else {
+      if (is.null(lambdaSeq)) {
+        lambdaSeq <- .pdaAdapDiagLambdaSeq(
+          xDesign = xDesign,
+          y = y,
+          betaLead = betaLead,
+          betaBar = betaBar,
+          globalGrad = globalGrad,
+          globalHessDiag = globalHessDiag,
+          mode = "second",
+          gridLen = config$lambdaGridLen %||% 100L
+        )
+      }
+      cv <- .pdaAdapDiagLeadCv(
         xDesign = xDesign,
         y = y,
         betaLead = betaLead,
         betaBar = betaBar,
         globalGrad = globalGrad,
         globalHessDiag = globalHessDiag,
+        lambdaSeq = lambdaSeq,
+        totalN = serverBroadcast$totalN,
         mode = "second",
-        gridLen = config$lambdaGridLen %||% 100L
+        foldsK = config$foldsK %||% 5L,
+        seed = config$cvSeed %||% 42L,
+        maxOuter = config$maxOuter %||% 100L,
+        tol = config$tol %||% 1e-5
       )
+      lambda <- cv$lambda
+      cvScores <- cv$scores
     }
-    cv <- .pdaAdapDiagLeadCv(
-      xDesign = xDesign,
-      y = y,
-      betaLead = betaLead,
-      betaBar = betaBar,
-      globalGrad = globalGrad,
-      globalHessDiag = globalHessDiag,
-      lambdaSeq = lambdaSeq,
-      totalN = serverBroadcast$totalN,
-      mode = "second",
-      foldsK = config$foldsK %||% 5L,
-      seed = config$cvSeed %||% 42L,
-      maxOuter = config$maxOuter %||% 100L,
-      tol = config$tol %||% 1e-5
-    )
-    lambda <- config$lambda %||% cv$lambda
     w <- .fitPdaAdapRemoteDiagSurrogate(
       xDesign = xDesign,
       y = y,
@@ -1289,7 +1454,7 @@
       maxInner = config$maxInner %||% 100L,
       tol = config$tol %||% 1e-5
     )
-    return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cv$scores))
+    return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
   }
 
   list()

@@ -48,11 +48,84 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// logisticGradientCpp
+Eigen::VectorXd logisticGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, const Eigen::VectorXd& y, double eps);
+RcppExport SEXP _FederatedLearning_logisticGradientCpp(SEXP xSEXP, SEXP betaSEXP, SEXP ySEXP, SEXP epsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::SparseMatrix<double> >& >::type x(xSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type y(ySEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    rcpp_result_gen = Rcpp::wrap(logisticGradientCpp(x, beta, y, eps));
+    return rcpp_result_gen;
+END_RCPP
+}
+// logisticGradientHessianDiagCpp
+List logisticGradientHessianDiagCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, const Eigen::VectorXd& y, double eps);
+RcppExport SEXP _FederatedLearning_logisticGradientHessianDiagCpp(SEXP xSEXP, SEXP betaSEXP, SEXP ySEXP, SEXP epsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::SparseMatrix<double> >& >::type x(xSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type y(ySEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    rcpp_result_gen = Rcpp::wrap(logisticGradientHessianDiagCpp(x, beta, y, eps));
+    return rcpp_result_gen;
+END_RCPP
+}
+// logisticHessianDiagCpp
+Eigen::VectorXd logisticHessianDiagCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, double eps);
+RcppExport SEXP _FederatedLearning_logisticHessianDiagCpp(SEXP xSEXP, SEXP betaSEXP, SEXP epsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::SparseMatrix<double> >& >::type x(xSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    rcpp_result_gen = Rcpp::wrap(logisticHessianDiagCpp(x, beta, eps));
+    return rcpp_result_gen;
+END_RCPP
+}
+// logisticHessianCpp
+Eigen::MatrixXd logisticHessianCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, double eps);
+RcppExport SEXP _FederatedLearning_logisticHessianCpp(SEXP xSEXP, SEXP betaSEXP, SEXP epsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::SparseMatrix<double> >& >::type x(xSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    rcpp_result_gen = Rcpp::wrap(logisticHessianCpp(x, beta, eps));
+    return rcpp_result_gen;
+END_RCPP
+}
+// logisticGradientHessianCpp
+List logisticGradientHessianCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, const Eigen::VectorXd& y, double eps);
+RcppExport SEXP _FederatedLearning_logisticGradientHessianCpp(SEXP xSEXP, SEXP betaSEXP, SEXP ySEXP, SEXP epsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::SparseMatrix<double> >& >::type x(xSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type y(ySEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    rcpp_result_gen = Rcpp::wrap(logisticGradientHessianCpp(x, beta, y, eps));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_FederatedLearning_serverInitDualAveragingCpp", (DL_FUNC) &_FederatedLearning_serverInitDualAveragingCpp, 1},
     {"_FederatedLearning_clientUpdateDualAveragingCpp", (DL_FUNC) &_FederatedLearning_clientUpdateDualAveragingCpp, 3},
     {"_FederatedLearning_serverRoundDualAveragingCpp", (DL_FUNC) &_FederatedLearning_serverRoundDualAveragingCpp, 3},
+    {"_FederatedLearning_logisticGradientCpp", (DL_FUNC) &_FederatedLearning_logisticGradientCpp, 4},
+    {"_FederatedLearning_logisticGradientHessianDiagCpp", (DL_FUNC) &_FederatedLearning_logisticGradientHessianDiagCpp, 4},
+    {"_FederatedLearning_logisticHessianDiagCpp", (DL_FUNC) &_FederatedLearning_logisticHessianDiagCpp, 3},
+    {"_FederatedLearning_logisticHessianCpp", (DL_FUNC) &_FederatedLearning_logisticHessianCpp, 3},
+    {"_FederatedLearning_logisticGradientHessianCpp", (DL_FUNC) &_FederatedLearning_logisticGradientHessianCpp, 4},
     {NULL, NULL, 0}
 };
 

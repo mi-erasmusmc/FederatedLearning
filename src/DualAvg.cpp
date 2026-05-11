@@ -22,6 +22,29 @@ static Eigen::VectorXd proxL1_E(const Eigen::VectorXd &z, double alpha) {
   return w;
 }
 
+static inline double stable_sigmoid_scalar_da(double eta) {
+  if (eta >= 0.0) {
+    const double z = std::exp(-eta);
+    return 1.0 / (1.0 + z);
+  }
+  const double z = std::exp(eta);
+  return z / (1.0 + z);
+}
+
+static Eigen::ArrayXd stable_sigmoid_array_da(const Eigen::VectorXd& eta,
+                                              double eps = 1e-8) {
+  Eigen::ArrayXd out(eta.size());
+  for (int i = 0; i < eta.size(); ++i) {
+    out[i] = stable_sigmoid_scalar_da(eta[i]);
+    if (out[i] < eps) {
+      out[i] = eps;
+    } else if (out[i] > 1.0 - eps) {
+      out[i] = 1.0 - eps;
+    }
+  }
+  return out;
+}
+
 //' @export
 // [[Rcpp::export]]
 List serverInitDualAveragingCpp(List config) {
@@ -65,7 +88,7 @@ List clientUpdateDualAveragingCpp(List &clientData,
 
     // 2) compute logistic gradient: g = (Xᵀ(σ(Xw) – y))/n
     Eigen::VectorXd lin = xMatrix * w; // size‐n
-    Eigen::ArrayXd sig = 1.0 / (1.0 + (-lin.array()).exp());
+    Eigen::ArrayXd sig = stable_sigmoid_array_da(lin);
     Eigen::VectorXd g = xMatrix.transpose() * (sig - yLabels.array()).matrix();
     g /= double(n);
 

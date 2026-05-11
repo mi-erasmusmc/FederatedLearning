@@ -20,12 +20,14 @@ Imports:
     ParallelLogger,
     parallelly,
     mirai,
-    Cyclops,
+    glmnet,
+    methods,
     digest,
     Rcpp,
     RcppEigen,
     pROC
 Suggests:
+    Cyclops,
     testthat (>= 3.0.0),
     yaml
 LinkingTo:

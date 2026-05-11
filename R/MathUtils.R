@@ -36,6 +36,15 @@ proxL1Ridge <- function(z, A, mu, gamma, lambda, intercept = FALSE) {
 
   w
 }
+
+.asDgCMatrix <- function(xMatrix) {
+  if (inherits(xMatrix, "dgCMatrix")) {
+    xMatrix
+  } else {
+    methods::as(xMatrix, "dgCMatrix")
+  }
+}
+
 #' Stochastic gradient of logistic loss
 #' @param weights   numeric vector of parameters
 #' @param xMatrix   numeric matrix (n by p)
@@ -44,6 +53,9 @@ proxL1Ridge <- function(z, A, mu, gamma, lambda, intercept = FALSE) {
 #' @export
 gradLogistic <- function(weights, xMatrix, yLabels) {
   assertConformableWeights(weights, xMatrix, context = "gradLogistic")
+  if (inherits(xMatrix, "sparseMatrix")) {
+    return(as.numeric(logisticGradientCpp(.asDgCMatrix(xMatrix), weights, yLabels)))
+  }
   eta <- stats::plogis(as.vector(xMatrix %*% weights))
   res <- eta - yLabels
   as.numeric(crossprod(xMatrix, res)) / length(yLabels)

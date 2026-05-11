@@ -55,7 +55,7 @@ serverRoundDA <- function(serverState,
        report = list(w = w))
 }
 
-.registerAlgorithm("DualAvg",
+.registerAlgorithm("DualAvgR",
   serverInit     = serverInitDA,
   clientInit     = NULL,
   clientUpdate   = clientUpdateDA,
