@@ -21,7 +21,7 @@
     Gother = NULL,
     Hother = NULL,
     mode = mode,
-    lambda = config$lambda %||% 1.0,
+    lambda = config[["lambda", exact = TRUE]] %||% 1.0,
     foldsK = config$foldsK %||% 5L,
     hessian = hessian,
     leadPolicy = config$leadPolicy %||% "maxN",
@@ -185,7 +185,7 @@
 .serverRoundADAP2 <- function(serverState, clientReports, config) {
   phase <- serverState$phase %||% 0L
   hessMode <- serverState$hessian %||% "full"
-  serverState$lambda <- config$lambda %||% serverState$lambda
+  serverState$lambda <- config[["lambda", exact = TRUE]] %||% serverState$lambda
   serverState$mode <- serverState$mode %||% config$request %||% "none"
   cacheKey <- serverState$cacheKey
 
@@ -267,7 +267,7 @@
     newState$Hother <- Hother
     newState$surrogateKey <- key
     newState$cacheKey <- key
-    newState$lambda <- config$lambda %||% newState$lambda
+    newState$lambda <- config[["lambda", exact = TRUE]] %||% newState$lambda
     newState$mode <- config$request %||% newState$mode
     newState$foldsK <- config$foldsK %||% newState$foldsK
     hCond <- if (identical(hessMode, "full")) {

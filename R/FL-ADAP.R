@@ -120,7 +120,7 @@
 
     a <- G - Hdiag * bbar
 
-    lambda <- config$lambda
+    lambda <- config[["lambda", exact = TRUE]]
     w <- -(a / Hdiag)
 
     soft <- function(v, t) {
@@ -248,7 +248,7 @@
 }
 
 .fixedAdapLambda <- function(config) {
-  lambda <- config$lambda
+  lambda <- config[["lambda", exact = TRUE]]
   if (is.null(lambda) || length(lambda) != 1L || !is.finite(lambda) || lambda < 0) {
     return(NULL)
   }
@@ -992,7 +992,7 @@
     globalGrad = NULL,
     globalHess = NULL,
     lambdaSeq = NULL,
-    selectedLambda = config$lambda %||% NA_real_,
+    selectedLambda = config[["lambda", exact = TRUE]] %||% NA_real_,
     w = rep(0, p)
   )
 }
@@ -1265,7 +1265,7 @@
     globalGrad = NULL,
     globalHessDiag = NULL,
     lambdaSeq = NULL,
-    selectedLambda = config$lambda %||% NA_real_,
+    selectedLambda = config[["lambda", exact = TRUE]] %||% NA_real_,
     w = rep(0, p)
   )
 }

@@ -583,7 +583,8 @@ test_that("comparison runner helpers parse external comparison settings", {
     "--remove-prior-outcomes=true",
     "--prior-outcome-lookback=99999",
     "--pda-rounds=3",
-    "--adapdiag-style=pda"
+    "--adapdiag-style=pda",
+    "--dualavg-convergence-objective=cyclopsGradient"
   ))
 
   expect_equal(runnerEnv$csvArg(args[["client-ids"]]), c("databaseA", "databaseB", "databaseC", "databaseD", "databaseE"))
@@ -595,6 +596,41 @@ test_that("comparison runner helpers parse external comparison settings", {
   expect_equal(cfg$rounds, 3L)
   expect_equal(cfg$adapDiagStyle, "pda")
   expect_equal(runnerEnv$taskRiskWindow("taskA"), 30L)
+
+  dualAvgCfg <- runnerEnv$methodConfig("DualAvg", "ageSex", args)
+  expect_equal(dualAvgCfg$convergenceObjective, "cyclopsGradient")
+  expect_true(runnerEnv$shouldTuneDualAvg(args))
+  expect_equal(runnerEnv$dualAvgStartingVariance(args), 0.01)
+
+  fixedDualAvgArgs <- runnerEnv$parseArgs(c("--dualavg-lambda=1e-05"))
+  expect_false(runnerEnv$shouldTuneDualAvg(fixedDualAvgArgs))
+
+  forcedTuneArgs <- runnerEnv$parseArgs(c(
+    "--dualavg-lambda=1e-05",
+    "--dualavg-tune-lambda=true",
+    "--dualavg-starting-variance=0.02"
+  ))
+  expect_true(runnerEnv$shouldTuneDualAvg(forcedTuneArgs))
+  expect_equal(runnerEnv$dualAvgStartingVariance(forcedTuneArgs), 0.02)
+})
+
+test_that("comparison runner does not partial-match lambda-grid-len as fixed lambda", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+
+  args <- runnerEnv$parseArgs(c(
+    "--lambda-grid-len=100",
+    "--methods=ADAP,ADAP1,ADAPDiag"
+  ))
+
+  expect_null(runnerEnv$argValue(args, "lambda"))
+  expect_equal(runnerEnv$argValue(args, "lambda-grid-len"), "100")
+
+  for (method in c("ADAP", "ADAP1", "ADAPDiag")) {
+    cfg <- runnerEnv$methodConfig(method, "ageSex", args)
+    expect_null(cfg[["lambda", exact = TRUE]])
+    expect_equal(cfg$lambdaGridLen, 100L)
+  }
 })
 
 test_that("comparison runner resumes successful combinations and reruns errors", {

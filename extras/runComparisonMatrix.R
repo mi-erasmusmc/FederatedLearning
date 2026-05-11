@@ -27,6 +27,10 @@ parseArgs <- function(args = commandArgs(trailingOnly = TRUE)) {
   out
 }
 
+argValue <- function(args, name) {
+  args[[name, exact = TRUE]]
+}
+
 csvArg <- function(x, default = character()) {
   if (is.null(x) || !nzchar(x)) {
     return(default)
@@ -85,21 +89,22 @@ taskRiskWindow <- function(task) {
 
 methodRounds <- function(method, args) {
   switch(method,
-    DualAvg = intArg(args[["dualavg-rounds"]], 10000L),
-    DualAvgCpp = intArg(args[["dualavg-rounds"]], 10000L),
-    DualAvgR = intArg(args[["dualavg-rounds"]], 10000L),
-    FastDualAvg = intArg(args[["dualavg-rounds"]], 10000L),
-    ADAP2 = intArg(args[["pda-rounds"]], 3L),
-    ODAL = intArg(args[["pda-rounds"]], 3L),
-    ADAP = intArg(args[["pda-rounds"]], 3L),
-    ADAP_PDA = intArg(args[["pda-rounds"]], 3L),
-    ADAP1 = intArg(args[["pda-rounds"]], 3L),
-    ADAPDiag = intArg(args[["pda-rounds"]], 3L),
-    intArg(args[["rounds"]], 1000L)
+    DualAvg = intArg(argValue(args, "dualavg-rounds"), 10000L),
+    DualAvgCpp = intArg(argValue(args, "dualavg-rounds"), 10000L),
+    DualAvgR = intArg(argValue(args, "dualavg-rounds"), 10000L),
+    FastDualAvg = intArg(argValue(args, "dualavg-rounds"), 10000L),
+    ADAP2 = intArg(argValue(args, "pda-rounds"), 3L),
+    ODAL = intArg(argValue(args, "pda-rounds"), 3L),
+    ADAP = intArg(argValue(args, "pda-rounds"), 3L),
+    ADAP_PDA = intArg(argValue(args, "pda-rounds"), 3L),
+    ADAP1 = intArg(argValue(args, "pda-rounds"), 3L),
+    ADAPDiag = intArg(argValue(args, "pda-rounds"), 3L),
+    intArg(argValue(args, "rounds"), 1000L)
   )
 }
 
 baselineMethods <- c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")
+dualAvgMethods <- c("DualAvg", "DualAvgCpp", "DualAvgR", "FastDualAvg")
 
 readCsvIfExists <- function(path) {
   if (!file.exists(path)) {
@@ -174,39 +179,136 @@ isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
 
 methodConfig <- function(method, featureSet, args) {
   cfg <- list(
-    mapType = args[["map-type"]] %||% "intersection",
+    mapType = argValue(args, "map-type") %||% "intersection",
     featureSet = featureSet,
-    intercept = logicalArg(args[["intercept"]], TRUE),
-    profile = logicalArg(args[["profile"]], FALSE),
-    epsilon = numArg(args[["epsilon"]], 1e-6),
+    intercept = logicalArg(argValue(args, "intercept"), TRUE),
+    profile = logicalArg(argValue(args, "profile"), FALSE),
+    epsilon = numArg(argValue(args, "epsilon"), 1e-6),
     clientFrac = 1,
     rounds = methodRounds(method, args),
-    foldsK = intArg(args[["inner-folds"]], 5L),
-    cvSeed = intArg(args[["cv-seed"]], 42L),
-    maxIter = intArg(args[["max-iter"]], 1000L),
-    maxOuter = intArg(args[["max-outer"]], 100L),
-    maxInner = intArg(args[["max-inner"]], 100L),
-    lambdaGridLen = intArg(args[["lambda-grid-len"]], 100L)
+    foldsK = intArg(argValue(args, "inner-folds"), 5L),
+    cvSeed = intArg(argValue(args, "cv-seed"), 42L),
+    maxIter = intArg(argValue(args, "max-iter"), 1000L),
+    maxOuter = intArg(argValue(args, "max-outer"), 100L),
+    maxInner = intArg(argValue(args, "max-inner"), 100L),
+    lambdaGridLen = intArg(argValue(args, "lambda-grid-len"), 100L),
+    convergenceObjective = argValue(args, "convergence-objective") %||% "negLogLikelihood"
   )
 
-  if (method %in% c("DualAvg", "DualAvgCpp", "DualAvgR", "FastDualAvg")) {
-    cfg$etaClient <- numArg(args[["eta-client"]], 1)
-    cfg$etaServer <- numArg(args[["eta-server"]], 1)
-    cfg$k <- intArg(args[["k"]], 10L)
-    cfg$lambda <- numArg(args[["dualavg-lambda"]], 2.09e-4)
-    cfg$mapType <- args[["dualavg-map-type"]] %||% cfg$mapType
+  if (method %in% dualAvgMethods) {
+    cfg$etaClient <- numArg(argValue(args, "eta-client"), 1)
+    cfg$etaServer <- numArg(argValue(args, "eta-server"), 1)
+    cfg$k <- intArg(argValue(args, "k"), 10L)
+    cfg$lambda <- numArg(argValue(args, "dualavg-lambda"), 2.09e-4)
+    cfg$mapType <- argValue(args, "dualavg-map-type") %||% cfg$mapType
+    cfg$convergenceObjective <- argValue(args, "dualavg-convergence-objective") %||% cfg$convergenceObjective
   } else {
-    cfg$lambda <- if (!is.null(args[["lambda"]])) numArg(args[["lambda"]], NA_real_) else NULL
+    lambdaArg <- argValue(args, "lambda")
+    cfg$lambda <- if (!is.null(lambdaArg)) numArg(lambdaArg, NA_real_) else NULL
   }
 
-  if (identical(method, "ADAPDiag") && !is.null(args[["adapdiag-style"]])) {
-    cfg$adapDiagStyle <- args[["adapdiag-style"]]
+  if (identical(method, "ADAPDiag") && !is.null(argValue(args, "adapdiag-style"))) {
+    cfg$adapDiagStyle <- argValue(args, "adapdiag-style")
   }
   if (identical(method, "ADAP2")) {
-    cfg$hessian <- args[["adap2-hessian"]] %||% "diag"
-    cfg$maxFullHessianP <- intArg(args[["max-full-hessian-p"]], 2000L)
+    cfg$hessian <- argValue(args, "adap2-hessian") %||% "diag"
+    cfg$maxFullHessianP <- intArg(argValue(args, "max-full-hessian-p"), 2000L)
   }
   cfg
+}
+
+shouldTuneDualAvg <- function(args) {
+  tuneArg <- argValue(args, "dualavg-tune-lambda")
+  if (!is.null(tuneArg)) {
+    return(logicalArg(tuneArg, TRUE))
+  }
+  is.null(argValue(args, "dualavg-lambda"))
+}
+
+dualAvgStartingVariance <- function(args) {
+  numArg(
+    argValue(args, "dualavg-starting-variance"),
+    numArg(argValue(args, "dualavg-lambda-default"), 0.01)
+  )
+}
+
+tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, verbose) {
+  if (!method %in% dualAvgMethods || !shouldTuneDualAvg(args)) {
+    return(config)
+  }
+  trainPopSizes <- as.numeric(unlist(trainPopSizes, use.names = FALSE))
+  if (length(trainPopSizes) < 2L) {
+    stop("DualAvg lambda tuning requires at least two training clients")
+  }
+
+  algo <- FederatedLearning:::.getAlgorithm(method)
+  if (is.null(algo)) {
+    stop("Algorithm '", method, "' is not registered")
+  }
+  lambdaStrategy <- algo$lambdaStrategy %||% FederatedLearning:::.lambdaStrategyDefault()
+  globalMap <- config$mapping %||% FederatedLearning::clusterCollectCovRefs(
+    clTrain,
+    type = config$mapType,
+    featureSet = config$featureSet,
+    covariateIds = config$covariateIds,
+    analysisIds = config$analysisIds
+  )
+  totalPopSize <- sum(trainPopSizes)
+  lambdaDefault <- dualAvgStartingVariance(args)
+
+  configBase <- config
+  configBase$lambda <- NULL
+  configBase$mapping <- globalMap
+  configBase$p <- nrow(globalMap)
+
+  if (isTRUE(verbose)) {
+    message(sprintf(
+      "Tuning %s lambda by federated inner CV; starting variance = %.5g",
+      method,
+      lambdaDefault
+    ))
+  }
+  tuned <- FederatedLearning:::tuneLambda(
+    cl = clTrain,
+    algorithm = method,
+    configBase = configBase,
+    trainIds = seq_along(trainPopSizes),
+    rounds = config$rounds,
+    clientFrac = config$clientFrac,
+    epsilon = config$epsilon,
+    lambdaStrategy = lambdaStrategy,
+    lambdaDefault = lambdaDefault,
+    totalPopSize = totalPopSize,
+    globalMap = globalMap,
+    verbose = verbose
+  )
+
+  contextFinal <- list(
+    cl = clTrain,
+    configBase = configBase,
+    rounds = config$rounds,
+    clientFrac = config$clientFrac,
+    epsilon = config$epsilon,
+    totalPopSize = totalPopSize,
+    globalMap = globalMap
+  )
+  config$mapping <- globalMap
+  config$p <- nrow(globalMap)
+  config$lambda <- lambdaStrategy$initial(tuned$bestLambda, totalPopSize, contextFinal)
+  config$lambdaSearchDefault <- lambdaDefault
+  config$lambdaSearchBest <- tuned$bestLambda
+  config$lambdaSearchBestTrain <- tuned$bestLambdaTrain %||% NA_real_
+  config$lambdaSearchInnerAuc <- tuned$perf %||% NA_real_
+  if (isTRUE(verbose)) {
+    message(sprintf(
+      "Selected %s lambda: search scale = %.5g, fit scale = %.5g, inner AUC = %.5g",
+      method,
+      config$lambdaSearchBest,
+      config$lambda,
+      config$lambdaSearchInnerAuc
+    ))
+  }
+  config
 }
 
 evaluateWeights <- function(clientData, w, clientId, clientIndex) {
@@ -259,31 +361,36 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
   start <- Sys.time()
 
   cyclopsData <- Cyclops::createCyclopsData(y = y, sx = x, modelType = "lr")
-  useCv <- logicalArg(args[["cyclops-cv"]], FALSE)
-  variance <- numArg(args[["cyclops-variance"]], numArg(args[["baseline-variance"]], 1))
+  useCv <- logicalArg(argValue(args, "cyclops-cv"), TRUE)
+  variance <- numArg(argValue(args, "cyclops-variance"), numArg(argValue(args, "baseline-variance"), 0.01))
+  startingVariance <- numArg(
+    argValue(args, "cyclops-starting-variance"),
+    numArg(argValue(args, "baseline-starting-variance"), 0.01)
+  )
   prior <- Cyclops::createPrior(
     "laplace",
     variance = variance,
     useCrossValidation = useCv
   )
   control <- Cyclops::createControl(
-    maxIterations = intArg(args[["cyclops-max-iterations"]], intArg(args[["baseline-maxit"]], 3000L)),
-    tolerance = numArg(args[["cyclops-tolerance"]], 2e-6),
-    cvType = args[["cyclops-cv-type"]] %||% "auto",
-    fold = intArg(args[["cyclops-folds"]], intArg(args[["baseline-folds"]], 10L)),
-    lowerLimit = numArg(args[["cyclops-lower-limit"]], 0.01),
-    upperLimit = numArg(args[["cyclops-upper-limit"]], 20),
-    noiseLevel = args[["cyclops-noise-level"]] %||% "silent",
-    threads = intArg(args[["cyclops-threads"]], 1L),
+    maxIterations = intArg(argValue(args, "cyclops-max-iterations"), intArg(argValue(args, "baseline-maxit"), 3000L)),
+    tolerance = numArg(argValue(args, "cyclops-tolerance"), 2e-6),
+    cvType = argValue(args, "cyclops-cv-type") %||% "auto",
+    fold = intArg(argValue(args, "cyclops-folds"), intArg(argValue(args, "baseline-folds"), 10L)),
+    lowerLimit = numArg(argValue(args, "cyclops-lower-limit"), 0.01),
+    upperLimit = numArg(argValue(args, "cyclops-upper-limit"), 20),
+    noiseLevel = argValue(args, "cyclops-noise-level") %||% "silent",
+    threads = intArg(argValue(args, "cyclops-threads"), 1L),
     seed = seed,
-    selectorType = args[["cyclops-selector-type"]] %||% "auto"
+    selectorType = argValue(args, "cyclops-selector-type") %||% "auto",
+    startingVariance = startingVariance
   )
 
   fit <- Cyclops::fitCyclopsModel(
     cyclopsData,
     prior = prior,
     control = control,
-    warnings = logicalArg(args[["cyclops-warnings"]], TRUE)
+    warnings = logicalArg(argValue(args, "cyclops-warnings"), TRUE)
   )
   w <- as.numeric(stats::coef(fit))
   if (length(w) != ncol(x)) {
@@ -484,7 +591,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       featureSet = featureSet,
       fold = fold,
       p = length(fit$w),
-      selectedLambda = fit$selectedLambda %||% config$lambda %||% NA_real_,
+      selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
       lambdaPathFile = lambdaPathFile,
       leadIndex = fit$leadIndex %||% NA_integer_,
       trainObjective = fit$globalObjective %||% NA_real_,
@@ -627,7 +734,7 @@ runComparison <- function(args) {
       tryCatch(
         {
           clTrain <- FederatedLearning::clusterInit(trainHosts, trainPaths, mirai = mirai)
-          FederatedLearning::clusterLoadData(clTrain, trainPaths, popSettings)
+          trainPopSizes <- FederatedLearning::clusterLoadData(clTrain, trainPaths, popSettings)
 
           clTest <- FederatedLearning::clusterInit(testHosts, testPaths, mirai = mirai)
           FederatedLearning::clusterLoadData(clTest, testPaths, popSettings)
@@ -664,6 +771,14 @@ runComparison <- function(args) {
                     testClientIndexes = testIds
                   )
                 } else {
+                  config <- tuneDualAvgForFold(
+                    method = method,
+                    clTrain = clTrain,
+                    config = config,
+                    trainPopSizes = trainPopSizes,
+                    args = args,
+                    verbose = verbose
+                  )
                   fitFederatedFold(
                     method = method,
                     clTrain = clTrain,
