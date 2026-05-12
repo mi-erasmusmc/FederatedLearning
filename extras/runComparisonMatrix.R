@@ -52,6 +52,32 @@ numArg <- function(x, default) {
   as.numeric(x)
 }
 
+numCsvArg <- function(x, default) {
+  if (is.null(x) || !nzchar(x)) {
+    return(default)
+  }
+  as.numeric(csvArg(x))
+}
+
+intCsvArg <- function(x, default) {
+  if (is.null(x) || !nzchar(x)) {
+    return(default)
+  }
+  as.integer(csvArg(x))
+}
+
+charCsvArg <- function(x, default) {
+  vals <- csvArg(x, default)
+  vals[nzchar(vals)]
+}
+
+firstValue <- function(x) {
+  if (length(x) == 0L) {
+    return(NULL)
+  }
+  x[[1]]
+}
+
 logicalArg <- function(x, default = FALSE) {
   if (is.null(x) || !nzchar(x)) {
     return(default)
@@ -79,7 +105,8 @@ foldArg <- function(x, nClients) {
 
 taskRiskWindow <- function(task) {
   switch(task,
-    dementia = 30,
+    dementia = 5 * 365,
+    dementiaPhenotypes = 5 * 365,
     readmission = 30,
     lungCancer = 5 * 365,
     lungCancerPhenotypes = 5 * 365,
@@ -89,22 +116,20 @@ taskRiskWindow <- function(task) {
 
 methodRounds <- function(method, args) {
   switch(method,
-    DualAvg = intArg(argValue(args, "dualavg-rounds"), 10000L),
-    DualAvgCpp = intArg(argValue(args, "dualavg-rounds"), 10000L),
-    DualAvgR = intArg(argValue(args, "dualavg-rounds"), 10000L),
-    FastDualAvg = intArg(argValue(args, "dualavg-rounds"), 10000L),
-    ADAP2 = intArg(argValue(args, "pda-rounds"), 3L),
-    ODAL = intArg(argValue(args, "pda-rounds"), 3L),
-    ADAP = intArg(argValue(args, "pda-rounds"), 3L),
-    ADAP_PDA = intArg(argValue(args, "pda-rounds"), 3L),
-    ADAP1 = intArg(argValue(args, "pda-rounds"), 3L),
-    ADAPDiag = intArg(argValue(args, "pda-rounds"), 3L),
-    intArg(argValue(args, "rounds"), 1000L)
+    DualAvg = firstValue(intCsvArg(argValue(args, "dualavg-rounds"), 10000L)),
+    DualAvgCpp = firstValue(intCsvArg(argValue(args, "dualavg-rounds"), 10000L)),
+    DualAvgR = firstValue(intCsvArg(argValue(args, "dualavg-rounds"), 10000L)),
+    ODAL = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    ADAP = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    ADAP_PDA = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    ADAP1 = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    ADAPDiag = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    firstValue(intCsvArg(argValue(args, "rounds"), 1000L))
   )
 }
 
 baselineMethods <- c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")
-dualAvgMethods <- c("DualAvg", "DualAvgCpp", "DualAvgR", "FastDualAvg")
+dualAvgMethods <- c("DualAvg", "DualAvgCpp", "DualAvgR")
 
 readCsvIfExists <- function(path) {
   if (!file.exists(path)) {
@@ -178,43 +203,109 @@ isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
 }
 
 methodConfig <- function(method, featureSet, args) {
+  defaultLambdaSearch <- if (method %in% c("ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) "optimize" else "grid"
   cfg <- list(
-    mapType = argValue(args, "map-type") %||% "intersection",
+    mapType = firstValue(charCsvArg(argValue(args, "map-type"), "intersection")),
     featureSet = featureSet,
     intercept = logicalArg(argValue(args, "intercept"), TRUE),
     profile = logicalArg(argValue(args, "profile"), FALSE),
-    epsilon = numArg(argValue(args, "epsilon"), 1e-6),
+    epsilon = firstValue(numCsvArg(argValue(args, "epsilon"), 1e-6)),
     clientFrac = 1,
     rounds = methodRounds(method, args),
-    foldsK = intArg(argValue(args, "inner-folds"), 5L),
+    foldsK = firstValue(intCsvArg(argValue(args, "inner-folds"), 5L)),
     cvSeed = intArg(argValue(args, "cv-seed"), 42L),
-    maxIter = intArg(argValue(args, "max-iter"), 1000L),
-    maxOuter = intArg(argValue(args, "max-outer"), 100L),
-    maxInner = intArg(argValue(args, "max-inner"), 100L),
-    lambdaGridLen = intArg(argValue(args, "lambda-grid-len"), 100L),
-    convergenceObjective = argValue(args, "convergence-objective") %||% "negLogLikelihood"
+    maxIter = firstValue(intCsvArg(argValue(args, "max-iter"), 1000L)),
+    maxOuter = firstValue(intCsvArg(argValue(args, "max-outer"), 100L)),
+    maxInner = firstValue(intCsvArg(argValue(args, "max-inner"), 100L)),
+    lambdaGridLen = firstValue(intCsvArg(argValue(args, "lambda-grid-len"), 100L)),
+    lambdaSearch = firstValue(charCsvArg(argValue(args, "lambda-search"), defaultLambdaSearch)),
+    lambdaSearchTol = firstValue(numCsvArg(argValue(args, "lambda-search-tol"), log(1.5))),
+    lambdaSearchMaxEvals = firstValue(intCsvArg(argValue(args, "lambda-search-max-evals"), 25L)),
+    convergenceObjective = firstValue(charCsvArg(argValue(args, "convergence-objective"), "negLogLikelihood"))
   )
 
   if (method %in% dualAvgMethods) {
-    cfg$etaClient <- numArg(argValue(args, "eta-client"), 1)
-    cfg$etaServer <- numArg(argValue(args, "eta-server"), 1)
-    cfg$k <- intArg(argValue(args, "k"), 10L)
-    cfg$lambda <- numArg(argValue(args, "dualavg-lambda"), 2.09e-4)
-    cfg$mapType <- argValue(args, "dualavg-map-type") %||% cfg$mapType
-    cfg$convergenceObjective <- argValue(args, "dualavg-convergence-objective") %||% cfg$convergenceObjective
+    cfg$etaClient <- firstValue(numCsvArg(argValue(args, "eta-client"), 1))
+    cfg$etaServer <- firstValue(numCsvArg(argValue(args, "eta-server"), 1))
+    cfg$k <- firstValue(intCsvArg(argValue(args, "k"), 10L))
+    cfg$lambda <- firstValue(numCsvArg(argValue(args, "dualavg-lambda"), 2.09e-4))
+    cfg$mapType <- firstValue(charCsvArg(argValue(args, "dualavg-map-type"), cfg$mapType))
+    cfg$convergenceObjective <- firstValue(charCsvArg(
+      argValue(args, "dualavg-convergence-objective"),
+      cfg$convergenceObjective
+    ))
   } else {
     lambdaArg <- argValue(args, "lambda")
-    cfg$lambda <- if (!is.null(lambdaArg)) numArg(lambdaArg, NA_real_) else NULL
+    cfg$lambda <- if (!is.null(lambdaArg)) firstValue(numCsvArg(lambdaArg, NA_real_)) else NULL
   }
 
   if (identical(method, "ADAPDiag") && !is.null(argValue(args, "adapdiag-style"))) {
-    cfg$adapDiagStyle <- argValue(args, "adapdiag-style")
-  }
-  if (identical(method, "ADAP2")) {
-    cfg$hessian <- argValue(args, "adap2-hessian") %||% "diag"
-    cfg$maxFullHessianP <- intArg(argValue(args, "max-full-hessian-p"), 2000L)
+    cfg$adapDiagStyle <- firstValue(charCsvArg(argValue(args, "adapdiag-style"), "remote"))
   }
   cfg
+}
+
+methodConfigGridValues <- function(method, base, args) {
+  values <- list(
+    mapType = charCsvArg(argValue(args, "map-type"), base$mapType),
+    epsilon = numCsvArg(argValue(args, "epsilon"), base$epsilon),
+    rounds = if (method %in% dualAvgMethods) {
+      intCsvArg(argValue(args, "dualavg-rounds"), base$rounds)
+    } else if (method %in% c("ODAL", "ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) {
+      intCsvArg(argValue(args, "pda-rounds"), base$rounds)
+    } else {
+      intCsvArg(argValue(args, "rounds"), base$rounds)
+    },
+    foldsK = intCsvArg(argValue(args, "inner-folds"), base$foldsK),
+    maxIter = intCsvArg(argValue(args, "max-iter"), base$maxIter),
+    maxOuter = intCsvArg(argValue(args, "max-outer"), base$maxOuter),
+    maxInner = intCsvArg(argValue(args, "max-inner"), base$maxInner),
+    lambdaGridLen = intCsvArg(argValue(args, "lambda-grid-len"), base$lambdaGridLen),
+    lambdaSearch = charCsvArg(argValue(args, "lambda-search"), base$lambdaSearch),
+    lambdaSearchTol = numCsvArg(argValue(args, "lambda-search-tol"), base$lambdaSearchTol),
+    lambdaSearchMaxEvals = intCsvArg(argValue(args, "lambda-search-max-evals"), base$lambdaSearchMaxEvals)
+  )
+  if (method %in% dualAvgMethods) {
+    values$etaClient <- numCsvArg(argValue(args, "eta-client"), base$etaClient)
+    values$etaServer <- numCsvArg(argValue(args, "eta-server"), base$etaServer)
+    values$k <- intCsvArg(argValue(args, "k"), base$k)
+    values$lambda <- numCsvArg(argValue(args, "dualavg-lambda"), base$lambda)
+    values$mapType <- charCsvArg(argValue(args, "dualavg-map-type"), base$mapType)
+    values$convergenceObjective <- charCsvArg(
+      argValue(args, "dualavg-convergence-objective"),
+      base$convergenceObjective
+    )
+  } else if (!is.null(base$lambda) || !is.null(argValue(args, "lambda"))) {
+    values$lambda <- numCsvArg(argValue(args, "lambda"), base$lambda %||% NA_real_)
+  }
+  if (identical(method, "ADAPDiag")) {
+    values$adapDiagStyle <- charCsvArg(argValue(args, "adapdiag-style"), base$adapDiagStyle %||% "remote")
+  }
+  values
+}
+
+configLabel <- function(grid, i) {
+  parts <- vapply(names(grid), function(nm) {
+    sprintf("%s=%s", nm, grid[[nm]][[i]])
+  }, character(1))
+  paste(parts, collapse = ";")
+}
+
+methodConfigGrid <- function(method, featureSet, args) {
+  base <- methodConfig(method, featureSet, args)
+  grid <- expand.grid(
+    methodConfigGridValues(method, base, args),
+    stringsAsFactors = FALSE
+  )
+  configs <- lapply(seq_len(nrow(grid)), function(i) {
+    cfg <- base
+    for (nm in names(grid)) {
+      cfg[[nm]] <- grid[[nm]][[i]]
+    }
+    cfg$configLabel <- if (nrow(grid) == 1L) "default" else configLabel(grid, i)
+    cfg
+  })
+  configs
 }
 
 shouldTuneDualAvg <- function(args) {
@@ -260,12 +351,17 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
   configBase$lambda <- NULL
   configBase$mapping <- globalMap
   configBase$p <- nrow(globalMap)
+  configBase$warmStartLambdaPath <- logicalArg(
+    argValue(args, "dualavg-warm-start-lambda-path"),
+    TRUE
+  )
 
   if (isTRUE(verbose)) {
     message(sprintf(
-      "Tuning %s lambda by federated inner CV; starting variance = %.5g",
+      "Tuning %s lambda by federated inner CV; starting variance = %.5g; warm starts = %s",
       method,
-      lambdaDefault
+      lambdaDefault,
+      configBase$warmStartLambdaPath
     ))
   }
   tuned <- FederatedLearning:::tuneLambda(
@@ -299,16 +395,111 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
   config$lambdaSearchBest <- tuned$bestLambda
   config$lambdaSearchBestTrain <- tuned$bestLambdaTrain %||% NA_real_
   config$lambdaSearchInnerAuc <- tuned$perf %||% NA_real_
+  config$innerCvScore <- tuned$perf %||% NA_real_
   if (isTRUE(verbose)) {
     message(sprintf(
-      "Selected %s lambda: search scale = %.5g, fit scale = %.5g, inner AUC = %.5g",
+      "Selected %s lambda: search scale = %.5g, fit scale = %.5g, inner-CV AUC = %.5g",
       method,
       config$lambdaSearchBest,
       config$lambda,
-      config$lambdaSearchInnerAuc
+      config$innerCvScore
     ))
   }
   config
+}
+
+scoreFederatedConfigInnerCv <- function(method, clTrain, config, trainIds, verbose) {
+  if (length(trainIds) < 2L) {
+    stop("Config selection requires at least two training clients")
+  }
+  globalMap <- config$mapping %||% FederatedLearning::clusterCollectCovRefs(
+    clTrain,
+    type = config$mapType,
+    featureSet = config$featureSet,
+    covariateIds = config$covariateIds,
+    analysisIds = config$analysisIds
+  )
+  config$mapping <- globalMap
+  config$p <- nrow(globalMap)
+
+  scores <- vapply(trainIds, function(valId) {
+    train2 <- setdiff(trainIds, valId)
+    trainCluster <- FederatedLearning:::subsetCluster(clTrain, train2)
+    valCluster <- FederatedLearning:::subsetCluster(clTrain, valId)
+    if (isTRUE(verbose)) {
+      message(
+        "Scoring ", method, " config on folds ", paste(train2, collapse = ""),
+        " validating on fold ", valId
+      )
+    }
+    fit <- FederatedLearning::fitFederated(
+      cl = trainCluster,
+      algorithm = method,
+      config = config,
+      verbose = verbose
+    )
+    valConfig <- fit$config
+    valConfig$mapping <- fit$config$mapping
+    valConfig$p <- nrow(fit$config$mapping)
+    FederatedLearning::clusterCreateMatrices(valCluster, valConfig)
+    ev <- FederatedLearning::clusterEvaluateModel(valCluster, fit$w)
+    FederatedLearning:::.innerCvScoreFromEvaluation(ev)
+  }, numeric(1))
+
+  score <- FederatedLearning:::.innerCvScoreMean(scores)
+  if (!is.finite(score)) {
+    stop("Unable to compute a finite inner-CV AUC for method ", method)
+  }
+  config$innerCvScore <- score
+  config$innerCvScoreSd <- FederatedLearning:::.innerCvScoreSd(scores)
+  config
+}
+
+needsInnerCvConfigSelection <- function(method, configs, args) {
+  if (length(configs) <= 1L) {
+    return(FALSE)
+  }
+  if (!method %in% dualAvgMethods) {
+    return(TRUE)
+  }
+  !shouldTuneDualAvg(args)
+}
+
+selectMethodConfigForFold <- function(method, clTrain, configs, trainPopSizes, args, verbose) {
+  if (length(configs) == 1L) {
+    config <- tuneDualAvgForFold(method, clTrain, configs[[1]], trainPopSizes, args, verbose)
+    return(config)
+  }
+  tunedConfigs <- lapply(configs, function(config) {
+    config <- tuneDualAvgForFold(method, clTrain, config, trainPopSizes, args, verbose)
+    if (needsInnerCvConfigSelection(method, configs, args)) {
+      config <- scoreFederatedConfigInnerCv(
+        method = method,
+        clTrain = clTrain,
+        config = config,
+        trainIds = seq_along(trainPopSizes),
+        verbose = verbose
+      )
+    }
+    config
+  })
+  scores <- vapply(tunedConfigs, function(config) {
+    config$innerCvScore %||% config$lambdaSearchInnerAuc %||% NA_real_
+  }, numeric(1))
+  if (all(!is.finite(scores))) {
+    best <- 1L
+  } else {
+    best <- which.max(scores)
+  }
+  if (isTRUE(verbose)) {
+    message(sprintf(
+      "Selected %s config by inner CV: %s (inner-CV AUC = %.5g)",
+      method,
+      tunedConfigs[[best]]$configLabel %||% "default",
+      scores[[best]]
+    ))
+  }
+  tunedConfigs[[best]]
 }
 
 evaluateWeights <- function(clientData, w, clientId, clientIndex) {
@@ -515,6 +706,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       hessianDiagMax = NA_real_,
       hessianCondition = NA_real_,
       elapsedSeconds = fit$elapsedSeconds,
+      configLabel = config$configLabel %||% "default",
       stringsAsFactors = FALSE
     ),
     evalRows,
@@ -554,6 +746,11 @@ summarizeResults <- function(rows) {
   do.call(rbind, summaries)
 }
 
+communicationMessages <- function(fit, config) {
+  roundsCompleted <- fit$roundsCompleted %||% config$rounds
+  roundsCompleted * length(config$trainClientPaths)
+}
+
 fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
                              task, featureSet, fold, testClientIds, verbose) {
   start <- Sys.time()
@@ -584,7 +781,6 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     )
     utils::write.csv(lambdaDf, lambdaPathFile, row.names = FALSE)
   }
-
   cbind(
     data.frame(
       method = method,
@@ -600,11 +796,12 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       hessianDiagMax = fit$hessianDiagMax %||% NA_real_,
       hessianCondition = fit$hessianCondition %||% NA_real_,
       elapsedSeconds = elapsed,
+      configLabel = config$configLabel %||% "default",
       stringsAsFactors = FALSE
     ),
     evalRows,
     data.frame(
-      messages = config$rounds * length(config$trainClientPaths),
+      messages = communicationMessages(fit, config),
       numbers = fit$communicationNumbers %||% NA_real_,
       task = task,
       error = NA_character_,
@@ -752,10 +949,14 @@ runComparison <- function(args) {
                 "[%s] task=%s fold=%s featureSet=%s method=%s",
                 format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method
               ))
-              config <- methodConfig(method, featureSet, args)
-              config$trainClientPaths <- trainPaths
+              configs <- methodConfigGrid(method, featureSet, args)
+              configs <- lapply(configs, function(config) {
+                config$trainClientPaths <- trainPaths
+                config
+              })
               res <- tryCatch(
                 if (method %in% baselineMethods) {
+                  config <- configs[[1]]
                   fitBaselineFold(
                     method = method,
                     trainPaths = trainPaths,
@@ -771,10 +972,10 @@ runComparison <- function(args) {
                     testClientIndexes = testIds
                   )
                 } else {
-                  config <- tuneDualAvgForFold(
+                  config <- selectMethodConfigForFold(
                     method = method,
                     clTrain = clTrain,
-                    config = config,
+                    configs = configs,
                     trainPopSizes = trainPopSizes,
                     args = args,
                     verbose = verbose
@@ -812,6 +1013,7 @@ runComparison <- function(args) {
                     hessianDiagMax = NA_real_,
                     hessianCondition = NA_real_,
                     elapsedSeconds = NA_real_,
+                    configLabel = NA_character_,
                     client = testIds,
                     clientId = clientIds[testIds],
                     auc = NA_real_,

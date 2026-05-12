@@ -584,6 +584,9 @@ test_that("comparison runner helpers parse external comparison settings", {
     "--prior-outcome-lookback=99999",
     "--pda-rounds=3",
     "--adapdiag-style=pda",
+    "--lambda-search=optimize",
+    "--lambda-search-tol=0.2",
+    "--lambda-search-max-evals=12",
     "--dualavg-convergence-objective=cyclopsGradient"
   ))
 
@@ -595,12 +598,84 @@ test_that("comparison runner helpers parse external comparison settings", {
   cfg <- runnerEnv$methodConfig("ADAPDiag", "ageSexPhenotypes", args)
   expect_equal(cfg$rounds, 3L)
   expect_equal(cfg$adapDiagStyle, "pda")
+  expect_equal(cfg$lambdaSearch, "optimize")
+  expect_equal(cfg$lambdaSearchTol, 0.2)
+  expect_equal(cfg$lambdaSearchMaxEvals, 12L)
+  expect_equal(runnerEnv$taskRiskWindow("dementia"), 5 * 365)
+  expect_equal(runnerEnv$taskRiskWindow("dementiaPhenotypes"), 5 * 365)
   expect_equal(runnerEnv$taskRiskWindow("taskA"), 30L)
 
   dualAvgCfg <- runnerEnv$methodConfig("DualAvg", "ageSex", args)
   expect_equal(dualAvgCfg$convergenceObjective, "cyclopsGradient")
   expect_true(runnerEnv$shouldTuneDualAvg(args))
   expect_equal(runnerEnv$dualAvgStartingVariance(args), 0.01)
+
+  gridArgs <- runnerEnv$parseArgs(c(
+    "--eta-client=0.5,1",
+    "--eta-server=0.25,1",
+    "--k=2,4"
+  ))
+  grid <- runnerEnv$methodConfigGrid("DualAvg", "ageSex", gridArgs)
+  expect_equal(length(grid), 8L)
+  expect_equal(
+    sort(unique(vapply(grid, `[[`, numeric(1), "etaClient"))),
+    c(0.5, 1)
+  )
+  expect_equal(sort(unique(vapply(grid, `[[`, integer(1), "k"))), c(2L, 4L))
+  expect_match(grid[[1]]$configLabel, "etaClient=")
+
+  adapGridArgs <- runnerEnv$parseArgs(c(
+    "--methods=ADAP",
+    "--max-outer=50,100",
+    "--max-inner=25,50",
+    "--lambda-search=grid,optimize"
+  ))
+  adapGrid <- runnerEnv$methodConfigGrid("ADAP", "ageSex", adapGridArgs)
+  expect_equal(length(adapGrid), 8L)
+  expect_equal(sort(unique(vapply(adapGrid, `[[`, integer(1), "maxOuter"))), c(50L, 100L))
+  expect_equal(sort(unique(vapply(adapGrid, `[[`, character(1), "lambdaSearch"))), c("grid", "optimize"))
+
+  fixedGridArgs <- runnerEnv$parseArgs(c(
+    "--dualavg-lambda=1e-05",
+    "--eta-client=0.5,1"
+  ))
+  fixedGrid <- runnerEnv$methodConfigGrid("DualAvg", "ageSex", fixedGridArgs)
+  runnerEnv$tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, verbose) {
+    config
+  }
+  runnerEnv$scoreFederatedConfigInnerCv <- function(method, clTrain, config, trainIds, verbose) {
+    config$innerCvScore <- if (identical(config$etaClient, 1)) 0.8 else 0.7
+    config
+  }
+  selectedFixed <- runnerEnv$selectMethodConfigForFold(
+    method = "DualAvg",
+    clTrain = list(1, 2, 3),
+    configs = fixedGrid,
+    trainPopSizes = c(10, 10, 10),
+    args = fixedGridArgs,
+    verbose = FALSE
+  )
+  expect_equal(selectedFixed$etaClient, 1)
+  expect_equal(
+    runnerEnv$communicationMessages(
+      fit = list(roundsCompleted = 17L),
+      config = list(rounds = 100L, trainClientPaths = paste0("site", 1:4))
+    ),
+    68L
+  )
+  expect_equal(
+    runnerEnv$communicationMessages(
+      fit = list(),
+      config = list(rounds = 100L, trainClientPaths = paste0("site", 1:4))
+    ),
+    400L
+  )
+
+  defaultArgs <- runnerEnv$parseArgs(character())
+  expect_equal(runnerEnv$methodConfig("ADAP_PDA", "ageSex", defaultArgs)$lambdaSearch, "optimize")
+  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSearch, "optimize")
+  expect_equal(runnerEnv$methodConfig("ADAP1", "ageSex", defaultArgs)$lambdaSearch, "optimize")
+  expect_equal(runnerEnv$methodConfig("ADAPDiag", "ageSex", defaultArgs)$lambdaSearch, "optimize")
 
   fixedDualAvgArgs <- runnerEnv$parseArgs(c("--dualavg-lambda=1e-05"))
   expect_false(runnerEnv$shouldTuneDualAvg(fixedDualAvgArgs))
