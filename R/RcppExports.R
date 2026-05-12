@@ -44,3 +44,15 @@ quadraticLassoCdCpp <- function(aTilde, bMatrix, betaInit, lambda, maxIter = 100
     .Call(`_FederatedLearning_quadraticLassoCdCpp`, aTilde, bMatrix, betaInit, lambda, maxIter, tol, penalizeNullable)
 }
 
+adapFullSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8) {
+    .Call(`_FederatedLearning_adapFullSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, maxOuter, maxInner, tol, eps)
+}
+
+adapFirstSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, gradBar, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8) {
+    .Call(`_FederatedLearning_adapFirstSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, gradBar, lambda, maxOuter, maxInner, tol, eps)
+}
+
+adapDiagSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, globalHessDiag, gradBar, hBarDiag, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8) {
+    .Call(`_FederatedLearning_adapDiagSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, globalHessDiag, gradBar, hBarDiag, lambda, maxOuter, maxInner, tol, eps)
+}
+

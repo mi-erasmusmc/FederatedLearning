@@ -194,6 +194,103 @@ static inline double soft_threshold_scalar(double value, double threshold) {
   return 0.0;
 }
 
+static void logistic_gradient_hessian_full(
+    const Eigen::Map<Eigen::SparseMatrix<double> >& x,
+    const Eigen::VectorXd& beta,
+    const Eigen::VectorXd& y,
+    double eps,
+    Eigen::VectorXd& gradient,
+    Eigen::MatrixXd& hessian) {
+  const int n = y.size();
+  Eigen::VectorXd eta = x * beta;
+  Eigen::ArrayXd prob = clipped_probabilities(eta, eps);
+  Eigen::VectorXd residual = (prob - y.array()).matrix();
+  gradient = (x.transpose() * residual) / static_cast<double>(n);
+  Eigen::VectorXd weights = (prob * (1.0 - prob)).matrix();
+  Eigen::SparseMatrix<double> weightedX = x;
+
+  for (int outer = 0; outer < weightedX.outerSize(); ++outer) {
+    for (Eigen::SparseMatrix<double>::InnerIterator it(weightedX, outer); it; ++it) {
+      it.valueRef() *= weights[it.row()];
+    }
+  }
+  Eigen::SparseMatrix<double> hSparse = x.transpose() * weightedX;
+  hessian = Eigen::MatrixXd(hSparse) / static_cast<double>(n);
+}
+
+static void logistic_gradient_hessian_diag(
+    const Eigen::Map<Eigen::SparseMatrix<double> >& x,
+    const Eigen::VectorXd& beta,
+    const Eigen::VectorXd& y,
+    double eps,
+    Eigen::VectorXd& gradient,
+    Eigen::VectorXd& hessianDiag) {
+  const int n = y.size();
+  const int pDim = x.cols();
+  Eigen::VectorXd eta = x * beta;
+  Eigen::ArrayXd prob = clipped_probabilities(eta, eps);
+  Eigen::VectorXd residual = (prob - y.array()).matrix();
+  gradient = (x.transpose() * residual) / static_cast<double>(n);
+  Eigen::ArrayXd weights = prob * (1.0 - prob);
+  hessianDiag = Eigen::VectorXd::Zero(pDim);
+
+  for (int outer = 0; outer < x.outerSize(); ++outer) {
+    for (Eigen::Map<Eigen::SparseMatrix<double> >::InnerIterator it(x, outer); it; ++it) {
+      hessianDiag[it.col()] += it.value() * it.value() * weights[it.row()];
+    }
+  }
+  hessianDiag /= static_cast<double>(n);
+}
+
+static Eigen::VectorXd quadratic_lasso_cd_impl(
+    const Eigen::VectorXd& aTilde,
+    const Eigen::MatrixXd& bMatrix,
+    const Eigen::VectorXd& betaInit,
+    double lambda,
+    int maxIter,
+    double tol,
+    const std::vector<int>& penalize) {
+  const int p = betaInit.size();
+  Eigen::VectorXd beta = betaInit;
+  Eigen::VectorXd bBeta = bMatrix * beta;
+  const Eigen::VectorXd diagB = bMatrix.diagonal();
+
+  auto objective = [&]() {
+    return aTilde.dot(beta) + 0.5 * beta.dot(bBeta);
+  };
+
+  for (int iter = 0; iter < maxIter; ++iter) {
+    const double oldObjective = objective();
+
+    for (int j = 0; j < p; ++j) {
+      double hjj = diagB[j];
+      if (!R_finite(hjj) || hjj <= 0.0) {
+        hjj = 1e-10;
+      }
+      const double oldBeta = beta[j];
+      const double linearWithoutJ = aTilde[j] + bBeta[j] - diagB[j] * oldBeta;
+      double z = -linearWithoutJ / hjj;
+      if (!R_finite(z)) {
+        z = oldBeta;
+      }
+      const double newBeta = penalize[j] ? soft_threshold_scalar(z, lambda / hjj) : z;
+      const double delta = newBeta - oldBeta;
+      if (delta != 0.0) {
+        beta[j] = newBeta;
+        bBeta.noalias() += bMatrix.col(j) * delta;
+      }
+    }
+
+    const double newObjective = objective();
+    const double diffObjective = newObjective - oldObjective;
+    if (R_finite(diffObjective) && std::abs(diffObjective) < tol) {
+      break;
+    }
+  }
+
+  return beta;
+}
+
 // [[Rcpp::export]]
 Eigen::VectorXd quadraticLassoCdCpp(const Eigen::VectorXd& aTilde,
                                     const Eigen::MatrixXd& bMatrix,
@@ -235,42 +332,172 @@ Eigen::VectorXd quadraticLassoCdCpp(const Eigen::VectorXd& aTilde,
     penalize[0] = 0;
   }
 
-  Eigen::VectorXd beta = betaInit;
-  Eigen::VectorXd bBeta = bMatrix * beta;
-  const Eigen::VectorXd diagB = bMatrix.diagonal();
+  return quadratic_lasso_cd_impl(
+    aTilde,
+    bMatrix,
+    betaInit,
+    lambda,
+    maxIter,
+    tol,
+    penalize
+  );
+}
 
-  auto objective = [&]() {
-    return aTilde.dot(beta) + 0.5 * beta.dot(bBeta);
-  };
+// [[Rcpp::export]]
+List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
+                             const Eigen::VectorXd& y,
+                             const Eigen::VectorXd& betaStart,
+                             const Eigen::VectorXd& betaBar,
+                             const Eigen::VectorXd& globalGrad,
+                             const Eigen::MatrixXd& globalHess,
+                             const Eigen::VectorXd& gradBar,
+                             const Eigen::MatrixXd& hBar,
+                             double lambda,
+                             int maxOuter = 100,
+                             int maxInner = 100,
+                             double tol = 1e-5,
+                             double eps = 1e-8) {
+  const int p = betaStart.size();
+  if (x.cols() != p || y.size() != x.rows() || betaBar.size() != p ||
+      globalGrad.size() != p || gradBar.size() != p ||
+      globalHess.rows() != p || globalHess.cols() != p ||
+      hBar.rows() != p || hBar.cols() != p) {
+    stop("adapFullSurrogateFitCpp dimension mismatch");
+  }
+  std::vector<int> penalize(p, 1);
+  if (p > 0) {
+    penalize[0] = 0;
+  }
 
-  for (int iter = 0; iter < maxIter; ++iter) {
-    const double oldObjective = objective();
+  Eigen::VectorXd beta = betaStart;
+  const Eigen::MatrixXd hCorrection = globalHess - hBar;
+  const Eigen::VectorXd aCorrection = globalGrad - gradBar - hCorrection * betaBar;
+  int iterations = 0;
+  bool converged = false;
 
-    for (int j = 0; j < p; ++j) {
-      double hjj = diagB[j];
-      if (!R_finite(hjj) || hjj <= 0.0) {
-        hjj = 1e-10;
-      }
-      const double oldBeta = beta[j];
-      const double linearWithoutJ = aTilde[j] + bBeta[j] - diagB[j] * oldBeta;
-      double z = -linearWithoutJ / hjj;
-      if (!R_finite(z)) {
-        z = oldBeta;
-      }
-      const double newBeta = penalize[j] ? soft_threshold_scalar(z, lambda / hjj) : z;
-      const double delta = newBeta - oldBeta;
-      if (delta != 0.0) {
-        beta[j] = newBeta;
-        bBeta.noalias() += bMatrix.col(j) * delta;
-      }
-    }
-
-    const double newObjective = objective();
-    const double diffObjective = newObjective - oldObjective;
-    if (R_finite(diffObjective) && std::abs(diffObjective) < tol) {
+  for (int iter = 0; iter < maxOuter; ++iter) {
+    iterations = iter + 1;
+    Eigen::VectorXd old = beta;
+    Eigen::VectorXd grad;
+    Eigen::MatrixXd hEval;
+    logistic_gradient_hessian_full(x, beta, y, eps, grad, hEval);
+    Eigen::MatrixXd bMatrix = hEval + hCorrection;
+    Eigen::VectorXd aTilde = grad - hEval * beta + aCorrection;
+    beta = quadratic_lasso_cd_impl(aTilde, bMatrix, beta, lambda, maxInner, tol, penalize);
+    double delta = (beta - old).cwiseAbs().maxCoeff();
+    if (R_finite(delta) && delta < tol) {
+      converged = true;
       break;
     }
   }
 
-  return beta;
+  return List::create(
+    _["beta"] = beta,
+    _["outerIterations"] = iterations,
+    _["converged"] = converged
+  );
+}
+
+// [[Rcpp::export]]
+List adapFirstSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
+                              const Eigen::VectorXd& y,
+                              const Eigen::VectorXd& betaStart,
+                              const Eigen::VectorXd& betaBar,
+                              const Eigen::VectorXd& globalGrad,
+                              const Eigen::VectorXd& gradBar,
+                              double lambda,
+                              int maxOuter = 100,
+                              int maxInner = 100,
+                              double tol = 1e-5,
+                              double eps = 1e-8) {
+  const int p = betaStart.size();
+  if (x.cols() != p || y.size() != x.rows() || betaBar.size() != p ||
+      globalGrad.size() != p || gradBar.size() != p) {
+    stop("adapFirstSurrogateFitCpp dimension mismatch");
+  }
+  std::vector<int> penalize(p, 1);
+  if (p > 0) {
+    penalize[0] = 0;
+  }
+
+  Eigen::VectorXd beta = betaStart;
+  const Eigen::VectorXd aCorrection = globalGrad - gradBar;
+  int iterations = 0;
+  bool converged = false;
+
+  for (int iter = 0; iter < maxOuter; ++iter) {
+    iterations = iter + 1;
+    Eigen::VectorXd old = beta;
+    Eigen::VectorXd grad;
+    Eigen::MatrixXd hEval;
+    logistic_gradient_hessian_full(x, beta, y, eps, grad, hEval);
+    Eigen::VectorXd aTilde = grad - hEval * beta + aCorrection;
+    beta = quadratic_lasso_cd_impl(aTilde, hEval, beta, lambda, maxInner, tol, penalize);
+    double delta = (beta - old).cwiseAbs().maxCoeff();
+    if (R_finite(delta) && delta < tol) {
+      converged = true;
+      break;
+    }
+  }
+
+  return List::create(
+    _["beta"] = beta,
+    _["outerIterations"] = iterations,
+    _["converged"] = converged
+  );
+}
+
+// [[Rcpp::export]]
+List adapDiagSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
+                             const Eigen::VectorXd& y,
+                             const Eigen::VectorXd& betaStart,
+                             const Eigen::VectorXd& betaBar,
+                             const Eigen::VectorXd& globalGrad,
+                             const Eigen::VectorXd& globalHessDiag,
+                             const Eigen::VectorXd& gradBar,
+                             const Eigen::VectorXd& hBarDiag,
+                             double lambda,
+                             int maxOuter = 100,
+                             int maxInner = 100,
+                             double tol = 1e-5,
+                             double eps = 1e-8) {
+  const int p = betaStart.size();
+  if (x.cols() != p || y.size() != x.rows() || betaBar.size() != p ||
+      globalGrad.size() != p || globalHessDiag.size() != p ||
+      gradBar.size() != p || hBarDiag.size() != p) {
+    stop("adapDiagSurrogateFitCpp dimension mismatch");
+  }
+  std::vector<int> penalize(p, 1);
+  if (p > 0) {
+    penalize[0] = 0;
+  }
+
+  Eigen::VectorXd beta = betaStart;
+  const Eigen::VectorXd hCorrection = globalHessDiag - hBarDiag;
+  const Eigen::VectorXd aCorrection = globalGrad - gradBar - (betaBar.array() * hCorrection.array()).matrix();
+  int iterations = 0;
+  bool converged = false;
+
+  for (int iter = 0; iter < maxOuter; ++iter) {
+    iterations = iter + 1;
+    Eigen::VectorXd old = beta;
+    Eigen::VectorXd grad;
+    Eigen::MatrixXd hEval;
+    logistic_gradient_hessian_full(x, beta, y, eps, grad, hEval);
+    Eigen::MatrixXd bMatrix = hEval;
+    bMatrix.diagonal() += hCorrection;
+    Eigen::VectorXd aTilde = grad - hEval * beta + aCorrection;
+    beta = quadratic_lasso_cd_impl(aTilde, bMatrix, beta, lambda, maxInner, tol, penalize);
+    double delta = (beta - old).cwiseAbs().maxCoeff();
+    if (R_finite(delta) && delta < tol) {
+      converged = true;
+      break;
+    }
+  }
+
+  return List::create(
+    _["beta"] = beta,
+    _["outerIterations"] = iterations,
+    _["converged"] = converged
+  );
 }

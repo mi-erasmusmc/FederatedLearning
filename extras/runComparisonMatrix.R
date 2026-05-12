@@ -204,6 +204,7 @@ isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
 
 methodConfig <- function(method, featureSet, args) {
   defaultLambdaSearch <- if (method %in% c("ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) "optimize" else "grid"
+  defaultLambdaMetric <- if (method %in% c("ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) "auc" else "deviance"
   cfg <- list(
     mapType = firstValue(charCsvArg(argValue(args, "map-type"), "intersection")),
     featureSet = featureSet,
@@ -221,6 +222,22 @@ methodConfig <- function(method, featureSet, args) {
     lambdaSearch = firstValue(charCsvArg(argValue(args, "lambda-search"), defaultLambdaSearch)),
     lambdaSearchTol = firstValue(numCsvArg(argValue(args, "lambda-search-tol"), log(1.5))),
     lambdaSearchMaxEvals = firstValue(intCsvArg(argValue(args, "lambda-search-max-evals"), 25L)),
+    lambdaSelectionMetric = firstValue(charCsvArg(
+      argValue(args, "adap-lambda-selection-metric") %||% argValue(args, "lambda-selection-metric"),
+      defaultLambdaMetric
+    )),
+    lambdaSelectionTieTolerance = firstValue(numCsvArg(
+      argValue(args, "adap-lambda-selection-tie-tolerance") %||% argValue(args, "lambda-selection-tie-tolerance"),
+      1e-8
+    )),
+    lambdaCvMaxRows = firstValue(numCsvArg(
+      argValue(args, "adap-lambda-cv-max-rows") %||% argValue(args, "lambda-cv-max-rows"),
+      Inf
+    )),
+    lambdaCvGlobalAdjustment = firstValue(charCsvArg(
+      argValue(args, "adap-lambda-cv-global-adjustment") %||% argValue(args, "lambda-cv-global-adjustment"),
+      "leaveValOut"
+    )),
     convergenceObjective = firstValue(charCsvArg(argValue(args, "convergence-objective"), "negLogLikelihood"))
   )
 
@@ -263,7 +280,23 @@ methodConfigGridValues <- function(method, base, args) {
     lambdaGridLen = intCsvArg(argValue(args, "lambda-grid-len"), base$lambdaGridLen),
     lambdaSearch = charCsvArg(argValue(args, "lambda-search"), base$lambdaSearch),
     lambdaSearchTol = numCsvArg(argValue(args, "lambda-search-tol"), base$lambdaSearchTol),
-    lambdaSearchMaxEvals = intCsvArg(argValue(args, "lambda-search-max-evals"), base$lambdaSearchMaxEvals)
+    lambdaSearchMaxEvals = intCsvArg(argValue(args, "lambda-search-max-evals"), base$lambdaSearchMaxEvals),
+    lambdaSelectionMetric = charCsvArg(
+      argValue(args, "adap-lambda-selection-metric") %||% argValue(args, "lambda-selection-metric"),
+      base$lambdaSelectionMetric
+    ),
+    lambdaSelectionTieTolerance = numCsvArg(
+      argValue(args, "adap-lambda-selection-tie-tolerance") %||% argValue(args, "lambda-selection-tie-tolerance"),
+      base$lambdaSelectionTieTolerance
+    ),
+    lambdaCvMaxRows = numCsvArg(
+      argValue(args, "adap-lambda-cv-max-rows") %||% argValue(args, "lambda-cv-max-rows"),
+      base$lambdaCvMaxRows
+    ),
+    lambdaCvGlobalAdjustment = charCsvArg(
+      argValue(args, "adap-lambda-cv-global-adjustment") %||% argValue(args, "lambda-cv-global-adjustment"),
+      base$lambdaCvGlobalAdjustment
+    )
   )
   if (method %in% dualAvgMethods) {
     values$etaClient <- numCsvArg(argValue(args, "eta-client"), base$etaClient)
@@ -777,7 +810,8 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     )
     lambdaDf <- data.frame(
       lambda = fit$lambdaSeq,
-      cvScore = fit$cvScores %||% NA_real_
+      cvScore = fit$cvScores %||% NA_real_,
+      cvMetric = fit$lambdaSelectionMetric %||% NA_character_
     )
     utils::write.csv(lambdaDf, lambdaPathFile, row.names = FALSE)
   }

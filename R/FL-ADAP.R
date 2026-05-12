@@ -88,6 +88,77 @@
   if (is.finite(val)) val else .Machine$double.xmax / 1e100
 }
 
+.adapCvMetric <- function(beta, xDesign, y, metric = c("deviance", "auc")) {
+  metric <- match.arg(metric)
+  if (identical(metric, "deviance")) {
+    return(.negLogLikMean(beta, xDesign, y))
+  }
+  if (length(unique(y)) < 2L) {
+    return(NA_real_)
+  }
+  preds <- stats::plogis(as.numeric(xDesign %*% beta))
+  as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
+}
+
+.adapBestLambdaIndex <- function(scores, lambdaSeq, metric = c("deviance", "auc"),
+                                 tieTolerance = 1e-8) {
+  metric <- match.arg(metric)
+  finite <- is.finite(scores)
+  if (!any(finite)) {
+    return(NA_integer_)
+  }
+  if (identical(metric, "auc")) {
+    best <- max(scores[finite], na.rm = TRUE)
+    candidates <- which(finite & scores >= best - tieTolerance)
+    return(candidates[which.min(lambdaSeq[candidates])])
+  }
+  best <- min(scores[finite], na.rm = TRUE)
+  candidates <- which(finite & scores <= best + tieTolerance)
+  candidates[which.max(lambdaSeq[candidates])]
+}
+
+.adapCvSubset <- function(y, maxRows = Inf, seed = 42L) {
+  n <- length(y)
+  if (!is.finite(maxRows)) {
+    return(seq_len(n))
+  }
+  maxRows <- as.integer(maxRows)
+  if (length(maxRows) != 1L || is.na(maxRows) || maxRows <= 0L || maxRows >= n) {
+    return(seq_len(n))
+  }
+  oldSeed <- if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+    get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  } else {
+    NULL
+  }
+  on.exit({
+    if (is.null(oldSeed)) {
+      if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+        rm(".Random.seed", envir = .GlobalEnv)
+      }
+    } else {
+      assign(".Random.seed", oldSeed, envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+  set.seed(seed)
+
+  cases <- which(y == 1L)
+  controls <- which(y == 0L)
+  if (length(cases) == 0L || length(controls) == 0L) {
+    return(sort(sample(seq_len(n), maxRows)))
+  }
+  targetCases <- min(length(cases), max(1L, round(maxRows * length(cases) / n)))
+  targetControls <- maxRows - targetCases
+  if (targetControls > length(controls)) {
+    targetControls <- length(controls)
+    targetCases <- min(length(cases), maxRows - targetControls)
+  }
+  sort(c(
+    sample(cases, targetCases),
+    sample(controls, targetControls)
+  ))
+}
+
 .fitPdaStyleLocalLasso <- function(xRaw, xDesign, y, config) {
   if (!requireNamespace("glmnet", quietly = TRUE)) {
     stop("Please install glmnet for ADAP")
@@ -234,6 +305,25 @@
                                  maxOuter = 100L, maxInner = 100L,
                                  tol = 1e-5, betaInit = NULL) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
+  if (inherits(xDesign, "sparseMatrix")) {
+    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+    hBar <- .logisticNegHessian(betaBar, xDesign)
+    out <- adapFullSurrogateFitCpp(
+      x = .asDgCMatrix(xDesign),
+      y = y,
+      betaStart = beta,
+      betaBar = betaBar,
+      globalGrad = globalGrad,
+      globalHess = as.matrix(globalHess),
+      gradBar = gradBar,
+      hBar = as.matrix(hBar),
+      lambda = lambda,
+      maxOuter = maxOuter,
+      maxInner = maxInner,
+      tol = tol
+    )
+    return(as.numeric(out$beta))
+  }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -326,7 +416,10 @@
                               lambdaSeq, useFull = TRUE,
                               foldsK = 5L, seed = 42L,
                               maxIter = 1000L, tol = 1e-6,
-                              ridge = 1e-4) {
+                              ridge = 1e-4,
+                              selectionMetric = c("deviance", "auc"),
+                              tieTolerance = 1e-8) {
+  selectionMetric <- match.arg(selectionMetric)
   set.seed(seed)
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
@@ -351,11 +444,16 @@
         betaInit = warmStarts[[fold]]
       )
       warmStarts[[fold]] <- fit
-      foldLoss[fold] <- .negLogLikMean(fit, xDesign[idxVal, , drop = FALSE], y[idxVal])
+      foldLoss[fold] <- .adapCvMetric(
+        fit,
+        xDesign[idxVal, , drop = FALSE],
+        y[idxVal],
+        metric = selectionMetric
+      )
     }
     scores[li] <- mean(foldLoss, na.rm = TRUE)
   }
-  idx <- which.min(scores)
+  idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
   list(lambda = lambdaSeq[idx], scores = scores)
 }
 
@@ -365,6 +463,25 @@
                                            maxOuter = 100L, maxInner = 100L,
                                            tol = 1e-5, betaInit = NULL) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
+  if (inherits(xDesign, "sparseMatrix")) {
+    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+    hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
+    out <- adapDiagSurrogateFitCpp(
+      x = .asDgCMatrix(xDesign),
+      y = y,
+      betaStart = beta,
+      betaBar = betaBar,
+      globalGrad = globalGrad,
+      globalHessDiag = globalHessDiag,
+      gradBar = gradBar,
+      hBarDiag = hBarDiag,
+      lambda = lambda,
+      maxOuter = maxOuter,
+      maxInner = maxInner,
+      tol = tol
+    )
+    return(as.numeric(out$beta))
+  }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -403,6 +520,22 @@
                                            maxOuter = 100L, maxInner = 100L,
                                            tol = 1e-5, betaInit = NULL) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
+  if (inherits(xDesign, "sparseMatrix")) {
+    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+    out <- adapFirstSurrogateFitCpp(
+      x = .asDgCMatrix(xDesign),
+      y = y,
+      betaStart = beta,
+      betaBar = betaBar,
+      globalGrad = globalGrad,
+      gradBar = gradBar,
+      lambda = lambda,
+      maxOuter = maxOuter,
+      maxInner = maxInner,
+      tol = tol
+    )
+    return(as.numeric(out$beta))
+  }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -458,9 +591,12 @@
                                     search = c("grid", "optimize"),
                                     searchTol = log(1.5),
                                     maxEvals = 25L,
+                                    selectionMetric = c("deviance", "auc"),
+                                    tieTolerance = 1e-8,
                                     makeFoldInfo,
                                     fitFold) {
   search <- match.arg(search)
+  selectionMetric <- match.arg(selectionMetric)
   set.seed(seed)
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
@@ -501,7 +637,12 @@
       info <- foldInfo[[fold]]
       fit <- fitFold(info, lambda, closestWarmStart(fold, lambda))
       lambdaFits[[fold]][[key]] <<- fit
-      foldLoss[fold] <- .negLogLikMean(fit, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
+      foldLoss[fold] <- .adapCvMetric(
+        fit,
+        xDesign[info$idxVal, , drop = FALSE],
+        y[info$idxVal],
+        metric = selectionMetric
+      )
     }
     score <- mean(foldLoss, na.rm = TRUE)
     assign(key, list(lambda = lambda, score = score), envir = evalCache)
@@ -510,14 +651,14 @@
 
   if (identical(search, "grid") || length(lambdaSeq) < 3L) {
     scores <- vapply(lambdaSeq, evaluateLambda, numeric(1))
-    idx <- which.min(scores)
+    idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
     return(list(lambda = lambdaSeq[idx], scores = scores))
   }
 
   lambdaRange <- range(lambdaSeq[is.finite(lambdaSeq) & lambdaSeq > 0])
   if (!all(is.finite(lambdaRange)) || lambdaRange[1] <= 0 || lambdaRange[1] == lambdaRange[2]) {
     scores <- vapply(lambdaSeq, evaluateLambda, numeric(1))
-    idx <- which.min(scores)
+    idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
     return(list(lambda = lambdaSeq[idx], scores = scores))
   }
 
@@ -546,7 +687,8 @@
     f2 <- objective(x2)
     evalCount <- evalCount + 2L
     while (evalCount < maxEvals && (upper - lower) > searchTol) {
-      if (f1 < f2) {
+      betterLeft <- if (identical(selectionMetric, "auc")) f1 > f2 else f1 < f2
+      if (betterLeft) {
         upper <- x2
         x2 <- x1
         f2 <- f1
@@ -568,7 +710,7 @@
   keep <- order(lambdaVals, decreasing = TRUE)
   lambdaVals <- lambdaVals[keep]
   scores <- scores[keep]
-  idx <- which.min(scores)
+  idx <- .adapBestLambdaIndex(scores, lambdaVals, selectionMetric, tieTolerance)
   list(lambda = lambdaVals[idx], scores = scores, lambdaSeq = lambdaVals)
 }
 
@@ -580,10 +722,18 @@
                            tol = 1e-5,
                            search = c("grid", "optimize"),
                            searchTol = log(1.5),
-                           maxEvals = 25L) {
+                           maxEvals = 25L,
+                           selectionMetric = c("deviance", "auc"),
+                           tieTolerance = 1e-8,
+                           cvMaxRows = Inf,
+                           globalAdjustment = c("leaveValOut", "pda")) {
+  globalAdjustment <- match.arg(globalAdjustment)
+  cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
+  xCv <- xDesign[cvIdx, , drop = FALSE]
+  yCv <- y[cvIdx]
   .pdaAdapSurrogateLeadCv(
-    xDesign = xDesign,
-    y = y,
+    xDesign = xCv,
+    y = yCv,
     betaInit = betaLead,
     lambdaSeq = lambdaSeq,
     foldsK = foldsK,
@@ -591,19 +741,27 @@
     search = search,
     searchTol = searchTol,
     maxEvals = maxEvals,
+    selectionMetric = selectionMetric,
+    tieTolerance = tieTolerance,
     makeFoldInfo = function(info) {
-      gradVal <- .logisticNegGradient(betaBar, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
-      hessVal <- .logisticNegHessian(betaBar, xDesign[info$idxVal, , drop = FALSE])
-      denom <- max(totalN - info$nVal, 1L)
+      if (identical(globalAdjustment, "leaveValOut")) {
+        gradVal <- .logisticNegGradient(betaBar, xCv[info$idxVal, , drop = FALSE], yCv[info$idxVal])
+        hessVal <- .logisticNegHessian(betaBar, xCv[info$idxVal, , drop = FALSE])
+        denom <- max(totalN - info$nVal, 1L)
+        return(list(
+          gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom,
+          hessTrainGlobal = (globalHess * totalN - hessVal * info$nVal) / denom
+        ))
+      }
       list(
-        gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom,
-        hessTrainGlobal = (globalHess * totalN - hessVal * info$nVal) / denom
+        gradTrainGlobal = globalGrad,
+        hessTrainGlobal = globalHess
       )
     },
     fitFold = function(info, lambda, warmStart) {
       .fitPdaAdapSurrogate(
-        xDesign = xDesign[info$idxTr, , drop = FALSE],
-        y = y[info$idxTr],
+        xDesign = xCv[info$idxTr, , drop = FALSE],
+        y = yCv[info$idxTr],
         betaLead = betaLead,
         betaBar = betaBar,
         globalGrad = info$gradTrainGlobal,
@@ -644,10 +802,18 @@
                                 tol = 1e-5,
                                 search = c("grid", "optimize"),
                                 searchTol = log(1.5),
-                                maxEvals = 25L) {
+                                maxEvals = 25L,
+                                selectionMetric = c("deviance", "auc"),
+                                tieTolerance = 1e-8,
+                                cvMaxRows = Inf,
+                                globalAdjustment = c("leaveValOut", "pda")) {
+  globalAdjustment <- match.arg(globalAdjustment)
+  cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
+  xCv <- xDesign[cvIdx, , drop = FALSE]
+  yCv <- y[cvIdx]
   .pdaAdapSurrogateLeadCv(
-    xDesign = xDesign,
-    y = y,
+    xDesign = xCv,
+    y = yCv,
     betaInit = betaLead,
     lambdaSeq = lambdaSeq,
     foldsK = foldsK,
@@ -655,17 +821,22 @@
     search = search,
     searchTol = searchTol,
     maxEvals = maxEvals,
+    selectionMetric = selectionMetric,
+    tieTolerance = tieTolerance,
     makeFoldInfo = function(info) {
-      gradVal <- .logisticNegGradient(betaBar, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
-      denom <- max(totalN - info$nVal, 1L)
-      list(
-        gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom
-      )
+      if (identical(globalAdjustment, "leaveValOut")) {
+        gradVal <- .logisticNegGradient(betaBar, xCv[info$idxVal, , drop = FALSE], yCv[info$idxVal])
+        denom <- max(totalN - info$nVal, 1L)
+        return(list(
+          gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom
+        ))
+      }
+      list(gradTrainGlobal = globalGrad)
     },
     fitFold = function(info, lambda, warmStart) {
       .fitPdaAdapFirstOrderSurrogate(
-        xDesign = xDesign[info$idxTr, , drop = FALSE],
-        y = y[info$idxTr],
+        xDesign = xCv[info$idxTr, , drop = FALSE],
+        y = yCv[info$idxTr],
         betaLead = betaLead,
         betaBar = betaBar,
         globalGrad = info$gradTrainGlobal,
@@ -708,10 +879,18 @@
                                tol = 1e-5,
                                search = c("grid", "optimize"),
                                searchTol = log(1.5),
-                               maxEvals = 25L) {
+                               maxEvals = 25L,
+                               selectionMetric = c("deviance", "auc"),
+                               tieTolerance = 1e-8,
+                               cvMaxRows = Inf,
+                               globalAdjustment = c("leaveValOut", "pda")) {
+  globalAdjustment <- match.arg(globalAdjustment)
+  cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
+  xCv <- xDesign[cvIdx, , drop = FALSE]
+  yCv <- y[cvIdx]
   .pdaAdapSurrogateLeadCv(
-    xDesign = xDesign,
-    y = y,
+    xDesign = xCv,
+    y = yCv,
     betaInit = betaLead,
     lambdaSeq = lambdaSeq,
     foldsK = foldsK,
@@ -719,19 +898,27 @@
     search = search,
     searchTol = searchTol,
     maxEvals = maxEvals,
+    selectionMetric = selectionMetric,
+    tieTolerance = tieTolerance,
     makeFoldInfo = function(info) {
-      gradVal <- .logisticNegGradient(betaBar, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
-      denom <- max(totalN - info$nVal, 1L)
-      hessValDiag <- .logisticNegHessianDiag(betaBar, xDesign[info$idxVal, , drop = FALSE])
+      if (identical(globalAdjustment, "leaveValOut")) {
+        gradVal <- .logisticNegGradient(betaBar, xCv[info$idxVal, , drop = FALSE], yCv[info$idxVal])
+        denom <- max(totalN - info$nVal, 1L)
+        hessValDiag <- .logisticNegHessianDiag(betaBar, xCv[info$idxVal, , drop = FALSE])
+        return(list(
+          gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom,
+          hessTrainGlobalDiag = (globalHessDiag * totalN - hessValDiag * info$nVal) / denom
+        ))
+      }
       list(
-        gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom,
-        hessTrainGlobalDiag = (globalHessDiag * totalN - hessValDiag * info$nVal) / denom
+        gradTrainGlobal = globalGrad,
+        hessTrainGlobalDiag = globalHessDiag
       )
     },
     fitFold = function(info, lambda, warmStart) {
       .fitPdaAdapRemoteDiagSurrogate(
-        xDesign = xDesign[info$idxTr, , drop = FALSE],
-        y = y[info$idxTr],
+        xDesign = xCv[info$idxTr, , drop = FALSE],
+        y = yCv[info$idxTr],
         betaLead = betaLead,
         betaBar = betaBar,
         globalGrad = info$gradTrainGlobal,
@@ -827,7 +1014,9 @@
           seed = config$cvSeed %||% 42L,
           maxIter = config$maxIter %||% 1000L,
           tol = config$tol %||% 1e-6,
-          ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
+          ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4,
+          selectionMetric = config$lambdaSelectionMetric %||% "deviance",
+          tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8
         )
         lambda <- cv$lambda
         cvScores <- cv$scores
@@ -844,7 +1033,13 @@
         tol = config$tol %||% 1e-6,
         ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
       )
-      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
+      return(list(
+        w = w,
+        selectedLambda = lambda,
+        lambdaSeq = lambdaSeq,
+        cvScores = cvScores,
+        lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
+      ))
     }
     if (!is.null(fixedLambda)) {
       lambda <- fixedLambda
@@ -878,7 +1073,11 @@
         tol = config$tol %||% 1e-5,
         search = config$lambdaSearch %||% "grid",
         searchTol = config$lambdaSearchTol %||% log(1.5),
-        maxEvals = config$lambdaSearchMaxEvals %||% 25L
+        maxEvals = config$lambdaSearchMaxEvals %||% 25L,
+        selectionMetric = config$lambdaSelectionMetric %||% "deviance",
+        tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
+        cvMaxRows = config$lambdaCvMaxRows %||% Inf,
+        globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut"
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
@@ -896,7 +1095,13 @@
       maxInner = config$maxInner %||% 100L,
       tol = config$tol %||% 1e-5
     )
-    return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
+    return(list(
+      w = w,
+      selectedLambda = lambda,
+      lambdaSeq = lambdaSeq,
+      cvScores = cvScores,
+      lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
+    ))
   }
 
   list()
@@ -981,6 +1186,7 @@
           selectedLambda = leadReport$selectedLambda,
           lambdaSeq = leadReport$lambdaSeq,
           cvScores = leadReport$cvScores,
+          lambdaSelectionMetric = leadReport$lambdaSelectionMetric %||% NA_character_,
           hessianDim = state$hessianDim %||% NA_character_,
           hessianDiagMin = state$hessianDiagMin %||% NA_real_,
           hessianDiagMax = state$hessianDiagMax %||% NA_real_,
@@ -1115,7 +1321,11 @@
           tol = config$tol %||% 1e-5,
           search = config$lambdaSearch %||% "grid",
           searchTol = config$lambdaSearchTol %||% log(1.5),
-          maxEvals = config$lambdaSearchMaxEvals %||% 25L
+          maxEvals = config$lambdaSearchMaxEvals %||% 25L,
+          selectionMetric = config$lambdaSelectionMetric %||% "deviance",
+          tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
+          cvMaxRows = config$lambdaCvMaxRows %||% Inf,
+          globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut"
         )
         lambda <- cv$lambda
         cvScores <- cv$scores
@@ -1132,7 +1342,13 @@
         maxInner = config$maxInner %||% 100L,
         tol = config$tol %||% 1e-5
       )
-      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
+      return(list(
+        w = w,
+        selectedLambda = lambda,
+        lambdaSeq = lambdaSeq,
+        cvScores = cvScores,
+        lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
+      ))
     }
 
     if (identical(diagStyle, "pda")) {
@@ -1178,7 +1394,13 @@
         tol = config$tol %||% 1e-6,
         ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
       )
-      return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
+      return(list(
+        w = w,
+        selectedLambda = lambda,
+        lambdaSeq = lambdaSeq,
+        cvScores = cvScores,
+        lambdaSelectionMetric = "deviance"
+      ))
     }
 
     if (!is.null(fixedLambda)) {
@@ -1213,7 +1435,11 @@
         tol = config$tol %||% 1e-5,
         search = config$lambdaSearch %||% "grid",
         searchTol = config$lambdaSearchTol %||% log(1.5),
-        maxEvals = config$lambdaSearchMaxEvals %||% 25L
+        maxEvals = config$lambdaSearchMaxEvals %||% 25L,
+        selectionMetric = config$lambdaSelectionMetric %||% "deviance",
+        tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
+        cvMaxRows = config$lambdaCvMaxRows %||% Inf,
+        globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut"
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
@@ -1231,7 +1457,13 @@
       maxInner = config$maxInner %||% 100L,
       tol = config$tol %||% 1e-5
     )
-    return(list(w = w, selectedLambda = lambda, lambdaSeq = lambdaSeq, cvScores = cvScores))
+    return(list(
+      w = w,
+      selectedLambda = lambda,
+      lambdaSeq = lambdaSeq,
+      cvScores = cvScores,
+      lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
+    ))
   }
 
   list()
@@ -1321,6 +1553,7 @@
           selectedLambda = leadReport$selectedLambda,
           lambdaSeq = leadReport$lambdaSeq,
           cvScores = leadReport$cvScores,
+          lambdaSelectionMetric = leadReport$lambdaSelectionMetric %||% NA_character_,
           hessianDim = if (identical(mode, "diag")) paste0(length(state$globalHessDiag), " diagonal") else NA_character_,
           hessianDiagMin = if (identical(mode, "diag")) min(state$globalHessDiag, na.rm = TRUE) else NA_real_,
           hessianDiagMax = if (identical(mode, "diag")) max(state$globalHessDiag, na.rm = TRUE) else NA_real_,
