@@ -218,35 +218,6 @@ clusterCreateMatrices <- function(cl, config) {
   )
 }
 
-clusterPredict <- function(cl, w) {
-  parallel::clusterExport(
-    cl,
-    c(".assertWorkerState", ".evaluateBinaryMetrics", "logLoss"),
-    envir = asNamespace("FederatedLearning")
-  )
-  metrics <- parallel::clusterCall(
-    cl,
-    function(w) {
-      .assertWorkerState(
-        "clientData",
-        action = "Run fitFederated() or clusterCreateMatrices() before prediction."
-      )
-      if (ncol(clientData$xMatrix) != length(w)) {
-        stop(
-          "clusterPredict dimension mismatch: xMatrix has ",
-          ncol(clientData$xMatrix), " columns but weights has length ",
-          length(w),
-          call. = FALSE
-        )
-      }
-      preds <- stats::plogis(as.numeric(clientData$xMatrix %*% w))
-      .evaluateBinaryMetrics(clientData$yLabels, preds, w)$auc
-    },
-    w = w
-  )
-  metrics <- unlist(metrics)
-}
-
 #' Collect basic per-client diagnostics for the current PLP data
 #' @param cl cluster object
 #' @param config optional config with mapping/feature set

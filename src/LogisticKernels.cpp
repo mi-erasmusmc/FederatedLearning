@@ -183,3 +183,94 @@ List logisticGradientHessianCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& 
     _["hessian"] = Eigen::MatrixXd(hSparse) / static_cast<double>(n)
   );
 }
+
+static inline double soft_threshold_scalar(double value, double threshold) {
+  if (value > threshold) {
+    return value - threshold;
+  }
+  if (value < -threshold) {
+    return value + threshold;
+  }
+  return 0.0;
+}
+
+// [[Rcpp::export]]
+Eigen::VectorXd quadraticLassoCdCpp(const Eigen::VectorXd& aTilde,
+                                    const Eigen::MatrixXd& bMatrix,
+                                    const Eigen::VectorXd& betaInit,
+                                    double lambda,
+                                    int maxIter = 100,
+                                    double tol = 1e-5,
+                                    Rcpp::Nullable<Rcpp::LogicalVector> penalizeNullable = R_NilValue) {
+  const int p = betaInit.size();
+  if (aTilde.size() != p) {
+    stop("quadraticLassoCdCpp dimension mismatch: aTilde has length %d but betaInit has length %d",
+         static_cast<int>(aTilde.size()), p);
+  }
+  if (bMatrix.rows() != p || bMatrix.cols() != p) {
+    stop("quadraticLassoCdCpp dimension mismatch: B is %d x %d but betaInit has length %d",
+         static_cast<int>(bMatrix.rows()), static_cast<int>(bMatrix.cols()), p);
+  }
+  if (maxIter < 1) {
+    stop("maxIter must be positive");
+  }
+  if (!R_finite(lambda) || lambda < 0.0) {
+    stop("lambda must be a finite non-negative value");
+  }
+  if (!R_finite(tol) || tol < 0.0) {
+    stop("tol must be a finite non-negative value");
+  }
+
+  std::vector<int> penalize(p, 1);
+  if (penalizeNullable.isNotNull()) {
+    Rcpp::LogicalVector penalizeVector(penalizeNullable);
+    if (penalizeVector.size() != p) {
+      stop("penalize length mismatch: expected %d but got %d",
+           p, static_cast<int>(penalizeVector.size()));
+    }
+    for (int j = 0; j < p; ++j) {
+      penalize[j] = penalizeVector[j] == TRUE;
+    }
+  } else if (p > 0) {
+    penalize[0] = 0;
+  }
+
+  Eigen::VectorXd beta = betaInit;
+  Eigen::VectorXd bBeta = bMatrix * beta;
+  const Eigen::VectorXd diagB = bMatrix.diagonal();
+
+  auto objective = [&]() {
+    return aTilde.dot(beta) + 0.5 * beta.dot(bBeta);
+  };
+
+  for (int iter = 0; iter < maxIter; ++iter) {
+    const double oldObjective = objective();
+
+    for (int j = 0; j < p; ++j) {
+      double hjj = diagB[j];
+      if (!R_finite(hjj) || hjj <= 0.0) {
+        hjj = 1e-10;
+      }
+      const double oldBeta = beta[j];
+      const double linearWithoutJ = aTilde[j] + bBeta[j] - diagB[j] * oldBeta;
+      double z = -linearWithoutJ / hjj;
+      if (!R_finite(z)) {
+        z = oldBeta;
+      }
+      const double newBeta = penalize[j] ? soft_threshold_scalar(z, lambda / hjj) : z;
+      const double delta = newBeta - oldBeta;
+      if (delta != 0.0) {
+        beta[j] = newBeta;
+        bBeta.noalias() += bMatrix.col(j) * delta;
+      }
+    }
+
+    const double newObjective = objective();
+    const double diffObjective = newObjective - oldObjective;
+    if (R_finite(diffObjective) && std::abs(diffObjective) < tol) {
+      break;
+    }
+  }
+
+  return beta;
+}

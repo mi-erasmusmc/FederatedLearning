@@ -142,13 +142,6 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   if (length(objectiveHelpers) > 0) {
     parallel::clusterExport(cl, objectiveHelpers, envir = ns)
   }
-  if (identical(algorithm, "ADAP2")) {
-    helperNames <- c(".leadOptimizeSurrogate", ".leadSurrogateCV", ".leadLambdaRange")
-    available <- helperNames[helperNames %in% ls(envir = ns, all.names = TRUE)]
-    if (length(available) > 0) {
-      parallel::clusterExport(cl, available, envir = ns)
-    }
-  }
   serverState <- algo$serverInit(config)
   if (!is.null(config$request)) {
     serverState$request <- config$request
@@ -173,6 +166,13 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   lastTick <- Sys.time()
   lastRound <- 0L
   serverReport <- list()
+  roundOffset <- config$roundOffset %||% 0L
+  if (!is.numeric(roundOffset) || length(roundOffset) != 1L ||
+      !is.finite(roundOffset) || roundOffset < 0) {
+    stop("config$roundOffset must be a single non-negative finite value")
+  }
+  roundOffset <- as.integer(roundOffset)
+  roundsCompleted <- 0L
   if (!is.null(config$clientSampleSeed)) {
     oldSeed <- if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
       get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
@@ -192,9 +192,10 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   }
 
   for (r in 0:(config$rounds - 1)) {
+    roundsCompleted <- r + 1L
     activeClients <- selectActiveClients(length(cl), config$clientFrac)
     clActive <- subsetCluster(cl, activeClients)
-    serverState$r <- r
+    serverState$r <- r + roundOffset
     serverState$activeClients <- activeClients
     # update client state
     parallel::clusterExport(clActive, "serverState", envir = environment())
@@ -274,7 +275,8 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   }
   result <- list(
     w = if (!is.null(serverReport$w)) serverReport$w else serverState$w,
-    config = config
+    config = config,
+    roundsCompleted = roundsCompleted
   )
   if (!is.null(globalObjective)) {
     result$globalObjective <- globalObjective

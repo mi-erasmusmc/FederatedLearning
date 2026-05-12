@@ -115,6 +115,15 @@ test_that("DualAvgCpp server aggregation matches R DualAvg weighting", {
   )
 })
 
+test_that("DualAvg server init accepts explicit warm-start dual state", {
+  config <- list(p = 2L, intercept = TRUE, initialZ = c(1, -2, 3))
+
+  expect_equal(serverInitDA(config)$z, config$initialZ)
+  expect_equal(serverInitDualAveragingCpp(config)$z, config$initialZ)
+  expect_error(serverInitDA(modifyList(config, list(initialZ = 1:2))), "initialZ length")
+  expect_error(serverInitDualAveragingCpp(modifyList(config, list(initialZ = 1:2))), "initialZ length")
+})
+
 test_that("DualAvgCpp supports partial client participation", {
   expect_true(FederatedLearning:::.getAlgorithm("DualAvgCpp")$supportsClientSampling)
 })
@@ -129,7 +138,15 @@ test_that("DualAvg defaults to C++ implementation and keeps R reference availabl
   expect_identical(dualAvg$serverRound, dualAvgCpp$serverRound)
   expect_true(dualAvg$supportsClientSampling)
   expect_false(is.null(dualAvgR))
-  expect_identical(dualAvgR$serverRound, serverRoundDA)
+  expect_true(is.function(dualAvgR$serverRound))
+  expect_identical(formals(dualAvgR$serverRound), formals(serverRoundDA))
+  state <- list(z = c(0.1, -0.2), r = 1L)
+  reports <- list(list(delta = c(0.3, -0.1), n = 2), list(delta = c(-0.1, 0.2), n = 3))
+  config <- list(etaServer = 1, etaClient = 0.5, k = 2L, lambda = 0.01)
+  expect_equal(
+    dualAvgR$serverRound(state, reports, config),
+    serverRoundDA(state, reports, config)
+  )
 })
 
 test_that("fitFederated rejects unknown algorithms clearly", {

@@ -128,6 +128,54 @@ unimodalSearchInit <- function(stdStep = 2,
   state
 }
 
+.finiteMean <- function(x) {
+  x <- as.numeric(x)
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) {
+    return(NA_real_)
+  }
+  mean(x)
+}
+
+.finiteSd <- function(x) {
+  x <- as.numeric(x)
+  x <- x[is.finite(x)]
+  if (length(x) <= 1L) {
+    return(0)
+  }
+  stats::sd(x)
+}
+
+.innerCvScoreFromEvaluation <- function(ev) {
+  if (!"auc" %in% names(ev)) {
+    return(NA_real_)
+  }
+  auc <- as.numeric(ev$auc)
+  if (length(auc) == 0L || any(!is.finite(auc))) {
+    return(NA_real_)
+  }
+  mean(auc)
+}
+
+.innerCvScoreMean <- function(scores) {
+  scores <- as.numeric(scores)
+  if (length(scores) == 0L || any(!is.finite(scores))) {
+    return(NA_real_)
+  }
+  mean(scores)
+}
+
+.innerCvScoreSd <- function(scores) {
+  scores <- as.numeric(scores)
+  if (length(scores) == 0L || any(!is.finite(scores))) {
+    return(NA_real_)
+  }
+  if (length(scores) == 1L) {
+    return(0)
+  }
+  stats::sd(scores)
+}
+
 # Now a little wrapper that
 #  - repeatedly calls step()
 #  - runs your inner-CV at each new lambda
@@ -173,31 +221,71 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
   initLambda <- as.numeric(initLambda[1])
 
   search <- unimodalSearchInit(stdStep, stopByY, stopByX, firstCut, init = initLambda)
+  useWarmStarts <- isTRUE(configBase$warmStartLambdaPath)
+  warmState <- new.env(parent = emptyenv())
 
-  cfg0 <- c(configBase, list(
-    lambda = initLambda,
-    rounds = rounds,
-    epsilon = epsilon,
-    clientFrac = clientFrac,
-    mapping = globalMap,
-    p = nrow(globalMap)
-  ))
-
-  aucs0 <- sapply(trainIds, function(valId) {
+  fitValidationFold <- function(lambda, valId, iterLabel) {
     train2 <- setdiff(trainIds, valId)
     trainCluster <- subsetCluster(cl, train2)
     valCluster <- subsetCluster(cl, valId)
-    message("Fitting on folds ", train2, " validating on fold ", valId)
-    res <- fitFederated(trainCluster, algorithm, cfg0)
-    ev <- evaluateClient(valCluster, res$w, config = res$config)
-    ev
+    key <- paste(valId, paste(train2, collapse = "-"), sep = ":")
+    ws <- if (useWarmStarts && exists(key, envir = warmState, inherits = FALSE)) {
+      get(key, envir = warmState, inherits = FALSE)
+    } else {
+      NULL
+    }
+    cfg <- c(
+      configBase,
+      list(
+        lambda = lambda,
+        rounds = rounds,
+        epsilon = epsilon,
+        clientFrac = clientFrac,
+        mapping = globalMap,
+        p = nrow(globalMap)
+      )
+    )
+    if (!is.null(ws)) {
+      cfg$initialZ <- ws$z
+      cfg$roundOffset <- ws$roundOffset
+    }
+    if (verbose) {
+      message(
+        "Fitting on folds ", paste(train2, collapse = ""),
+        " validating on fold ", valId,
+        if (!is.null(ws)) sprintf(" (warm start roundOffset=%s)", ws$roundOffset) else ""
+      )
+    }
+    res <- fitFederated(trainCluster, algorithm, cfg, verbose = verbose)
+    if (useWarmStarts && !is.null(res$z)) {
+      assign(
+        key,
+        list(
+          z = res$z,
+          roundOffset = (ws$roundOffset %||% 0L) + (res$roundsCompleted %||% rounds),
+          lambda = lambda,
+          iter = iterLabel
+        ),
+        envir = warmState
+      )
+    }
+    clusterCreateMatrices(valCluster, res$config)
+    ev <- clusterEvaluateModel(valCluster, res$w)
+    .innerCvScoreFromEvaluation(ev)
+  }
+
+  aucs0 <- sapply(trainIds, function(valId) {
+    fitValidationFold(initLambda, valId, iterLabel = 0L)
   })
 
-  m <- mean(aucs0)
-  s <- sd(aucs0)
+  m <- .innerCvScoreMean(aucs0)
+  s <- .innerCvScoreSd(aucs0)
+  if (!is.finite(m)) {
+    stop("Unable to compute a finite inner-CV AUC for the initial lambda")
+  }
 
   if (verbose) {
-    message(sprintf("[iter %2d] initial lambda = %.5g  (predicted auc = %.5g)",
+    message(sprintf("[iter %2d] initial lambda = %.5g  (inner-CV AUC = %.5g)",
            0, initLambda, m)) 
   }
   search$try(initLambda, m, s)
@@ -218,32 +306,18 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
       message(sprintf("[iter %2d] proposing lambda = %.5g  (predicted auc = %.5g)",
              iter, lambdaTry, s$expected))
     }
-    cfg <- c(
-      configBase,
-      list(
-        lambda = lambdaTry,
-        rounds = rounds,
-        epsilon = epsilon,
-        clientFrac = clientFrac,
-        mapping = globalMap,
-        p = nrow(globalMap)
-      )
-    )
-
     # your inner CV over trainIds
     aucs <- sapply(trainIds, function(valId) {
-      train2 <- setdiff(trainIds, valId)
-      trainCluster <- subsetCluster(cl, train2)
-      valCluster <- subsetCluster(cl, valId)
-      res <- fitFederated(trainCluster, algorithm, cfg)
-      ev <- evaluateClient(valCluster, res$w, res$config)
-      ev
+      fitValidationFold(lambdaTry, valId, iterLabel = iter)
     })
 
-    m <- mean(aucs)
-    s <- sd(aucs)
+    m <- .innerCvScoreMean(aucs)
+    s <- .innerCvScoreSd(aucs)
+    if (!is.finite(m)) {
+      stop("Unable to compute a finite inner-CV AUC for lambda ", lambdaTry)
+    }
     if (verbose) {
-      message(sprintf("[iter %2d] observed auc: mean = %.5g,  sd = %.5g",
+      message(sprintf("[iter %2d] observed inner-CV AUC: mean = %.5g,  sd = %.5g",
              iter, m, s))
     }
     search$try(lambdaTry, m, s)
@@ -263,143 +337,5 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     bestLambda = lambdaStrategy$final(bestLambda, totalPopSize, context),
     bestLambdaTrain = bestLambda,
     perf = bestPerf
-  )
-}
-
-tuneLambdaLead <- function(cl, algorithm, configBase, trainIds,
-                           rounds, clientFrac, epsilon,
-                           lambdaStrategy, lambdaDefault, totalPopSize,
-                           globalMap,
-                           stdStep = 2,
-                           stopByY = 1e-2,
-                           stopByX = log(1.5),
-                           firstCut = 1.0,
-                           verbose = TRUE) {
-  context <- list(
-    cl = cl,
-    configBase = configBase,
-    trainIds = trainIds,
-    rounds = rounds,
-    clientFrac = clientFrac,
-    epsilon = epsilon,
-    totalPopSize = totalPopSize,
-    lambdaDefault = lambdaDefault,
-    globalMap = globalMap
-  )
-
-  baseLambda <- lambdaDefault
-  if (is.function(lambdaStrategy$seed)) {
-    seedVal <- lambdaStrategy$seed(context)
-    if (is.numeric(seedVal) && length(seedVal) > 0 && is.finite(seedVal[1]) && seedVal[1] > 0) {
-      baseLambda <- seedVal[1]
-    }
-  }
-  if (!is.numeric(baseLambda) || length(baseLambda) == 0 || !is.finite(baseLambda[1]) || baseLambda[1] <= 0) {
-    stop("Unable to determine a positive starting lambda for tuning")
-  }
-  baseLambda <- as.numeric(baseLambda[1])
-
-  initLambda <- lambdaStrategy$initial(baseLambda, totalPopSize, context)
-  if (!is.numeric(initLambda) || length(initLambda) == 0 || !is.finite(initLambda[1]) || initLambda[1] <= 0) {
-    stop("Lambda strategy produced a non-positive transformed lambda")
-  }
-  initLambda <- as.numeric(initLambda[1])
-
-  metricName <- configBase$cvMetric %||% "deviance"
-  hessianMode <- configBase$hessian %||% "full"
-  mapHash <- if (!is.null(globalMap)) digest::digest(globalMap$covariateId) else NA_character_
-  cacheKey <- digest::digest(list(
-    trainIds = sort(trainIds),
-    intercept = isTRUE(configBase$intercept),
-    hessian = hessianMode,
-    map = mapHash
-  ))
-
-  roundsLead <- max(rounds, 3L)
-  commonCfg <- modifyList(
-    configBase,
-    list(
-      rounds = roundsLead,
-      epsilon = epsilon,
-      clientFrac = clientFrac,
-      mapping = globalMap,
-      p = nrow(globalMap),
-      foldsK = configBase$foldsK %||% 5L,
-      cvMetric = metricName,
-      cacheKey = cacheKey,
-      hessian = hessianMode
-    )
-  )
-
-  toScore <- function(metricVal) {
-    if (!is.finite(metricVal)) {
-      return(NA_real_)
-    }
-    if (identical(metricName, "deviance")) {
-      return(-metricVal)
-    }
-    metricVal
-  }
-
-  rangeCfg <- modifyList(commonCfg, list(lambda = initLambda, request = "lambdaRange"))
-  rangeRes <- fitFederated(cl, algorithm, rangeCfg, verbose = verbose)
-  lambdaSeq <- rangeRes$lambdaSeq
-  if (is.null(lambdaSeq) || length(lambdaSeq) == 0) {
-    lambdaSeq <- rep(initLambda, 1L)
-  }
-  cacheKey <- rangeRes$cacheKey %||% cacheKey
-  commonCfg$cacheKey <- cacheKey
-
-  lambdaCandidates <- unique(as.numeric(lambdaSeq))
-  if (verbose) {
-    message(sprintf(
-      "ADAP2 lead lambda grid: max = %.5g, min = %.5g, count = %d",
-      max(lambdaCandidates), min(lambdaCandidates), length(lambdaCandidates)
-    ))
-  }
-  bestScore <- -Inf
-  bestLambda <- NA_real_
-  bestPerfRaw <- NA_real_
-
-  for (ii in seq_along(lambdaCandidates)) {
-    lam <- lambdaCandidates[ii]
-    cfg <- modifyList(commonCfg, list(lambda = lam, request = "cv", cacheKey = cacheKey))
-    res <- fitFederated(cl, algorithm, cfg, verbose = verbose)
-    scoreRaw <- res$cvMetric %||% NA_real_
-    score <- toScore(scoreRaw)
-    if (verbose) {
-       message(sprintf("[iter %2d] lambda = %.5g  lead-CV score = %.5g", ii - 1, lam, score))
-    }
-    if (!is.finite(score)) {
-      if (identical(metricName, "auc")) {
-        score <- 0.5
-        if (!is.finite(scoreRaw)) {
-          scoreRaw <- 0.5
-        }
-      } else {
-        score <- -Inf
-        if (!is.finite(scoreRaw)) {
-          scoreRaw <- NA_real_
-        }
-      }
-    }
-    if (is.finite(score) && score >= bestScore) {
-      bestScore <- score
-      bestLambda <- lam
-      bestPerfRaw <- scoreRaw
-    }
-  }
-
-  if (!is.finite(bestLambda)) {
-    bestLambda <- lambdaCandidates[1]
-  }
-  perfOut <- if (identical(metricName, "deviance")) bestPerfRaw else bestScore
-
-  list(
-    bestLambda = lambdaStrategy$final(bestLambda, totalPopSize, context),
-    bestLambdaTrain = bestLambda,
-    perf = perfOut,
-    cacheKey = cacheKey,
-    lambdaSeq = lambdaCandidates
   )
 }

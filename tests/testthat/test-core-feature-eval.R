@@ -121,11 +121,9 @@ test_that("cluster evaluation handles all-control single-class clients", {
   })
 
   metrics <- clusterEvaluateModel(cl, w = c(0, 1))
-  aucOnly <- FederatedLearning:::clusterPredict(cl, w = c(0, 1))
 
   expect_equal(nrow(metrics), 1L)
   expect_true(is.na(metrics$auc))
-  expect_true(is.na(aucOnly[[1]]))
   expect_true(is.finite(metrics$logLoss))
   expect_true(is.na(metrics$calibrationIntercept))
   expect_true(is.na(metrics$calibrationSlope))
@@ -146,18 +144,16 @@ test_that("cluster evaluation handles all-case single-class clients", {
   })
 
   metrics <- clusterEvaluateModel(cl, w = c(0, 1))
-  aucOnly <- FederatedLearning:::clusterPredict(cl, w = c(0, 1))
 
   expect_equal(nrow(metrics), 1L)
   expect_true(is.na(metrics$auc))
-  expect_true(is.na(aucOnly[[1]]))
   expect_true(is.finite(metrics$logLoss))
   expect_true(is.na(metrics$calibrationIntercept))
   expect_true(is.na(metrics$calibrationSlope))
   expect_equal(metrics$outcomes, 4L)
 })
 
-test_that("clusterPredict and clusterEvaluateModel agree for mixed clients", {
+test_that("clusterEvaluateModel returns finite calibration metrics for mixed clients", {
   cl <- parallel::makeCluster(1)
   on.exit(parallel::stopCluster(cl))
 
@@ -171,9 +167,7 @@ test_that("clusterPredict and clusterEvaluateModel agree for mixed clients", {
   })
 
   metrics <- clusterEvaluateModel(cl, w = c(0, 1))
-  aucOnly <- FederatedLearning:::clusterPredict(cl, w = c(0, 1))
 
-  expect_equal(aucOnly[[1]], metrics$auc, tolerance = 1e-12)
   expect_equal(metrics$auc, 1, tolerance = 1e-12)
   expect_true(is.finite(metrics$calibrationIntercept))
   expect_true(is.finite(metrics$calibrationSlope))

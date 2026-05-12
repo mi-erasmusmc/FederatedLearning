@@ -1,4 +1,4 @@
-utils::globalVariables(c("clientData", "clientState", "plpData"))
+utils::globalVariables(c("clientData", "plpData"))
 
 .registerAlgorithm("DualAvgCpp",
   serverInit = serverInitDualAveragingCpp,

@@ -129,6 +129,23 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// quadraticLassoCdCpp
+Eigen::VectorXd quadraticLassoCdCpp(const Eigen::VectorXd& aTilde, const Eigen::MatrixXd& bMatrix, const Eigen::VectorXd& betaInit, double lambda, int maxIter, double tol, Rcpp::Nullable<Rcpp::LogicalVector> penalizeNullable);
+RcppExport SEXP _FederatedLearning_quadraticLassoCdCpp(SEXP aTildeSEXP, SEXP bMatrixSEXP, SEXP betaInitSEXP, SEXP lambdaSEXP, SEXP maxIterSEXP, SEXP tolSEXP, SEXP penalizeNullableSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type aTilde(aTildeSEXP);
+    Rcpp::traits::input_parameter< const Eigen::MatrixXd& >::type bMatrix(bMatrixSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type betaInit(betaInitSEXP);
+    Rcpp::traits::input_parameter< double >::type lambda(lambdaSEXP);
+    Rcpp::traits::input_parameter< int >::type maxIter(maxIterSEXP);
+    Rcpp::traits::input_parameter< double >::type tol(tolSEXP);
+    Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::LogicalVector> >::type penalizeNullable(penalizeNullableSEXP);
+    rcpp_result_gen = Rcpp::wrap(quadraticLassoCdCpp(aTilde, bMatrix, betaInit, lambda, maxIter, tol, penalizeNullable));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_FederatedLearning_serverInitDualAveragingCpp", (DL_FUNC) &_FederatedLearning_serverInitDualAveragingCpp, 1},
@@ -140,6 +157,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_FederatedLearning_logisticHessianDiagCpp", (DL_FUNC) &_FederatedLearning_logisticHessianDiagCpp, 3},
     {"_FederatedLearning_logisticHessianCpp", (DL_FUNC) &_FederatedLearning_logisticHessianCpp, 3},
     {"_FederatedLearning_logisticGradientHessianCpp", (DL_FUNC) &_FederatedLearning_logisticGradientHessianCpp, 4},
+    {"_FederatedLearning_quadraticLassoCdCpp", (DL_FUNC) &_FederatedLearning_quadraticLassoCdCpp, 7},
     {NULL, NULL, 0}
 };
 

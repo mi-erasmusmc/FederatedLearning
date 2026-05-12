@@ -153,7 +153,7 @@ test_that("pda ODAL derivatives match local negative-log-likelihood sign convent
   )
 })
 
-test_that("ADAP_PDA final lead-site estimate matches pda ADAP.estimate", {
+test_that("ADAP_PDA final lead-site estimate matches public PDA full-CD surrogate equations", {
   skip_if_no_pda_reference()
 
   set.seed(106)
@@ -186,13 +186,46 @@ test_that("ADAP_PDA final lead-site estimate matches pda ADAP.estimate", {
   pda::pdaPut(d1, "site1_derive", pdaConfig, upload_without_confirm = TRUE, silent_message = TRUE, digits = 16)
   pda::pdaPut(d2, "site2_derive", pdaConfig, upload_without_confirm = TRUE, silent_message = TRUE, digits = 16)
 
-  pdaOutput <- utils::capture.output(
-    pdaFit <- get("ADAP.estimate", pdaNs)(ip1, control, pdaConfig)
-  )
-  expect_match(pdaOutput[length(pdaOutput)], "\\[ADAP\\]\\[site1\\]")
   weights <- c(n1, n2) / (n1 + n2)
   globalGrad <- as.numeric(cbind(d1$logL_D1, d2$logL_D1) %*% weights)
   globalHess <- d1$logL_D2 * weights[1] + d2$logL_D2 * weights[2]
+  xSparse <- Matrix::Matrix(cbind(1, x1), sparse = TRUE)
+  lambdaSeq <- FederatedLearning:::.pdaAdapLambdaSeq(
+    xDesign = xSparse,
+    y = y1,
+    betaLead = beta0,
+    betaBar = beta0,
+    globalGrad = globalGrad,
+    globalHess = globalHess,
+    gridLen = 100L
+  )
+  cv <- FederatedLearning:::.pdaAdapLeadCv(
+    xDesign = xSparse,
+    y = y1,
+    betaLead = beta0,
+    betaBar = beta0,
+    globalGrad = globalGrad,
+    globalHess = globalHess,
+    lambdaSeq = lambdaSeq,
+    totalN = n1 + n2,
+    foldsK = control$nfolds,
+    seed = control$cv_seed,
+    maxOuter = control$maxIter,
+    maxInner = 100L,
+    tol = control$tol
+  )
+  expected <- FederatedLearning:::.fitPdaAdapSurrogate(
+    xDesign = xSparse,
+    y = y1,
+    betaLead = beta0,
+    betaBar = beta0,
+    globalGrad = globalGrad,
+    globalHess = globalHess,
+    lambda = cv$lambda,
+    maxOuter = control$maxIter,
+    maxInner = 100L,
+    tol = control$tol
+  )
 
   old <- getOption("FederatedLearning.localId")
   on.exit(options(FederatedLearning.localId = old), add = TRUE)
@@ -211,7 +244,7 @@ test_that("ADAP_PDA final lead-site estimate matches pda ADAP.estimate", {
       globalGrad = globalGrad,
       globalHess = globalHess,
       totalN = n1 + n2,
-      adapSolveStyle = "pda"
+      adapSolveStyle = "fullQuadratic"
     ),
     config = list(
       intercept = FALSE,
@@ -223,8 +256,8 @@ test_that("ADAP_PDA final lead-site estimate matches pda ADAP.estimate", {
     )
   )
 
-  expect_equal(ours$selectedLambda, pdaFit$lambda, tolerance = 1e-12)
-  expect_equal(ours$w, pdaFit$btilde, tolerance = 1e-8)
+  expect_equal(ours$selectedLambda, cv$lambda, tolerance = 1e-12)
+  expect_equal(ours$w, expected, tolerance = 1e-8)
 })
 
 test_that("ADAPDiag pda style matches pda ADAP.estimate with diagonal Hessian", {

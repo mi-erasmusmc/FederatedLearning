@@ -133,15 +133,14 @@ Registered algorithm names are passed to `fitFederated(algorithm = ...)`.
 
 | Algorithm | Description | Typical communication |
 | --- | --- | --- |
-| `DualAvg` | R implementation of distributed dual averaging for L1-regularized logistic regression. | Server broadcasts dual state; clients return dual-state deltas. |
-| `DualAvgCpp` | C++ implementation of the same dual-averaging idea. | Same high-level payload as `DualAvg`. |
-| `FastDualAvg` | Accelerated/variant dual-averaging implementation. | Server broadcasts aggregate states; clients return gradient-like state summaries. |
+| `DualAvg` | C++ implementation of distributed dual averaging for L1-regularized logistic regression. | Server broadcasts dual state; clients return dual-state deltas. |
+| `DualAvgCpp` | Explicit alias for the C++ dual-averaging implementation. | Same high-level payload as `DualAvg`. |
+| `DualAvgR` | R reference implementation used for parity testing. | Same high-level payload as `DualAvg`. |
 | `ODAL` | One-shot distributed approximation using local fits, gradients, Hessians, and a lead-site surrogate solve. | Local coefficients, gradients, full Hessians, final lead-site coefficients. |
 | `ADAP` | Earlier ADAP-style surrogate implementation. | Local lasso estimates and derivative summaries. |
 | `ADAP_PDA` | ADAP implementation aligned closely with the `pda` package full-Hessian method. | Local estimates, gradients, full Hessians, lead-site surrogate fit. |
 | `ADAP1` | First-order ADAP-style variant without Hessian transmission. | Local estimates, gradients, lead-site surrogate fit. |
 | `ADAPDiag` | Reduced ADAP variant using diagonal Hessian information when configured. | Local estimates, gradients, optional Hessian diagonals, lead-site surrogate fit. |
-| `ADAP2` | Experimental ADAP surrogate workflow with optional full or diagonal Hessian mode and lambda tuning helpers. | Local lasso estimates, gradients, Hessian summaries, lead-site CV/fit payloads. |
 
 Several PDA-style methods finish in a small number of phases rather than many communication rounds. Dual averaging usually uses many more rounds but smaller per-round payloads.
 

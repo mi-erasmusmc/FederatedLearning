@@ -16,13 +16,10 @@ Imports:
     rlang,
     dplyr,
     Matrix,
-    Metrics,
-    ParallelLogger,
     parallelly,
     mirai,
     glmnet,
     methods,
-    digest,
     Rcpp,
     RcppEigen,
     pROC

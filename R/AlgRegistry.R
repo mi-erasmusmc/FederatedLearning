@@ -12,14 +12,6 @@
   )
 }
 
-.lambdaStrategyIdentity <- function() {
-  list(
-    seed = NULL,
-    initial = function(lambda, totalPopSize, context) lambda,
-    final = function(lambda, totalPopSize, context) lambda
-  )
-}
-
 .registerAlgorithm <- function(name,
                                serverInit,
                                clientInit,

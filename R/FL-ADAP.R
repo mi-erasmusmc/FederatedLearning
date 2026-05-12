@@ -1,230 +1,3 @@
-# ADAP-baseline (two-round) federated lasso-logistic
-# from: https://doi.org/10.1038/s41598-022-14029-9
-#
-# Round 0:
-#   - Clients fit local lasso-logistic (glmnet) and return (bhat_i, n_i)
-#   - Server computes bbar (sample-size-weighted average) and broadcasts
-# Round 1:
-#   - Clients compute grad_i(bbar) and diag(H)_i(bbar), averaged per-sample
-#   - Server aggregates G, Hdiag and solves a diagonal-penalized quadratic.
-.serverInitADAP <- function(config) {
-  p <- config[["p"]] + as.integer(isTRUE(config$intercept))
-  list(
-    phase = 0L,
-    bbar  = rep(0, p),
-    w     = rep(0, p)
-  )
-}
-
-.clientUpdateADAP <- function(clientData, serverBroadcast, config) {
-  phase <- serverBroadcast$phase %||% 0L
-
-  if (phase == 0L) {
-    if (!requireNamespace("glmnet", quietly = TRUE)) {
-      stop("Please add 'glmnet' to DESCRIPTION Imports and install it.")
-    }
-    x <- clientData$xMatrix
-    y <- clientData$yLabels
-
-    penalty_factor <- rep(1, ncol(x))
-    if (isTRUE(config$intercept)) {
-      penalty_factor[1] <- 0
-    }
-
-    if (!is.null(config$localLambda)) {
-      fit <- glmnet::glmnet(
-        x = x,
-        y = y,
-        family = "binomial",
-        alpha = 1,
-        lambda = config$localLambda,
-        intercept = FALSE,
-        standardize = FALSE,
-        penalty.factor = penalty_factor
-      )
-      coef_mat <- stats::coef(fit, s = config$localLambda)
-    } else {
-      fit <- glmnet::cv.glmnet(
-        x = x,
-        y = y,
-        family = "binomial",
-        alpha = 1,
-        intercept = FALSE,
-        standardize = FALSE,
-        penalty.factor = penalty_factor
-      )
-      coef_mat <- stats::coef(fit, s = "lambda.min")
-    }
-    b <- as.numeric(coef_mat[-1, , drop = FALSE])
-
-    list(bhat = b, n = clientData$n)
-  } else if (phase == 1L) {
-    bbar <- serverBroadcast$bbar
-    x <- clientData$xMatrix
-    y <- clientData$yLabels
-    n <- clientData$n
-
-    lin  <- as.numeric(x %*% bbar)
-    pvec <- stats::plogis(lin)
-    res  <- pvec - y
-
-    grad <- as.numeric(Matrix::crossprod(x, res)) / n
-
-    wdiag <- pvec * (1 - pvec)
-    hdiag <- as.numeric(Matrix::colSums((x^2) * wdiag)) / n
-
-    list(grad = grad, hdiag = hdiag, n = n)
-  } else {
-    list()
-  }
-}
-
-.serverRoundADAP <- function(serverState, clientReports, config) {
-  phase <- serverState$phase %||% 0L
-
-  if (phase == 0L) {
-    # Aggregate local lasso inits
-    bhats <- lapply(clientReports, `[[`, "bhat")
-    ns    <- vapply(clientReports, `[[`, numeric(1), "n")
-    stopifnot(length(unique(vapply(bhats, length, 1L))) == 1L)
-    p <- length(bhats[[1]])
-
-    bmat <- do.call(cbind, bhats)            # p x M
-    wts  <- ns / sum(ns)
-    bbar <- as.numeric(bmat %*% wts)
-
-    newState <- list(
-      phase = 1L,
-      bbar  = bbar,
-      w     = bbar # publish a usable vector
-    )
-    return(list(
-      state  = newState,
-      report = list(w = bbar) 
-    ))
-  }
-
-  if (phase == 1L) {
-    ns    <- vapply(clientReports, `[[`, numeric(1), "n")
-    N     <- sum(ns)
-    grads <- do.call(cbind, lapply(clientReports, `[[`, "grad"))   # p x M
-    hdiags <- do.call(cbind, lapply(clientReports, `[[`, "hdiag")) # p x M
-
-    G     <- as.numeric(grads %*% (ns / N))    # length p
-    Hdiag <- as.numeric(hdiags %*% (ns / N))   # length p
-
-    epsH  <- 1e-12
-    Hdiag <- pmax(Hdiag, epsH)
-
-    bbar <- serverState$bbar
-
-    a <- G - Hdiag * bbar
-
-    lambda <- config[["lambda", exact = TRUE]]
-    w <- -(a / Hdiag)
-
-    soft <- function(v, t) {
-      ifelse(v > t, v - t, ifelse(v < -t, v + t, 0))
-    }
-    penalize <- rep(TRUE, length(w))
-    if (isTRUE(config$intercept)) {
-      penalize[1] <- FALSE
-      w[1] <- -(a[1] / Hdiag[1])
-    }
-    idx <- which(penalize)
-    if (length(idx) > 0) {
-      w[idx] <- soft(w[idx], lambda / Hdiag[idx])
-    }
-
-    newState <- list(
-      phase = 2L,
-      bbar  = bbar,
-      w     = w
-    )
-    return(list(
-      state  = newState,
-      report = list(w = w)
-    ))
-  }
-
-  list(
-    state  = serverState,
-    report = list(w = serverState$w)
-  )
-}
-
-.lambdaStrategyAdap <- function() {
-  list(
-    seed = function(context) {
-      cl <- context$cl
-      cfg <- context$configBase
-      if (!is.null(context$globalMap)) {
-        globalMap <- context$globalMap
-      } else {
-        mapType <- cfg$mapType %||% "union"
-        globalMap <- clusterCollectCovRefs(cl, type = mapType)
-      }
-      if (is.null(globalMap) || nrow(globalMap) == 0) {
-        stop("Global map is empty; cannot seed lambda for ADAP")
-      }
-      if (is.null(cl) || length(cl) == 0) {
-        return(NA_real_)
-      }
-      if (!requireNamespace("glmnet", quietly = TRUE)) {
-        stop("Please add 'glmnet' to DESCRIPTION Imports and install it.")
-      }
-      cfgPrep <- cfg
-      cfgPrep$mapping <- globalMap
-      cfgPrep$p <- nrow(globalMap)
-      intercept <- isTRUE(cfgPrep$intercept)
-      lambdaVals <- parallel::clusterCall(
-        cl,
-        function(cfg, intercept) {
-          if (!requireNamespace("glmnet", quietly = TRUE)) {
-            stop("Please add 'glmnet' to DESCRIPTION Imports and install it.")
-          }
-          clientData <- FederatedLearning::createClientMatrix(plpData, cfg)
-          x <- clientData$xMatrix
-          y <- clientData$yLabels
-          penalty_factor <- rep(1, ncol(x))
-          if (intercept) {
-            penalty_factor[1] <- 0
-          }
-          fit <- glmnet::cv.glmnet(
-            x = x,
-            y = y,
-            family = "binomial",
-            alpha = 1,
-            intercept = FALSE,
-            standardize = FALSE,
-            penalty.factor = penalty_factor
-          )
-          fit$lambda.1se
-        },
-        cfg = cfgPrep,
-        intercept = intercept
-      )
-      lambdaVals <- unlist(lambdaVals)
-      lambdaVals <- lambdaVals[is.finite(lambdaVals) & lambdaVals > 0]
-      if (length(lambdaVals) == 0) {
-        return(NA_real_)
-      }
-      max(lambdaVals)
-    },
-    initial = function(lambda, totalPopSize, context) lambda,
-    final = function(lambda, totalPopSize, context) lambda
-  )
-}
-
-.registerAlgorithm(
-  "ADAPDiagClosedForm",
-  serverInit   = .serverInitADAP,
-  clientInit   = NULL,
-  clientUpdate = .clientUpdateADAP,
-  serverRound  = .serverRoundADAP,
-  lambdaStrategy = .lambdaStrategyAdap()
-)
-
 .stripInterceptColumn <- function(x, config) {
   if (isTRUE(config$intercept)) {
     x[, -1, drop = FALSE]
@@ -356,6 +129,17 @@
 .coordDescentQuadraticLasso <- function(aTilde, B, betaInit, lambda,
                                         maxIter = 100L, tol = 1e-5,
                                         penalize = NULL) {
+  if (is.matrix(B)) {
+    return(as.numeric(quadraticLassoCdCpp(
+      aTilde = as.numeric(aTilde),
+      bMatrix = B,
+      betaInit = as.numeric(betaInit),
+      lambda = lambda,
+      maxIter = as.integer(maxIter),
+      tol = tol,
+      penalizeNullable = penalize
+    )))
+  }
   beta <- betaInit
   p <- length(beta)
   if (is.null(penalize)) {
@@ -419,37 +203,6 @@
     as.numeric(t(betaEval) %*% hEval) +
     deltaGrad
   list(aTilde = as.numeric(aTilde), B = hEval)
-}
-
-.adapDiagSurrogateComponents <- function(betaEval, betaBar, xDesign, y,
-                                         globalGrad, globalHessDiag,
-                                         mode = c("second", "first"),
-                                         gradBar = NULL,
-                                         hBarDiag = NULL) {
-  mode <- match.arg(mode)
-  evalTerms <- .logisticNegGradientHessianDiag(betaEval, xDesign, y)
-  hEvalDiag <- evalTerms$hessianDiag
-  gradEval <- evalTerms$gradient
-  if (is.null(gradBar)) {
-    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
-  }
-  if (identical(mode, "first")) {
-    aTilde <- gradEval - betaEval * hEvalDiag +
-      globalGrad -
-      gradBar
-    Bdiag <- hEvalDiag
-  } else {
-    if (is.null(hBarDiag)) {
-      hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
-    }
-    Bdiag <- hEvalDiag + globalHessDiag - hBarDiag
-    aTilde <- gradEval - betaEval * hEvalDiag +
-      globalGrad -
-      gradBar -
-      betaBar * (globalHessDiag - hBarDiag)
-  }
-  Bdiag[!is.finite(Bdiag) | Bdiag <= 0] <- 1e-10
-  list(aTilde = as.numeric(aTilde), Bdiag = as.numeric(Bdiag))
 }
 
 .adapLocalFullRemoteDiagSurrogateComponents <- function(betaEval, betaBar, xDesign, y,
@@ -680,65 +433,6 @@
   beta
 }
 
-.fitDiagQuadraticLasso <- function(aTilde, Bdiag, betaInit, lambda,
-                                   penalize = NULL) {
-  if (is.null(penalize)) {
-    penalize <- rep(TRUE, length(betaInit))
-    penalize[1] <- FALSE
-  }
-  Bdiag[!is.finite(Bdiag) | Bdiag <= 0] <- 1e-10
-  beta <- -aTilde / Bdiag
-  idx <- which(penalize)
-  if (length(idx) > 0) {
-    beta[idx] <- vapply(
-      idx,
-      function(j) .softScalar(beta[j], lambda / Bdiag[j]),
-      numeric(1)
-    )
-  }
-  beta
-}
-
-.fitPdaAdapDiagSurrogate <- function(xDesign, y, betaLead, betaBar,
-                                     globalGrad, globalHessDiag = NULL,
-                                     lambda,
-                                     mode = c("second", "first"),
-                                     maxOuter = 100L, tol = 1e-5,
-                                     betaInit = NULL) {
-  mode <- match.arg(mode)
-  beta <- if (is.null(betaInit)) betaLead else betaInit
-  penalize <- rep(TRUE, length(beta))
-  penalize[1] <- FALSE
-  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
-  hBarDiag <- if (identical(mode, "second")) .logisticNegHessianDiag(betaBar, xDesign) else NULL
-  for (iter in seq_len(maxOuter)) {
-    old <- beta
-    comp <- .adapDiagSurrogateComponents(
-      betaEval = beta,
-      betaBar = betaBar,
-      xDesign = xDesign,
-      y = y,
-      globalGrad = globalGrad,
-      globalHessDiag = globalHessDiag,
-      mode = mode,
-      gradBar = gradBar,
-      hBarDiag = hBarDiag
-    )
-    beta <- .fitDiagQuadraticLasso(
-      aTilde = comp$aTilde,
-      Bdiag = comp$Bdiag,
-      betaInit = beta,
-      lambda = lambda,
-      penalize = penalize
-    )
-    delta <- max(abs(beta - old), na.rm = TRUE)
-    if (is.finite(delta) && delta < tol) {
-      break
-    }
-  }
-  beta
-}
-
 .pdaAdapLambdaSeq <- function(xDesign, y, betaLead, betaBar, globalGrad, globalHess,
                               gridLen = 100L) {
   comp <- .adapSurrogateComponents(
@@ -759,54 +453,169 @@
   rev(exp(seq(log(lamMin), log(lamMax), length.out = gridLen)))
 }
 
-.pdaAdapLeadCv <- function(xDesign, y, betaLead, betaBar,
-                           globalGrad, globalHess, lambdaSeq,
-                           totalN,
-                           foldsK = 5L, seed = 42L,
-                           maxOuter = 100L, maxInner = 100L,
-                           tol = 1e-5) {
+.pdaAdapSurrogateLeadCv <- function(xDesign, y, betaInit, lambdaSeq,
+                                    foldsK = 5L, seed = 42L,
+                                    search = c("grid", "optimize"),
+                                    searchTol = log(1.5),
+                                    maxEvals = 25L,
+                                    makeFoldInfo,
+                                    fitFold) {
+  search <- match.arg(search)
   set.seed(seed)
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
   foldInfo <- lapply(seq_len(foldsK), function(fold) {
     idxVal <- which(folds == fold)
-    nVal <- length(idxVal)
-    gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
-    hessVal <- .logisticNegHessian(betaBar, xDesign[idxVal, , drop = FALSE])
-    denom <- max(totalN - nVal, 1L)
-    list(
+    info <- list(
+      fold = fold,
       idxVal = idxVal,
       idxTr = which(folds != fold),
-      gradTrainGlobal = (globalGrad * totalN - gradVal * nVal) / denom,
-      hessTrainGlobal = (globalHess * totalN - hessVal * nVal) / denom
+      nVal = length(idxVal)
     )
+    extra <- makeFoldInfo(info)
+    c(info, extra)
   })
-  scores <- rep(NA_real_, length(lambdaSeq))
-  warmStarts <- rep(list(betaLead), foldsK)
-  for (li in seq_along(lambdaSeq)) {
+
+  evalCache <- new.env(parent = emptyenv())
+  lambdaFits <- vector("list", foldsK)
+  for (fold in seq_len(foldsK)) {
+    lambdaFits[[fold]] <- list()
+  }
+  lambdaKey <- function(lambda) format(lambda, digits = 17, scientific = TRUE)
+  closestWarmStart <- function(fold, lambda) {
+    fits <- lambdaFits[[fold]]
+    if (length(fits) == 0L) {
+      return(betaInit)
+    }
+    fitLambdas <- as.numeric(names(fits))
+    idx <- which.min(abs(log(fitLambdas) - log(lambda)))
+    fits[[idx]]
+  }
+  evaluateLambda <- function(lambda) {
+    key <- lambdaKey(lambda)
+    if (exists(key, envir = evalCache, inherits = FALSE)) {
+      return(get(key, envir = evalCache, inherits = FALSE)$score)
+    }
     foldLoss <- numeric(foldsK)
     for (fold in seq_len(foldsK)) {
       info <- foldInfo[[fold]]
-      fit <- .fitPdaAdapSurrogate(
+      fit <- fitFold(info, lambda, closestWarmStart(fold, lambda))
+      lambdaFits[[fold]][[key]] <<- fit
+      foldLoss[fold] <- .negLogLikMean(fit, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
+    }
+    score <- mean(foldLoss, na.rm = TRUE)
+    assign(key, list(lambda = lambda, score = score), envir = evalCache)
+    score
+  }
+
+  if (identical(search, "grid") || length(lambdaSeq) < 3L) {
+    scores <- vapply(lambdaSeq, evaluateLambda, numeric(1))
+    idx <- which.min(scores)
+    return(list(lambda = lambdaSeq[idx], scores = scores))
+  }
+
+  lambdaRange <- range(lambdaSeq[is.finite(lambdaSeq) & lambdaSeq > 0])
+  if (!all(is.finite(lambdaRange)) || lambdaRange[1] <= 0 || lambdaRange[1] == lambdaRange[2]) {
+    scores <- vapply(lambdaSeq, evaluateLambda, numeric(1))
+    idx <- which.min(scores)
+    return(list(lambda = lambdaSeq[idx], scores = scores))
+  }
+
+  maxEvals <- as.integer(maxEvals)
+  if (length(maxEvals) != 1L || is.na(maxEvals) || maxEvals < 3L) {
+    stop("maxEvals must be an integer of at least 3")
+  }
+  if (length(searchTol) != 1L || !is.finite(searchTol) || searchTol <= 0) {
+    stop("searchTol must be a positive finite value")
+  }
+
+  objective <- function(logLambda) {
+    evaluateLambda(exp(logLambda))
+  }
+  lower <- log(lambdaRange[1])
+  upper <- log(lambdaRange[2])
+  objective(lower)
+  objective(upper)
+  evalCount <- 2L
+  if (maxEvals > evalCount && (upper - lower) > searchTol) {
+    invPhi <- (sqrt(5) - 1) / 2
+    invPhi2 <- (3 - sqrt(5)) / 2
+    x1 <- lower + invPhi2 * (upper - lower)
+    x2 <- lower + invPhi * (upper - lower)
+    f1 <- objective(x1)
+    f2 <- objective(x2)
+    evalCount <- evalCount + 2L
+    while (evalCount < maxEvals && (upper - lower) > searchTol) {
+      if (f1 < f2) {
+        upper <- x2
+        x2 <- x1
+        f2 <- f1
+        x1 <- lower + invPhi2 * (upper - lower)
+        f1 <- objective(x1)
+      } else {
+        lower <- x1
+        x1 <- x2
+        f1 <- f2
+        x2 <- lower + invPhi * (upper - lower)
+        f2 <- objective(x2)
+      }
+      evalCount <- evalCount + 1L
+    }
+  }
+  evaluated <- as.list(evalCache)
+  lambdaVals <- vapply(evaluated, `[[`, numeric(1), "lambda")
+  scores <- vapply(evaluated, `[[`, numeric(1), "score")
+  keep <- order(lambdaVals, decreasing = TRUE)
+  lambdaVals <- lambdaVals[keep]
+  scores <- scores[keep]
+  idx <- which.min(scores)
+  list(lambda = lambdaVals[idx], scores = scores, lambdaSeq = lambdaVals)
+}
+
+.pdaAdapLeadCv <- function(xDesign, y, betaLead, betaBar,
+                           globalGrad, globalHess, lambdaSeq,
+                           totalN,
+                           foldsK = 5L, seed = 42L,
+                           maxOuter = 100L, maxInner = 100L,
+                           tol = 1e-5,
+                           search = c("grid", "optimize"),
+                           searchTol = log(1.5),
+                           maxEvals = 25L) {
+  .pdaAdapSurrogateLeadCv(
+    xDesign = xDesign,
+    y = y,
+    betaInit = betaLead,
+    lambdaSeq = lambdaSeq,
+    foldsK = foldsK,
+    seed = seed,
+    search = search,
+    searchTol = searchTol,
+    maxEvals = maxEvals,
+    makeFoldInfo = function(info) {
+      gradVal <- .logisticNegGradient(betaBar, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
+      hessVal <- .logisticNegHessian(betaBar, xDesign[info$idxVal, , drop = FALSE])
+      denom <- max(totalN - info$nVal, 1L)
+      list(
+        gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom,
+        hessTrainGlobal = (globalHess * totalN - hessVal * info$nVal) / denom
+      )
+    },
+    fitFold = function(info, lambda, warmStart) {
+      .fitPdaAdapSurrogate(
         xDesign = xDesign[info$idxTr, , drop = FALSE],
         y = y[info$idxTr],
         betaLead = betaLead,
         betaBar = betaBar,
         globalGrad = info$gradTrainGlobal,
         globalHess = info$hessTrainGlobal,
-        lambda = lambdaSeq[li],
+        lambda = lambda,
         maxOuter = maxOuter,
         maxInner = maxInner,
         tol = tol,
-        betaInit = warmStarts[[fold]]
+        betaInit = warmStart
       )
-      warmStarts[[fold]] <- fit
-      foldLoss[fold] <- .negLogLikMean(fit, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
     }
-    scores[li] <- mean(foldLoss, na.rm = TRUE)
-  }
-  idx <- which.min(scores)
-  list(lambda = lambdaSeq[idx], scores = scores)
+  )
 }
 
 .pdaAdapFirstLambdaSeq <- function(xDesign, y, betaLead, betaBar, globalGrad,
@@ -832,77 +641,58 @@
                                 globalGrad, lambdaSeq, totalN,
                                 foldsK = 5L, seed = 42L,
                                 maxOuter = 100L, maxInner = 100L,
-                                tol = 1e-5) {
-  set.seed(seed)
-  n <- length(y)
-  folds <- sample(rep_len(seq_len(foldsK), n))
-  foldInfo <- lapply(seq_len(foldsK), function(fold) {
-    idxVal <- which(folds == fold)
-    nVal <- length(idxVal)
-    gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
-    denom <- max(totalN - nVal, 1L)
-    list(
-      idxVal = idxVal,
-      idxTr = which(folds != fold),
-      gradTrainGlobal = (globalGrad * totalN - gradVal * nVal) / denom
-    )
-  })
-  scores <- rep(NA_real_, length(lambdaSeq))
-  warmStarts <- rep(list(betaLead), foldsK)
-  for (li in seq_along(lambdaSeq)) {
-    foldLoss <- numeric(foldsK)
-    for (fold in seq_len(foldsK)) {
-      info <- foldInfo[[fold]]
-      fit <- .fitPdaAdapFirstOrderSurrogate(
+                                tol = 1e-5,
+                                search = c("grid", "optimize"),
+                                searchTol = log(1.5),
+                                maxEvals = 25L) {
+  .pdaAdapSurrogateLeadCv(
+    xDesign = xDesign,
+    y = y,
+    betaInit = betaLead,
+    lambdaSeq = lambdaSeq,
+    foldsK = foldsK,
+    seed = seed,
+    search = search,
+    searchTol = searchTol,
+    maxEvals = maxEvals,
+    makeFoldInfo = function(info) {
+      gradVal <- .logisticNegGradient(betaBar, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
+      denom <- max(totalN - info$nVal, 1L)
+      list(
+        gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom
+      )
+    },
+    fitFold = function(info, lambda, warmStart) {
+      .fitPdaAdapFirstOrderSurrogate(
         xDesign = xDesign[info$idxTr, , drop = FALSE],
         y = y[info$idxTr],
         betaLead = betaLead,
         betaBar = betaBar,
         globalGrad = info$gradTrainGlobal,
-        lambda = lambdaSeq[li],
+        lambda = lambda,
         maxOuter = maxOuter,
         maxInner = maxInner,
         tol = tol,
-        betaInit = warmStarts[[fold]]
+        betaInit = warmStart
       )
-      warmStarts[[fold]] <- fit
-      foldLoss[fold] <- .negLogLikMean(fit, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
     }
-    scores[li] <- mean(foldLoss, na.rm = TRUE)
-  }
-  idx <- which.min(scores)
-  list(lambda = lambdaSeq[idx], scores = scores)
+  )
 }
 
 .pdaAdapDiagLambdaSeq <- function(xDesign, y, betaLead, betaBar,
                                   globalGrad, globalHessDiag = NULL,
-                                  mode = c("second", "first"),
                                   gridLen = 100L) {
-  mode <- match.arg(mode)
-  if (identical(mode, "second")) {
-    comp <- .adapLocalFullRemoteDiagSurrogateComponents(
-      betaEval = betaLead,
-      betaBar = betaBar,
-      xDesign = xDesign,
-      y = y,
-      globalGrad = globalGrad,
-      globalHessDiag = globalHessDiag
-    )
-    p <- length(betaLead)
-    offDiag <- comp$B - diag(diag(comp$B), p, p)
-    lamMax <- max(abs(comp$aTilde[-1] + as.numeric((offDiag %*% betaBar)[-1])), na.rm = TRUE)
-  } else {
-    comp <- .adapDiagSurrogateComponents(
-      betaEval = betaLead,
-      betaBar = betaBar,
-      xDesign = xDesign,
-      y = y,
-      globalGrad = globalGrad,
-      globalHessDiag = globalHessDiag,
-      mode = mode
-    )
-    lamMax <- max(abs(comp$aTilde[-1]), na.rm = TRUE)
-  }
+  comp <- .adapLocalFullRemoteDiagSurrogateComponents(
+    betaEval = betaLead,
+    betaBar = betaBar,
+    xDesign = xDesign,
+    y = y,
+    globalGrad = globalGrad,
+    globalHessDiag = globalHessDiag
+  )
+  p <- length(betaLead)
+  offDiag <- comp$B - diag(diag(comp$B), p, p)
+  lamMax <- max(abs(comp$aTilde[-1] + as.numeric((offDiag %*% betaBar)[-1])), na.rm = TRUE)
   if (!is.finite(lamMax) || lamMax <= 0) {
     lamMax <- 1
   }
@@ -913,71 +703,47 @@
 .pdaAdapDiagLeadCv <- function(xDesign, y, betaLead, betaBar,
                                globalGrad, globalHessDiag = NULL,
                                lambdaSeq, totalN,
-                               mode = c("second", "first"),
                                foldsK = 5L, seed = 42L,
-                               maxOuter = 100L, tol = 1e-5) {
-  mode <- match.arg(mode)
-  set.seed(seed)
-  n <- length(y)
-  folds <- sample(rep_len(seq_len(foldsK), n))
-  foldInfo <- lapply(seq_len(foldsK), function(fold) {
-    idxVal <- which(folds == fold)
-    nVal <- length(idxVal)
-    gradVal <- .logisticNegGradient(betaBar, xDesign[idxVal, , drop = FALSE], y[idxVal])
-    denom <- max(totalN - nVal, 1L)
-    out <- list(
-      idxVal = idxVal,
-      idxTr = which(folds != fold),
-      gradTrainGlobal = (globalGrad * totalN - gradVal * nVal) / denom,
-      hessTrainGlobalDiag = NULL
-    )
-    if (identical(mode, "second")) {
-      hessValDiag <- .logisticNegHessianDiag(betaBar, xDesign[idxVal, , drop = FALSE])
-      out$hessTrainGlobalDiag <- (globalHessDiag * totalN - hessValDiag * nVal) / denom
+                               maxOuter = 100L, maxInner = 100L,
+                               tol = 1e-5,
+                               search = c("grid", "optimize"),
+                               searchTol = log(1.5),
+                               maxEvals = 25L) {
+  .pdaAdapSurrogateLeadCv(
+    xDesign = xDesign,
+    y = y,
+    betaInit = betaLead,
+    lambdaSeq = lambdaSeq,
+    foldsK = foldsK,
+    seed = seed,
+    search = search,
+    searchTol = searchTol,
+    maxEvals = maxEvals,
+    makeFoldInfo = function(info) {
+      gradVal <- .logisticNegGradient(betaBar, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
+      denom <- max(totalN - info$nVal, 1L)
+      hessValDiag <- .logisticNegHessianDiag(betaBar, xDesign[info$idxVal, , drop = FALSE])
+      list(
+        gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom,
+        hessTrainGlobalDiag = (globalHessDiag * totalN - hessValDiag * info$nVal) / denom
+      )
+    },
+    fitFold = function(info, lambda, warmStart) {
+      .fitPdaAdapRemoteDiagSurrogate(
+        xDesign = xDesign[info$idxTr, , drop = FALSE],
+        y = y[info$idxTr],
+        betaLead = betaLead,
+        betaBar = betaBar,
+        globalGrad = info$gradTrainGlobal,
+        globalHessDiag = info$hessTrainGlobalDiag,
+        lambda = lambda,
+        maxOuter = maxOuter,
+        maxInner = maxInner,
+        tol = tol,
+        betaInit = warmStart
+      )
     }
-    out
-  })
-  scores <- rep(NA_real_, length(lambdaSeq))
-  warmStarts <- rep(list(betaLead), foldsK)
-  for (li in seq_along(lambdaSeq)) {
-    foldLoss <- numeric(foldsK)
-    for (fold in seq_len(foldsK)) {
-      info <- foldInfo[[fold]]
-      if (identical(mode, "second")) {
-        fit <- .fitPdaAdapRemoteDiagSurrogate(
-          xDesign = xDesign[info$idxTr, , drop = FALSE],
-          y = y[info$idxTr],
-          betaLead = betaLead,
-          betaBar = betaBar,
-          globalGrad = info$gradTrainGlobal,
-          globalHessDiag = info$hessTrainGlobalDiag,
-          lambda = lambdaSeq[li],
-          maxOuter = maxOuter,
-          tol = tol,
-          betaInit = warmStarts[[fold]]
-        )
-      } else {
-        fit <- .fitPdaAdapDiagSurrogate(
-          xDesign = xDesign[info$idxTr, , drop = FALSE],
-          y = y[info$idxTr],
-          betaLead = betaLead,
-          betaBar = betaBar,
-          globalGrad = info$gradTrainGlobal,
-          globalHessDiag = info$hessTrainGlobalDiag,
-          lambda = lambdaSeq[li],
-          mode = mode,
-          maxOuter = maxOuter,
-          tol = tol,
-          betaInit = warmStarts[[fold]]
-        )
-      }
-      warmStarts[[fold]] <- fit
-      foldLoss[fold] <- .negLogLikMean(fit, xDesign[info$idxVal, , drop = FALSE], y[info$idxVal])
-    }
-    scores[li] <- mean(foldLoss, na.rm = TRUE)
-  }
-  idx <- which.min(scores)
-  list(lambda = lambdaSeq[idx], scores = scores)
+  )
 }
 
 .serverInitPdaAdap <- function(config) {
@@ -999,7 +765,7 @@
 
 .serverInitPdaAdapPda <- function(config) {
   state <- .serverInitPdaAdap(config)
-  state$adapSolveStyle <- "pda"
+  state$adapSolveStyle <- "fullQuadratic"
   state
 }
 
@@ -1109,10 +875,14 @@
         seed = config$cvSeed %||% 42L,
         maxOuter = config$maxOuter %||% 100L,
         maxInner = config$maxInner %||% 100L,
-        tol = config$tol %||% 1e-5
+        tol = config$tol %||% 1e-5,
+        search = config$lambdaSearch %||% "grid",
+        searchTol = config$lambdaSearchTol %||% log(1.5),
+        maxEvals = config$lambdaSearchMaxEvals %||% 25L
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
+      lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
     }
     w <- .fitPdaAdapSurrogate(
       xDesign = xDesign,
@@ -1342,10 +1112,14 @@
           seed = config$cvSeed %||% 42L,
           maxOuter = config$maxOuter %||% 100L,
           maxInner = config$maxInner %||% 100L,
-          tol = config$tol %||% 1e-5
+          tol = config$tol %||% 1e-5,
+          search = config$lambdaSearch %||% "grid",
+          searchTol = config$lambdaSearchTol %||% log(1.5),
+          maxEvals = config$lambdaSearchMaxEvals %||% 25L
         )
         lambda <- cv$lambda
         cvScores <- cv$scores
+        lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
       }
       w <- .fitPdaAdapFirstOrderSurrogate(
         xDesign = xDesign,
@@ -1420,7 +1194,6 @@
           betaBar = betaBar,
           globalGrad = globalGrad,
           globalHessDiag = globalHessDiag,
-          mode = "second",
           gridLen = config$lambdaGridLen %||% 100L
         )
       }
@@ -1433,14 +1206,18 @@
         globalHessDiag = globalHessDiag,
         lambdaSeq = lambdaSeq,
         totalN = serverBroadcast$totalN,
-        mode = "second",
         foldsK = config$foldsK %||% 5L,
         seed = config$cvSeed %||% 42L,
         maxOuter = config$maxOuter %||% 100L,
-        tol = config$tol %||% 1e-5
+        maxInner = config$maxInner %||% 100L,
+        tol = config$tol %||% 1e-5,
+        search = config$lambdaSearch %||% "grid",
+        searchTol = config$lambdaSearchTol %||% log(1.5),
+        maxEvals = config$lambdaSearchMaxEvals %||% 25L
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
+      lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
     }
     w <- .fitPdaAdapRemoteDiagSurrogate(
       xDesign = xDesign,

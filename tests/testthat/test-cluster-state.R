@@ -83,16 +83,12 @@ test_that("clusterClearState removes package worker globals", {
   expect_null(parallel::clusterEvalQ(cl, getOption("FederatedLearning.localId"))[[1]])
 })
 
-test_that("evaluation and prediction fail clearly when clientData is missing", {
+test_that("evaluation fails clearly when clientData is missing", {
   cl <- parallel::makeCluster(1)
   on.exit(parallel::stopCluster(cl))
 
   expect_error(
     clusterEvaluateModel(cl, w = c(0, 1)),
-    "Worker state is missing required object\\(s\\): clientData"
-  )
-  expect_error(
-    FederatedLearning:::clusterPredict(cl, w = c(0, 1)),
     "Worker state is missing required object\\(s\\): clientData"
   )
 })

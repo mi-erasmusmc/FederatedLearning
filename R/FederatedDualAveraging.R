@@ -4,7 +4,12 @@ serverInitDA <- function(config) {
   } else {
     intercept <- 0
   }
-  z <- rep(0, config[["p"]] + intercept)
+  p <- config[["p"]] + intercept
+  z <- config$initialZ %||% rep(0, p)
+  if (length(z) != p) {
+    stop(sprintf("initialZ length mismatch: expected %s but got %s", p, length(z)))
+  }
+  z <- as.numeric(z)
   list(z = z)
 }
 
@@ -52,7 +57,7 @@ serverRoundDA <- function(serverState,
   coef <- config$etaServer * config$etaClient * (serverState$r + 1) * config$k
   w <- FederatedLearning::proxL1(z, alphaLambda = coef * config$lambda)
   list(state = list(z = z),
-       report = list(w = w))
+       report = list(w = w, z = z))
 }
 
 .registerAlgorithm("DualAvgR",

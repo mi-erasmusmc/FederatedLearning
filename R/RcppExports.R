@@ -40,3 +40,7 @@ logisticGradientHessianCpp <- function(x, beta, y, eps = 1e-8) {
     .Call(`_FederatedLearning_logisticGradientHessianCpp`, x, beta, y, eps)
 }
 
+quadraticLassoCdCpp <- function(aTilde, bMatrix, betaInit, lambda, maxIter = 100L, tol = 1e-5, penalizeNullable = NULL) {
+    .Call(`_FederatedLearning_quadraticLassoCdCpp`, aTilde, bMatrix, betaInit, lambda, maxIter, tol, penalizeNullable)
+}
+

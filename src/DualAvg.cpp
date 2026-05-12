@@ -51,7 +51,14 @@ List serverInitDualAveragingCpp(List config) {
   bool interceptFlag = config["intercept"];
   int intercept = interceptFlag ? 1 : 0;
   int p = config["p"];
-  Eigen::VectorXd z = Eigen::VectorXd::Zero(p + intercept);
+  int dim = p + intercept;
+  Eigen::VectorXd z = Eigen::VectorXd::Zero(dim);
+  if (config.containsElementNamed("initialZ") && !Rf_isNull(config["initialZ"])) {
+    z = as<Eigen::VectorXd>(config["initialZ"]);
+    if (z.size() != dim) {
+      stop("initialZ length mismatch: expected %s but got %s", dim, z.size());
+    }
+  }
   return List::create(_["z"] = z);
 
 }
@@ -158,7 +165,8 @@ List serverRoundDualAveragingCpp(List &serverState,
   Eigen::VectorXd wNew = proxL1_E(zNew, alpha * lambda);
 
   List state = List::create(_["z"] = zNew);
-  List report = List::create(_["w"] = wNew);
+  List report = List::create(_["w"] = wNew,
+                             _["z"] = zNew);
   
   return List::create(_["state"] = state, 
                       _["report"] = report);

@@ -13,30 +13,6 @@ proxL1 <- function(z, alphaLambda, intercept = TRUE) {
   w
 }
 
-proxFastL1 <- function(z, A, mu, lambda, intercept = FALSE) {
-  u <- -z / (mu * A)
-  w <- sign(u) * pmax(abs(u) - (lambda / mu), 0)
-  if (intercept) w[1] <- u[1] # do not regularize the intercept
-  w
-}
-proxL1Ridge <- function(z, A, mu, gamma, lambda, intercept = FALSE) {
-  # combined quadratic coefficient
-  denom <- mu * A + 2 * gamma
-
-  # unregularized update
-  u <- -z / denom
-
-  # soft-threshold by (lambda * A)/denom
-  w <- sign(u) * pmax(abs(u) - (lambda * A) / denom, 0)
-
-  # leave intercept unshrunk
-  if (intercept) {
-    w[1] <- u[1]
-  }
-
-  w
-}
-
 .asDgCMatrix <- function(xMatrix) {
   if (inherits(xMatrix, "dgCMatrix")) {
     xMatrix
