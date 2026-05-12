@@ -676,6 +676,12 @@ test_that("comparison runner helpers parse external comparison settings", {
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSearch, "optimize")
   expect_equal(runnerEnv$methodConfig("ADAP1", "ageSex", defaultArgs)$lambdaSearch, "optimize")
   expect_equal(runnerEnv$methodConfig("ADAPDiag", "ageSex", defaultArgs)$lambdaSearch, "optimize")
+  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSelectionMetric, "auc")
+  expect_equal(runnerEnv$methodConfig("ADAP1", "ageSex", defaultArgs)$lambdaSelectionMetric, "auc")
+  expect_equal(runnerEnv$methodConfig("ADAPDiag", "ageSex", defaultArgs)$lambdaSelectionMetric, "auc")
+  expect_equal(runnerEnv$methodConfig("ADAP_PDA", "ageSex", defaultArgs)$lambdaSelectionMetric, "auc")
+  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaCvMaxRows, Inf)
+  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaCvGlobalAdjustment, "leaveValOut")
 
   fixedDualAvgArgs <- runnerEnv$parseArgs(c("--dualavg-lambda=1e-05"))
   expect_false(runnerEnv$shouldTuneDualAvg(fixedDualAvgArgs))

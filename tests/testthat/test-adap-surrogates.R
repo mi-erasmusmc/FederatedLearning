@@ -524,6 +524,88 @@ test_that("ADAP1 and ADAPDiag lead CV support bounded log-lambda search", {
   expect_true(diagCv$lambda <= max(diagLambdaSeq))
 })
 
+test_that("ADAP lead CV can select lambda by AUC without choosing an intercept-only tie", {
+  set.seed(21)
+  n <- 120L
+  age <- stats::rnorm(n)
+  sex <- stats::rbinom(n, 1, 0.5)
+  y <- stats::rbinom(n, 1, stats::plogis(-3.2 + 1.4 * age + 0.8 * sex))
+  x <- Matrix::Matrix(cbind(1, age, sex), sparse = TRUE)
+  betaBar <- rep(0, ncol(x))
+  betaLead <- rep(0.01, ncol(x))
+  globalGrad <- FederatedLearning:::.logisticNegGradient(betaBar, x, y)
+  globalHess <- FederatedLearning:::.logisticNegHessian(betaBar, x)
+  globalHessDiag <- FederatedLearning:::.logisticNegHessianDiag(betaBar, x)
+  lambdaSeq <- c(1e-3, 1e-4, 1e-6)
+
+  firstCv <- FederatedLearning:::.pdaAdapFirstLeadCv(
+    xDesign = x,
+    y = y,
+    betaLead = betaLead,
+    betaBar = betaBar,
+    globalGrad = globalGrad,
+    lambdaSeq = lambdaSeq,
+    totalN = length(y),
+    foldsK = 3L,
+    seed = 22L,
+    maxOuter = 30L,
+    maxInner = 60L,
+    tol = 1e-7,
+    search = "grid",
+    selectionMetric = "auc",
+    globalAdjustment = "pda"
+  )
+  diagCv <- FederatedLearning:::.pdaAdapDiagLeadCv(
+    xDesign = x,
+    y = y,
+    betaLead = betaLead,
+    betaBar = betaBar,
+    globalGrad = globalGrad,
+    globalHessDiag = globalHessDiag,
+    lambdaSeq = lambdaSeq,
+    totalN = length(y),
+    foldsK = 3L,
+    seed = 22L,
+    maxOuter = 30L,
+    maxInner = 60L,
+    tol = 1e-7,
+    search = "grid",
+    selectionMetric = "auc",
+    globalAdjustment = "pda"
+  )
+  pdaCv <- FederatedLearning:::.pdaAdapPdaLeadCv(
+    xDesign = x,
+    y = y,
+    betaBar = betaBar,
+    globalGrad = globalGrad,
+    globalHess = globalHess,
+    lambdaSeq = lambdaSeq,
+    foldsK = 3L,
+    seed = 22L,
+    maxIter = 60L,
+    tol = 1e-7,
+    selectionMetric = "auc"
+  )
+
+  expect_equal(firstCv$lambda, 1e-6)
+  expect_equal(diagCv$lambda, 1e-6)
+  expect_equal(pdaCv$lambda, 1e-6)
+  expect_gt(max(firstCv$scores, na.rm = TRUE), 0.5)
+  expect_gt(max(diagCv$scores, na.rm = TRUE), 0.5)
+  expect_gt(max(pdaCv$scores, na.rm = TRUE), 0.5)
+})
+
+test_that("ADAP lead CV can use a stratified row cap for large lead sites", {
+  y <- c(rep(0L, 95), rep(1L, 5))
+  idx <- FederatedLearning:::.adapCvSubset(y, maxRows = 20L, seed = 23L)
+
+  expect_length(idx, 20L)
+  expect_true(any(y[idx] == 1L))
+  expect_true(any(y[idx] == 0L))
+  expect_equal(idx, sort(idx))
+  expect_equal(FederatedLearning:::.adapCvSubset(y, maxRows = Inf, seed = 23L), seq_along(y))
+})
+
 test_that("ADAPDiag can switch from local-full diagonal correction to pda diagonal solving", {
   set.seed(12)
   x <- Matrix::Matrix(matrix(rnorm(120), nrow = 24), sparse = TRUE)
@@ -776,11 +858,59 @@ test_that("ADAP warm starts do not change CV scores after convergence", {
     seed = seed,
     maxOuter = maxOuter,
     maxInner = maxInner,
-    tol = tol
+    tol = tol,
+    globalAdjustment = "leaveValOut"
   )
 
   expect_equal(warm$scores, manualScores, tolerance = 1e-6)
   expect_equal(warm$lambda, lambdaSeq[which.min(manualScores)])
+})
+
+test_that("compiled sparse ADAP surrogate solvers match dense R fallback", {
+  fixture <- make_adap_phase2_fixture(n = 24L, p = 4L, seed = 21L)
+  xSparse <- fixture$xDesign
+  xDense <- as.matrix(xSparse)
+  lambda <- 0.025
+
+  sparseFits <- list(
+    full = FederatedLearning:::.fitPdaAdapSurrogate(
+      xSparse, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, fixture$globalHess, lambda,
+      maxOuter = 35L, maxInner = 80L, tol = 1e-9
+    ),
+    first = FederatedLearning:::.fitPdaAdapFirstOrderSurrogate(
+      xSparse, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, lambda,
+      maxOuter = 35L, maxInner = 80L, tol = 1e-9
+    ),
+    diag = FederatedLearning:::.fitPdaAdapRemoteDiagSurrogate(
+      xSparse, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, fixture$globalHessDiag, lambda,
+      maxOuter = 35L, maxInner = 80L, tol = 1e-9
+    )
+  )
+
+  denseFits <- list(
+    full = FederatedLearning:::.fitPdaAdapSurrogate(
+      xDense, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, fixture$globalHess, lambda,
+      maxOuter = 35L, maxInner = 80L, tol = 1e-9
+    ),
+    first = FederatedLearning:::.fitPdaAdapFirstOrderSurrogate(
+      xDense, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, lambda,
+      maxOuter = 35L, maxInner = 80L, tol = 1e-9
+    ),
+    diag = FederatedLearning:::.fitPdaAdapRemoteDiagSurrogate(
+      xDense, fixture$y, fixture$betaLead, fixture$betaBar,
+      fixture$globalGrad, fixture$globalHessDiag, lambda,
+      maxOuter = 35L, maxInner = 80L, tol = 1e-9
+    )
+  )
+
+  expect_equal(sparseFits$full, denseFits$full, tolerance = 1e-8)
+  expect_equal(sparseFits$first, denseFits$first, tolerance = 1e-8)
+  expect_equal(sparseFits$diag, denseFits$diag, tolerance = 1e-8)
 })
 
 test_that("ADAP optimizers satisfy quadratic KKT checks on well-conditioned data", {
