@@ -130,8 +130,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // quadraticLassoCdCpp
-Eigen::VectorXd quadraticLassoCdCpp(const Eigen::VectorXd& aTilde, const Eigen::MatrixXd& bMatrix, const Eigen::VectorXd& betaInit, double lambda, int maxIter, double tol, Rcpp::Nullable<Rcpp::LogicalVector> penalizeNullable);
-RcppExport SEXP _FederatedLearning_quadraticLassoCdCpp(SEXP aTildeSEXP, SEXP bMatrixSEXP, SEXP betaInitSEXP, SEXP lambdaSEXP, SEXP maxIterSEXP, SEXP tolSEXP, SEXP penalizeNullableSEXP) {
+Eigen::VectorXd quadraticLassoCdCpp(const Eigen::VectorXd& aTilde, const Eigen::MatrixXd& bMatrix, const Eigen::VectorXd& betaInit, double lambda, int maxIter, double tol, Rcpp::Nullable<Rcpp::LogicalVector> penalizeNullable, double initialStepBound, double minStep, int maxBacktracks);
+RcppExport SEXP _FederatedLearning_quadraticLassoCdCpp(SEXP aTildeSEXP, SEXP bMatrixSEXP, SEXP betaInitSEXP, SEXP lambdaSEXP, SEXP maxIterSEXP, SEXP tolSEXP, SEXP penalizeNullableSEXP, SEXP initialStepBoundSEXP, SEXP minStepSEXP, SEXP maxBacktracksSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -142,13 +142,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< int >::type maxIter(maxIterSEXP);
     Rcpp::traits::input_parameter< double >::type tol(tolSEXP);
     Rcpp::traits::input_parameter< Rcpp::Nullable<Rcpp::LogicalVector> >::type penalizeNullable(penalizeNullableSEXP);
-    rcpp_result_gen = Rcpp::wrap(quadraticLassoCdCpp(aTilde, bMatrix, betaInit, lambda, maxIter, tol, penalizeNullable));
+    Rcpp::traits::input_parameter< double >::type initialStepBound(initialStepBoundSEXP);
+    Rcpp::traits::input_parameter< double >::type minStep(minStepSEXP);
+    Rcpp::traits::input_parameter< int >::type maxBacktracks(maxBacktracksSEXP);
+    rcpp_result_gen = Rcpp::wrap(quadraticLassoCdCpp(aTilde, bMatrix, betaInit, lambda, maxIter, tol, penalizeNullable, initialStepBound, minStep, maxBacktracks));
     return rcpp_result_gen;
 END_RCPP
 }
 // adapFullSurrogateFitCpp
-List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& y, const Eigen::VectorXd& betaStart, const Eigen::VectorXd& betaBar, const Eigen::VectorXd& globalGrad, const Eigen::MatrixXd& globalHess, const Eigen::VectorXd& gradBar, const Eigen::MatrixXd& hBar, double lambda, int maxOuter, int maxInner, double tol, double eps);
-RcppExport SEXP _FederatedLearning_adapFullSurrogateFitCpp(SEXP xSEXP, SEXP ySEXP, SEXP betaStartSEXP, SEXP betaBarSEXP, SEXP globalGradSEXP, SEXP globalHessSEXP, SEXP gradBarSEXP, SEXP hBarSEXP, SEXP lambdaSEXP, SEXP maxOuterSEXP, SEXP maxInnerSEXP, SEXP tolSEXP, SEXP epsSEXP) {
+List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& y, const Eigen::VectorXd& betaStart, const Eigen::VectorXd& betaBar, const Eigen::VectorXd& globalGrad, const Eigen::MatrixXd& globalHess, const Eigen::VectorXd& gradBar, const Eigen::MatrixXd& hBar, double lambda, int maxOuter, int maxInner, double tol, double eps, double initialStepBound, double minStep, int maxBacktracks);
+RcppExport SEXP _FederatedLearning_adapFullSurrogateFitCpp(SEXP xSEXP, SEXP ySEXP, SEXP betaStartSEXP, SEXP betaBarSEXP, SEXP globalGradSEXP, SEXP globalHessSEXP, SEXP gradBarSEXP, SEXP hBarSEXP, SEXP lambdaSEXP, SEXP maxOuterSEXP, SEXP maxInnerSEXP, SEXP tolSEXP, SEXP epsSEXP, SEXP initialStepBoundSEXP, SEXP minStepSEXP, SEXP maxBacktracksSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -165,13 +168,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< int >::type maxInner(maxInnerSEXP);
     Rcpp::traits::input_parameter< double >::type tol(tolSEXP);
     Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
-    rcpp_result_gen = Rcpp::wrap(adapFullSurrogateFitCpp(x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, maxOuter, maxInner, tol, eps));
+    Rcpp::traits::input_parameter< double >::type initialStepBound(initialStepBoundSEXP);
+    Rcpp::traits::input_parameter< double >::type minStep(minStepSEXP);
+    Rcpp::traits::input_parameter< int >::type maxBacktracks(maxBacktracksSEXP);
+    rcpp_result_gen = Rcpp::wrap(adapFullSurrogateFitCpp(x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks));
     return rcpp_result_gen;
 END_RCPP
 }
 // adapFirstSurrogateFitCpp
-List adapFirstSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& y, const Eigen::VectorXd& betaStart, const Eigen::VectorXd& betaBar, const Eigen::VectorXd& globalGrad, const Eigen::VectorXd& gradBar, double lambda, int maxOuter, int maxInner, double tol, double eps);
-RcppExport SEXP _FederatedLearning_adapFirstSurrogateFitCpp(SEXP xSEXP, SEXP ySEXP, SEXP betaStartSEXP, SEXP betaBarSEXP, SEXP globalGradSEXP, SEXP gradBarSEXP, SEXP lambdaSEXP, SEXP maxOuterSEXP, SEXP maxInnerSEXP, SEXP tolSEXP, SEXP epsSEXP) {
+List adapFirstSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& y, const Eigen::VectorXd& betaStart, const Eigen::VectorXd& betaBar, const Eigen::VectorXd& globalGrad, const Eigen::VectorXd& gradBar, double lambda, int maxOuter, int maxInner, double tol, double eps, double initialStepBound, double minStep, int maxBacktracks);
+RcppExport SEXP _FederatedLearning_adapFirstSurrogateFitCpp(SEXP xSEXP, SEXP ySEXP, SEXP betaStartSEXP, SEXP betaBarSEXP, SEXP globalGradSEXP, SEXP gradBarSEXP, SEXP lambdaSEXP, SEXP maxOuterSEXP, SEXP maxInnerSEXP, SEXP tolSEXP, SEXP epsSEXP, SEXP initialStepBoundSEXP, SEXP minStepSEXP, SEXP maxBacktracksSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -186,13 +192,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< int >::type maxInner(maxInnerSEXP);
     Rcpp::traits::input_parameter< double >::type tol(tolSEXP);
     Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
-    rcpp_result_gen = Rcpp::wrap(adapFirstSurrogateFitCpp(x, y, betaStart, betaBar, globalGrad, gradBar, lambda, maxOuter, maxInner, tol, eps));
+    Rcpp::traits::input_parameter< double >::type initialStepBound(initialStepBoundSEXP);
+    Rcpp::traits::input_parameter< double >::type minStep(minStepSEXP);
+    Rcpp::traits::input_parameter< int >::type maxBacktracks(maxBacktracksSEXP);
+    rcpp_result_gen = Rcpp::wrap(adapFirstSurrogateFitCpp(x, y, betaStart, betaBar, globalGrad, gradBar, lambda, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks));
     return rcpp_result_gen;
 END_RCPP
 }
 // adapDiagSurrogateFitCpp
-List adapDiagSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& y, const Eigen::VectorXd& betaStart, const Eigen::VectorXd& betaBar, const Eigen::VectorXd& globalGrad, const Eigen::VectorXd& globalHessDiag, const Eigen::VectorXd& gradBar, const Eigen::VectorXd& hBarDiag, double lambda, int maxOuter, int maxInner, double tol, double eps);
-RcppExport SEXP _FederatedLearning_adapDiagSurrogateFitCpp(SEXP xSEXP, SEXP ySEXP, SEXP betaStartSEXP, SEXP betaBarSEXP, SEXP globalGradSEXP, SEXP globalHessDiagSEXP, SEXP gradBarSEXP, SEXP hBarDiagSEXP, SEXP lambdaSEXP, SEXP maxOuterSEXP, SEXP maxInnerSEXP, SEXP tolSEXP, SEXP epsSEXP) {
+List adapDiagSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& y, const Eigen::VectorXd& betaStart, const Eigen::VectorXd& betaBar, const Eigen::VectorXd& globalGrad, const Eigen::VectorXd& globalHessDiag, const Eigen::VectorXd& gradBar, const Eigen::VectorXd& hBarDiag, double lambda, int maxOuter, int maxInner, double tol, double eps, double initialStepBound, double minStep, int maxBacktracks);
+RcppExport SEXP _FederatedLearning_adapDiagSurrogateFitCpp(SEXP xSEXP, SEXP ySEXP, SEXP betaStartSEXP, SEXP betaBarSEXP, SEXP globalGradSEXP, SEXP globalHessDiagSEXP, SEXP gradBarSEXP, SEXP hBarDiagSEXP, SEXP lambdaSEXP, SEXP maxOuterSEXP, SEXP maxInnerSEXP, SEXP tolSEXP, SEXP epsSEXP, SEXP initialStepBoundSEXP, SEXP minStepSEXP, SEXP maxBacktracksSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -209,7 +218,10 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< int >::type maxInner(maxInnerSEXP);
     Rcpp::traits::input_parameter< double >::type tol(tolSEXP);
     Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
-    rcpp_result_gen = Rcpp::wrap(adapDiagSurrogateFitCpp(x, y, betaStart, betaBar, globalGrad, globalHessDiag, gradBar, hBarDiag, lambda, maxOuter, maxInner, tol, eps));
+    Rcpp::traits::input_parameter< double >::type initialStepBound(initialStepBoundSEXP);
+    Rcpp::traits::input_parameter< double >::type minStep(minStepSEXP);
+    Rcpp::traits::input_parameter< int >::type maxBacktracks(maxBacktracksSEXP);
+    rcpp_result_gen = Rcpp::wrap(adapDiagSurrogateFitCpp(x, y, betaStart, betaBar, globalGrad, globalHessDiag, gradBar, hBarDiag, lambda, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -224,10 +236,10 @@ static const R_CallMethodDef CallEntries[] = {
     {"_FederatedLearning_logisticHessianDiagCpp", (DL_FUNC) &_FederatedLearning_logisticHessianDiagCpp, 3},
     {"_FederatedLearning_logisticHessianCpp", (DL_FUNC) &_FederatedLearning_logisticHessianCpp, 3},
     {"_FederatedLearning_logisticGradientHessianCpp", (DL_FUNC) &_FederatedLearning_logisticGradientHessianCpp, 4},
-    {"_FederatedLearning_quadraticLassoCdCpp", (DL_FUNC) &_FederatedLearning_quadraticLassoCdCpp, 7},
-    {"_FederatedLearning_adapFullSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapFullSurrogateFitCpp, 13},
-    {"_FederatedLearning_adapFirstSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapFirstSurrogateFitCpp, 11},
-    {"_FederatedLearning_adapDiagSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapDiagSurrogateFitCpp, 13},
+    {"_FederatedLearning_quadraticLassoCdCpp", (DL_FUNC) &_FederatedLearning_quadraticLassoCdCpp, 10},
+    {"_FederatedLearning_adapFullSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapFullSurrogateFitCpp, 16},
+    {"_FederatedLearning_adapFirstSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapFirstSurrogateFitCpp, 14},
+    {"_FederatedLearning_adapDiagSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapDiagSurrogateFitCpp, 16},
     {NULL, NULL, 0}
 };
 

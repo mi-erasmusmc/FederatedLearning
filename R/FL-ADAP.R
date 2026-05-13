@@ -216,11 +216,45 @@
   )
 }
 
+.adapFailedValidationStats <- function(metric) {
+  score <- if (identical(metric, "auc")) 0 else 1e100
+  c(
+    score = score,
+    rawDeviance = NA_real_,
+    rawDevianceFinite = FALSE,
+    scoreFinite = FALSE,
+    etaLength = NA_real_,
+    etaFinite = NA_real_,
+    etaNonFinite = NA_real_,
+    etaMin = NA_real_,
+    etaMax = NA_real_,
+    etaMaxAbs = NA_real_
+  )
+}
+
 .adapFitBeta <- function(fit) {
   if (is.list(fit) && !is.null(fit$beta)) {
     return(as.numeric(fit$beta))
   }
   as.numeric(fit)
+}
+
+.adapFitFailureReason <- function(fit) {
+  if (is.list(fit) && !is.null(fit$failureReason)) {
+    reason <- as.character(fit$failureReason)
+    if (length(reason) && !is.na(reason[1]) && nzchar(reason[1])) {
+      return(reason[1])
+    }
+  }
+  beta <- .adapFitBeta(fit)
+  if (!all(is.finite(beta))) {
+    return("non_finite_beta")
+  }
+  ""
+}
+
+.adapFitFailed <- function(fit) {
+  nzchar(.adapFitFailureReason(fit))
 }
 
 .adapFitDiagnostics <- function(fit) {
@@ -229,7 +263,13 @@
     outerIterations = if (is.list(fit) && !is.null(fit$outerIterations)) fit$outerIterations else NA_real_,
     converged = if (is.list(fit) && !is.null(fit$converged)) isTRUE(fit$converged) else NA,
     .adapRangeStats(beta, "beta"),
-    betaNonzero = sum(abs(beta) > 1e-8, na.rm = TRUE)
+    betaNonzero = sum(abs(beta) > 1e-8, na.rm = TRUE),
+    fitFailed = .adapFitFailed(fit),
+    innerIterations = if (is.list(fit) && !is.null(fit$innerIterations)) fit$innerIterations else NA_real_,
+    innerConverged = if (is.list(fit) && !is.null(fit$innerConverged)) isTRUE(fit$innerConverged) else NA,
+    innerObjective = if (is.list(fit) && !is.null(fit$innerObjective)) fit$innerObjective else NA_real_,
+    innerMaxAbsStep = if (is.list(fit) && !is.null(fit$innerMaxAbsStep)) fit$innerMaxAbsStep else NA_real_,
+    innerBacktracks = if (is.list(fit) && !is.null(fit$innerBacktracks)) fit$innerBacktracks else NA_real_
   )
 }
 
@@ -332,45 +372,179 @@
 
 .coordDescentQuadraticLasso <- function(aTilde, B, betaInit, lambda,
                                         maxIter = 100L, tol = 1e-5,
-                                        penalize = NULL) {
+                                        penalize = NULL,
+                                        initialStepBound = 1,
+                                        minStep = 1e-8,
+                                        maxBacktracks = 25L,
+                                        returnDetails = FALSE) {
   if (is.matrix(B)) {
-    return(as.numeric(quadraticLassoCdCpp(
-      aTilde = as.numeric(aTilde),
-      bMatrix = B,
-      betaInit = as.numeric(betaInit),
-      lambda = lambda,
-      maxIter = as.integer(maxIter),
-      tol = tol,
-      penalizeNullable = penalize
-    )))
+    out <- tryCatch(
+      as.numeric(quadraticLassoCdCpp(
+        aTilde = as.numeric(aTilde),
+        bMatrix = B,
+        betaInit = as.numeric(betaInit),
+        lambda = lambda,
+        maxIter = as.integer(maxIter),
+        tol = tol,
+        penalizeNullable = penalize,
+        initialStepBound = initialStepBound,
+        minStep = minStep,
+        maxBacktracks = as.integer(maxBacktracks)
+      )),
+      error = function(e) {
+        if (!isTRUE(returnDetails)) {
+          stop(e)
+        }
+        list(
+          beta = as.numeric(betaInit),
+          iterations = 0L,
+          converged = FALSE,
+          failureReason = conditionMessage(e),
+          objective = NA_real_,
+          maxAbsStep = NA_real_,
+          backtracks = NA_integer_
+        )
+      }
+    )
+    if (!isTRUE(returnDetails) || is.list(out)) {
+      return(out)
+    }
+    return(list(
+      beta = out,
+      iterations = NA_integer_,
+      converged = NA,
+      failureReason = "",
+      objective = NA_real_,
+      maxAbsStep = NA_real_,
+      backtracks = NA_integer_
+    ))
   }
   beta <- betaInit
   p <- length(beta)
+  if (length(initialStepBound) != 1L || !is.finite(initialStepBound) || initialStepBound <= 0) {
+    stop("initialStepBound must be a positive finite value", call. = FALSE)
+  }
+  if (length(minStep) != 1L || !is.finite(minStep) || minStep <= 0) {
+    stop("minStep must be a positive finite value", call. = FALSE)
+  }
+  maxBacktracks <- as.integer(maxBacktracks)
+  if (length(maxBacktracks) != 1L || is.na(maxBacktracks) || maxBacktracks < 0L) {
+    stop("maxBacktracks must be non-negative", call. = FALSE)
+  }
   if (is.null(penalize)) {
     penalize <- rep(TRUE, p)
     penalize[1] <- FALSE
   }
-  diagB <- diag(B)
+  diagB <- if (is.matrix(B)) diag(B) else Matrix::diag(B)
+  fail <- function(reason, iter = 0L, objective = NA_real_, maxAbsStep = NA_real_, backtracks = NA_integer_) {
+    if (isTRUE(returnDetails)) {
+      return(list(
+        beta = beta,
+        iterations = iter,
+        converged = FALSE,
+        failureReason = reason,
+        objective = objective,
+        maxAbsStep = maxAbsStep,
+        backtracks = backtracks
+      ))
+    }
+    stop(reason, call. = FALSE)
+  }
+  if (!all(is.finite(c(aTilde, as.numeric(B), beta, lambda)))) {
+    return(fail("non_finite_surrogate_input"))
+  }
+  if (any(!is.finite(diagB) | diagB <= 0)) {
+    return(fail("non_positive_coordinate_curvature"))
+  }
+  objective <- function(betaValue) {
+    as.numeric(crossprod(aTilde, betaValue) +
+      crossprod(betaValue, B %*% betaValue) / 2 +
+      lambda * sum(abs(betaValue[penalize])))
+  }
+  currentObjective <- objective(beta)
+  if (!is.finite(currentObjective)) {
+    return(fail("non_finite_objective"))
+  }
+  stepBounds <- rep(initialStepBound, p)
+  backtracks <- 0L
+  maxAbsStep <- NA_real_
   for (iter in seq_len(maxIter)) {
     betaOld <- beta
+    oldObjective <- currentObjective
+    maxAbsStep <- 0
     for (j in seq_len(p)) {
       hjj <- diagB[j]
-      if (!is.finite(hjj) || hjj <= 0) {
-        hjj <- 1e-10
-      }
-      b <- aTilde[j] + sum(B[j, ] * beta) - hjj * beta[j]
+      b <- aTilde[j] + sum(as.numeric(B[j, ]) * beta) - hjj * beta[j]
       z <- -b / hjj
       if (!is.finite(z)) {
-        z <- beta[j]
+        return(fail("non_finite_coordinate_update", iter, currentObjective, maxAbsStep, backtracks))
       }
-      beta[j] <- if (penalize[j]) .softScalar(z, lambda / hjj) else z
+      proposed <- if (penalize[j]) .softScalar(z, lambda / hjj) else z
+      step <- proposed - beta[j]
+      if (!is.finite(step)) {
+        return(fail("non_finite_coordinate_step", iter, currentObjective, maxAbsStep, backtracks))
+      }
+      step <- max(min(step, stepBounds[j]), -stepBounds[j])
+      if (abs(step) <= minStep) {
+        next
+      }
+      oldBetaJ <- beta[j]
+      smoothGrad <- aTilde[j] + sum(as.numeric(B[j, ]) * beta)
+      accepted <- FALSE
+      acceptedObjective <- NA_real_
+      for (bt in seq_len(maxBacktracks + 1L)) {
+        trialBetaJ <- oldBetaJ + step
+        l1Delta <- if (penalize[j]) lambda * (abs(trialBetaJ) - abs(oldBetaJ)) else 0
+        trialObjective <- currentObjective + smoothGrad * step + 0.5 * hjj * step^2 + l1Delta
+        descentTol <- 1e-12 * (abs(currentObjective) + 1)
+        if (is.finite(trialObjective) && trialObjective <= currentObjective + descentTol) {
+          accepted <- TRUE
+          acceptedObjective <- trialObjective
+          break
+        }
+        step <- step / 2
+        backtracks <- backtracks + 1L
+        if (abs(step) <= minStep) {
+          break
+        }
+      }
+      if (!accepted) {
+        return(fail("non_descent_coordinate_step", iter, currentObjective, maxAbsStep, backtracks))
+      }
+      beta[j] <- oldBetaJ + step
+      currentObjective <- acceptedObjective
+      maxAbsStep <- max(maxAbsStep, abs(step))
+      stepBounds[j] <- max(2 * abs(step), stepBounds[j] / 2, minStep)
+      if (!all(is.finite(beta)) || !is.finite(currentObjective)) {
+        return(fail("non_finite_coordinate_state", iter, currentObjective, maxAbsStep, backtracks))
+      }
     }
-    diffObj <- as.numeric(t(aTilde) %*% (beta - betaOld) +
-      t(beta) %*% B %*% beta / 2 -
-      t(betaOld) %*% B %*% betaOld / 2)
+    diffObj <- currentObjective - oldObjective
     if (is.finite(diffObj) && abs(diffObj) < tol) {
-      break
+      if (isTRUE(returnDetails)) {
+        return(list(
+          beta = beta,
+          iterations = iter,
+          converged = TRUE,
+          failureReason = "",
+          objective = currentObjective,
+          maxAbsStep = maxAbsStep,
+          backtracks = backtracks
+        ))
+      }
+      return(beta)
     }
+  }
+  if (isTRUE(returnDetails)) {
+    return(list(
+      beta = beta,
+      iterations = as.integer(maxIter),
+      converged = FALSE,
+      failureReason = "",
+      objective = currentObjective,
+      maxAbsStep = maxAbsStep,
+      backtracks = backtracks
+    ))
   }
   beta
 }
@@ -437,7 +611,10 @@
                                  globalGrad, globalHess, lambda,
                                  maxOuter = 100L, maxInner = 100L,
                                  tol = 1e-5, betaInit = NULL,
-                                 returnDetails = FALSE) {
+                                 returnDetails = FALSE,
+                                 cdStepBound = 1,
+                                 cdMinStep = 1e-8,
+                                 cdMaxBacktracks = 25L) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   if (inherits(xDesign, "sparseMatrix")) {
     gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -454,7 +631,10 @@
       lambda = lambda,
       maxOuter = maxOuter,
       maxInner = maxInner,
-      tol = tol
+      tol = tol,
+      initialStepBound = cdStepBound,
+      minStep = cdMinStep,
+      maxBacktracks = as.integer(cdMaxBacktracks)
     )
     if (isTRUE(returnDetails)) {
       return(out)
@@ -467,6 +647,14 @@
   hBar <- .logisticNegHessian(betaBar, xDesign)
   iterations <- 0L
   converged <- FALSE
+  failureReason <- ""
+  cd <- list(
+    iterations = NA_integer_,
+    converged = NA,
+    objective = NA_real_,
+    maxAbsStep = NA_real_,
+    backtracks = NA_integer_
+  )
   for (iter in seq_len(maxOuter)) {
     iterations <- iter
     old <- beta
@@ -480,23 +668,46 @@
       gradBar = gradBar,
       hBar = hBar
     )
-    beta <- .coordDescentQuadraticLasso(
+    cd <- .coordDescentQuadraticLasso(
       aTilde = comp$aTilde,
       B = comp$B,
       betaInit = beta,
       lambda = lambda,
       maxIter = maxInner,
       tol = tol,
-      penalize = penalize
+      penalize = penalize,
+      initialStepBound = cdStepBound,
+      minStep = cdMinStep,
+      maxBacktracks = as.integer(cdMaxBacktracks),
+      returnDetails = TRUE
     )
+    beta <- cd$beta
+    if (!identical(cd$failureReason, "")) {
+      failureReason <- cd$failureReason
+      break
+    }
     delta <- max(abs(beta - old), na.rm = TRUE)
+    if (!is.finite(delta) || !all(is.finite(beta))) {
+      failureReason <- "non_finite_outer_state"
+      break
+    }
     if (is.finite(delta) && delta < tol) {
       converged <- TRUE
       break
     }
   }
   if (isTRUE(returnDetails)) {
-    return(list(beta = beta, outerIterations = iterations, converged = converged))
+    return(list(
+      beta = beta,
+      outerIterations = iterations,
+      converged = converged,
+      failureReason = failureReason %||% "",
+      innerIterations = cd$iterations %||% NA_integer_,
+      innerConverged = cd$converged %||% NA,
+      innerObjective = cd$objective %||% NA_real_,
+      innerMaxAbsStep = cd$maxAbsStep %||% NA_real_,
+      innerBacktracks = cd$backtracks %||% NA_integer_
+    ))
   }
   beta
 }
@@ -600,12 +811,16 @@
       )
       fit <- .adapFitBeta(fitObj)
       warmStarts[[fold]] <- fit
-      valStats <- .adapValidationStats(
-        fit,
-        xDesign[idxVal, , drop = FALSE],
-        y[idxVal],
-        metric = selectionMetric
-      )
+      valStats <- if (.adapFitFailed(fitObj)) {
+        .adapFailedValidationStats(selectionMetric)
+      } else {
+        .adapValidationStats(
+          fit,
+          xDesign[idxVal, , drop = FALSE],
+          y[idxVal],
+          metric = selectionMetric
+        )
+      }
       foldLoss[fold] <- unname(valStats["score"])
       if (isTRUE(collectDiagnostics)) {
         leadTerms <- if (isTRUE(useFull)) {
@@ -629,6 +844,7 @@
           validationOutcomes = sum(y[idxVal] == 1),
           validationOutcomeRate = mean(y[idxVal] == 1),
           surrogateKind = if (isTRUE(useFull)) "pdaFull" else "pdaDiag",
+          failureReason = .adapFitFailureReason(fitObj),
           t(c(.adapFitDiagnostics(fitObj), valStats, hStats)),
           stringsAsFactors = FALSE,
           check.names = FALSE
@@ -650,7 +866,10 @@
                                            lambda,
                                            maxOuter = 100L, maxInner = 100L,
                                            tol = 1e-5, betaInit = NULL,
-                                           returnDetails = FALSE) {
+                                           returnDetails = FALSE,
+                                           cdStepBound = 1,
+                                           cdMinStep = 1e-8,
+                                           cdMaxBacktracks = 25L) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   if (inherits(xDesign, "sparseMatrix")) {
     gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -667,7 +886,10 @@
       lambda = lambda,
       maxOuter = maxOuter,
       maxInner = maxInner,
-      tol = tol
+      tol = tol,
+      initialStepBound = cdStepBound,
+      minStep = cdMinStep,
+      maxBacktracks = as.integer(cdMaxBacktracks)
     )
     if (isTRUE(returnDetails)) {
       return(out)
@@ -680,6 +902,14 @@
   hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
   iterations <- 0L
   converged <- FALSE
+  failureReason <- ""
+  cd <- list(
+    iterations = NA_integer_,
+    converged = NA,
+    objective = NA_real_,
+    maxAbsStep = NA_real_,
+    backtracks = NA_integer_
+  )
   for (iter in seq_len(maxOuter)) {
     iterations <- iter
     old <- beta
@@ -693,23 +923,46 @@
       gradBar = gradBar,
       hBarDiag = hBarDiag
     )
-    beta <- .coordDescentQuadraticLasso(
+    cd <- .coordDescentQuadraticLasso(
       aTilde = comp$aTilde,
       B = comp$B,
       betaInit = beta,
       lambda = lambda,
       maxIter = maxInner,
       tol = tol,
-      penalize = penalize
+      penalize = penalize,
+      initialStepBound = cdStepBound,
+      minStep = cdMinStep,
+      maxBacktracks = as.integer(cdMaxBacktracks),
+      returnDetails = TRUE
     )
+    beta <- cd$beta
+    if (!identical(cd$failureReason, "")) {
+      failureReason <- cd$failureReason
+      break
+    }
     delta <- max(abs(beta - old), na.rm = TRUE)
+    if (!is.finite(delta) || !all(is.finite(beta))) {
+      failureReason <- "non_finite_outer_state"
+      break
+    }
     if (is.finite(delta) && delta < tol) {
       converged <- TRUE
       break
     }
   }
   if (isTRUE(returnDetails)) {
-    return(list(beta = beta, outerIterations = iterations, converged = converged))
+    return(list(
+      beta = beta,
+      outerIterations = iterations,
+      converged = converged,
+      failureReason = failureReason,
+      innerIterations = cd$iterations %||% NA_integer_,
+      innerConverged = cd$converged %||% NA,
+      innerObjective = cd$objective %||% NA_real_,
+      innerMaxAbsStep = cd$maxAbsStep %||% NA_real_,
+      innerBacktracks = cd$backtracks %||% NA_integer_
+    ))
   }
   beta
 }
@@ -718,7 +971,10 @@
                                            globalGrad, lambda,
                                            maxOuter = 100L, maxInner = 100L,
                                            tol = 1e-5, betaInit = NULL,
-                                           returnDetails = FALSE) {
+                                           returnDetails = FALSE,
+                                           cdStepBound = 1,
+                                           cdMinStep = 1e-8,
+                                           cdMaxBacktracks = 25L) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   if (inherits(xDesign, "sparseMatrix")) {
     gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -732,7 +988,10 @@
       lambda = lambda,
       maxOuter = maxOuter,
       maxInner = maxInner,
-      tol = tol
+      tol = tol,
+      initialStepBound = cdStepBound,
+      minStep = cdMinStep,
+      maxBacktracks = as.integer(cdMaxBacktracks)
     )
     if (isTRUE(returnDetails)) {
       return(out)
@@ -744,6 +1003,14 @@
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   iterations <- 0L
   converged <- FALSE
+  failureReason <- ""
+  cd <- list(
+    iterations = NA_integer_,
+    converged = NA,
+    objective = NA_real_,
+    maxAbsStep = NA_real_,
+    backtracks = NA_integer_
+  )
   for (iter in seq_len(maxOuter)) {
     iterations <- iter
     old <- beta
@@ -755,23 +1022,46 @@
       globalGrad = globalGrad,
       gradBar = gradBar
     )
-    beta <- .coordDescentQuadraticLasso(
+    cd <- .coordDescentQuadraticLasso(
       aTilde = comp$aTilde,
       B = comp$B,
       betaInit = beta,
       lambda = lambda,
       maxIter = maxInner,
       tol = tol,
-      penalize = penalize
+      penalize = penalize,
+      initialStepBound = cdStepBound,
+      minStep = cdMinStep,
+      maxBacktracks = as.integer(cdMaxBacktracks),
+      returnDetails = TRUE
     )
+    beta <- cd$beta
+    if (!identical(cd$failureReason, "")) {
+      failureReason <- cd$failureReason
+      break
+    }
     delta <- max(abs(beta - old), na.rm = TRUE)
+    if (!is.finite(delta) || !all(is.finite(beta))) {
+      failureReason <- "non_finite_outer_state"
+      break
+    }
     if (is.finite(delta) && delta < tol) {
       converged <- TRUE
       break
     }
   }
   if (isTRUE(returnDetails)) {
-    return(list(beta = beta, outerIterations = iterations, converged = converged))
+    return(list(
+      beta = beta,
+      outerIterations = iterations,
+      converged = converged,
+      failureReason = failureReason,
+      innerIterations = cd$iterations %||% NA_integer_,
+      innerConverged = cd$converged %||% NA,
+      innerObjective = cd$objective %||% NA_real_,
+      innerMaxAbsStep = cd$maxAbsStep %||% NA_real_,
+      innerBacktracks = cd$backtracks %||% NA_integer_
+    ))
   }
   beta
 }
@@ -852,12 +1142,16 @@
       fitObj <- fitFold(info, lambda, warmStart, collectDiagnostics = collectDiagnostics)
       fit <- .adapFitBeta(fitObj)
       lambdaFits[[fold]][[key]] <<- fit
-      valStats <- .adapValidationStats(
-        fit,
-        xDesign[info$idxVal, , drop = FALSE],
-        y[info$idxVal],
-        metric = selectionMetric
-      )
+      valStats <- if (.adapFitFailed(fitObj)) {
+        .adapFailedValidationStats(selectionMetric)
+      } else {
+        .adapValidationStats(
+          fit,
+          xDesign[info$idxVal, , drop = FALSE],
+          y[info$idxVal],
+          metric = selectionMetric
+        )
+      }
       foldLoss[fold] <- unname(valStats["score"])
       if (isTRUE(collectDiagnostics)) {
         diagnosticRows <<- c(diagnosticRows, list(data.frame(
@@ -871,6 +1165,7 @@
           validationOutcomes = sum(y[info$idxVal] == 1),
           validationOutcomeRate = mean(y[info$idxVal] == 1),
           surrogateKind = surrogateKind,
+          failureReason = .adapFitFailureReason(fitObj),
           t(c(
             .adapFitDiagnostics(fitObj),
             valStats,
@@ -977,7 +1272,10 @@
                            tieTolerance = 1e-8,
                            cvMaxRows = Inf,
                            globalAdjustment = c("leaveValOut", "pda"),
-                           collectDiagnostics = FALSE) {
+                           collectDiagnostics = FALSE,
+                           cdStepBound = 1,
+                           cdMinStep = 1e-8,
+                           cdMaxBacktracks = 25L) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -1036,7 +1334,10 @@
         maxInner = maxInner,
         tol = tol,
         betaInit = warmStart,
-        returnDetails = collectDiagnostics
+        returnDetails = TRUE,
+        cdStepBound = cdStepBound,
+        cdMinStep = cdMinStep,
+        cdMaxBacktracks = cdMaxBacktracks
       )
     },
     collectDiagnostics = collectDiagnostics,
@@ -1075,7 +1376,10 @@
                                 tieTolerance = 1e-8,
                                 cvMaxRows = Inf,
                                 globalAdjustment = c("leaveValOut", "pda"),
-                                collectDiagnostics = FALSE) {
+                                collectDiagnostics = FALSE,
+                                cdStepBound = 1,
+                                cdMinStep = 1e-8,
+                                cdMaxBacktracks = 25L) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -1128,7 +1432,10 @@
         maxInner = maxInner,
         tol = tol,
         betaInit = warmStart,
-        returnDetails = collectDiagnostics
+        returnDetails = TRUE,
+        cdStepBound = cdStepBound,
+        cdMinStep = cdMinStep,
+        cdMaxBacktracks = cdMaxBacktracks
       )
     },
     collectDiagnostics = collectDiagnostics,
@@ -1170,7 +1477,10 @@
                                tieTolerance = 1e-8,
                                cvMaxRows = Inf,
                                globalAdjustment = c("leaveValOut", "pda"),
-                               collectDiagnostics = FALSE) {
+                               collectDiagnostics = FALSE,
+                               cdStepBound = 1,
+                               cdMinStep = 1e-8,
+                               cdMaxBacktracks = 25L) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -1229,7 +1539,10 @@
         maxInner = maxInner,
         tol = tol,
         betaInit = warmStart,
-        returnDetails = collectDiagnostics
+        returnDetails = TRUE,
+        cdStepBound = cdStepBound,
+        cdMinStep = cdMinStep,
+        cdMaxBacktracks = cdMaxBacktracks
       )
     },
     collectDiagnostics = collectDiagnostics,
@@ -1386,7 +1699,10 @@
         tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
         cvMaxRows = config$lambdaCvMaxRows %||% Inf,
         globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
-        collectDiagnostics = isTRUE(config$adapCvDiagnostics)
+        collectDiagnostics = isTRUE(config$adapCvDiagnostics),
+        cdStepBound = config$adapCdStepBound %||% 1,
+        cdMinStep = config$adapCdMinStep %||% 1e-8,
+        cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
@@ -1403,7 +1719,10 @@
       lambda = lambda,
       maxOuter = config$maxOuter %||% 100L,
       maxInner = config$maxInner %||% 100L,
-      tol = config$tol %||% 1e-5
+      tol = config$tol %||% 1e-5,
+      cdStepBound = config$adapCdStepBound %||% 1,
+      cdMinStep = config$adapCdMinStep %||% 1e-8,
+      cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
     )
     return(list(
       w = w,
@@ -1639,7 +1958,10 @@
           tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
           cvMaxRows = config$lambdaCvMaxRows %||% Inf,
           globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
-          collectDiagnostics = isTRUE(config$adapCvDiagnostics)
+          collectDiagnostics = isTRUE(config$adapCvDiagnostics),
+          cdStepBound = config$adapCdStepBound %||% 1,
+          cdMinStep = config$adapCdMinStep %||% 1e-8,
+          cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
         )
         lambda <- cv$lambda
         cvScores <- cv$scores
@@ -1655,7 +1977,10 @@
         lambda = lambda,
         maxOuter = config$maxOuter %||% 100L,
         maxInner = config$maxInner %||% 100L,
-        tol = config$tol %||% 1e-5
+        tol = config$tol %||% 1e-5,
+        cdStepBound = config$adapCdStepBound %||% 1,
+        cdMinStep = config$adapCdMinStep %||% 1e-8,
+        cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
       )
       return(list(
         w = w,
@@ -1761,7 +2086,10 @@
         tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
         cvMaxRows = config$lambdaCvMaxRows %||% Inf,
         globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
-        collectDiagnostics = isTRUE(config$adapCvDiagnostics)
+        collectDiagnostics = isTRUE(config$adapCvDiagnostics),
+        cdStepBound = config$adapCdStepBound %||% 1,
+        cdMinStep = config$adapCdMinStep %||% 1e-8,
+        cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
@@ -1778,7 +2106,10 @@
       lambda = lambda,
       maxOuter = config$maxOuter %||% 100L,
       maxInner = config$maxInner %||% 100L,
-      tol = config$tol %||% 1e-5
+      tol = config$tol %||% 1e-5,
+      cdStepBound = config$adapCdStepBound %||% 1,
+      cdMinStep = config$adapCdMinStep %||% 1e-8,
+      cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
     )
     return(list(
       w = w,

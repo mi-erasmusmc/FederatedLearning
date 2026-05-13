@@ -119,37 +119,7 @@ test_that("quadratic lasso coordinate descent satisfies KKT conditions", {
   }
 })
 
-test_that("compiled quadratic coordinate descent matches the R recurrence", {
-  ref_cd <- function(aTilde, B, betaInit, lambda, maxIter, tol, penalize) {
-    beta <- betaInit
-    diagB <- diag(B)
-    soft <- function(x, threshold) {
-      ifelse(x > threshold, x - threshold, ifelse(x < -threshold, x + threshold, 0))
-    }
-    for (iter in seq_len(maxIter)) {
-      betaOld <- beta
-      for (j in seq_along(beta)) {
-        hjj <- diagB[j]
-        if (!is.finite(hjj) || hjj <= 0) {
-          hjj <- 1e-10
-        }
-        b <- aTilde[j] + sum(B[j, ] * beta) - diagB[j] * beta[j]
-        z <- -b / hjj
-        if (!is.finite(z)) {
-          z <- beta[j]
-        }
-        beta[j] <- if (penalize[j]) soft(z, lambda / hjj) else z
-      }
-      diffObj <- as.numeric(t(aTilde) %*% (beta - betaOld) +
-        t(beta) %*% B %*% beta / 2 -
-        t(betaOld) %*% B %*% betaOld / 2)
-      if (is.finite(diffObj) && abs(diffObj) < tol) {
-        break
-      }
-    }
-    beta
-  }
-
+test_that("compiled quadratic coordinate descent matches the R fallback", {
   set.seed(41)
   z <- matrix(rnorm(25), nrow = 5)
   B <- crossprod(z) / nrow(z) + diag(0.1, 5)
@@ -157,7 +127,15 @@ test_that("compiled quadratic coordinate descent matches the R recurrence", {
   betaInit <- rnorm(5)
   penalize <- c(FALSE, TRUE, TRUE, FALSE, TRUE)
 
-  expected <- ref_cd(a, B, betaInit, lambda = 0.07, maxIter = 80L, tol = 1e-11, penalize = penalize)
+  expected <- FederatedLearning:::.coordDescentQuadraticLasso(
+    aTilde = a,
+    B = Matrix::Matrix(B, sparse = FALSE),
+    betaInit = betaInit,
+    lambda = 0.07,
+    maxIter = 80L,
+    tol = 1e-11,
+    penalize = penalize
+  )
   actual <- FederatedLearning:::.coordDescentQuadraticLasso(
     aTilde = a,
     B = B,
@@ -169,6 +147,35 @@ test_that("compiled quadratic coordinate descent matches the R recurrence", {
   )
 
   expect_equal(actual, expected, tolerance = 1e-12)
+})
+
+test_that("quadratic coordinate descent fails clearly on invalid curvature", {
+  B <- diag(c(1, 0, 2))
+  a <- c(0.1, -0.2, 0.3)
+  betaInit <- c(0, 0, 0)
+  penalize <- c(FALSE, TRUE, TRUE)
+
+  expect_error(
+    FederatedLearning:::.coordDescentQuadraticLasso(
+      aTilde = a,
+      B = B,
+      betaInit = betaInit,
+      lambda = 0.1,
+      penalize = penalize
+    ),
+    "non_positive_coordinate_curvature"
+  )
+  details <- FederatedLearning:::.coordDescentQuadraticLasso(
+    aTilde = a,
+    B = Matrix::Matrix(B, sparse = FALSE),
+    betaInit = betaInit,
+    lambda = 0.1,
+    penalize = penalize,
+    returnDetails = TRUE
+  )
+  expect_false(details$converged)
+  expect_equal(details$failureReason, "non_positive_coordinate_curvature")
+  expect_equal(details$beta, betaInit)
 })
 
 test_that("ADAPDiag keeps full local curvature with diagonal remote Hessian correction", {
@@ -936,9 +943,34 @@ test_that("ADAP CV diagnostics capture fold-level solver and curvature details",
   expect_true(all(c(
     "lambda", "innerFold", "score", "rawDeviance", "outerIterations",
     "converged", "betaMaxAbs", "etaNonFinite", "BEigenMin",
-    "BEigenNonPositive"
+    "BEigenNonPositive", "failureReason", "fitFailed",
+    "innerObjective", "innerMaxAbsStep", "innerBacktracks"
   ) %in% names(cv$diagnostics)))
   expect_true(all(is.finite(cv$diagnostics$score)))
+})
+
+test_that("ADAP CV diagnostics report solver failure reasons", {
+  fixture <- make_adap_phase2_fixture(n = 24L, p = 3L, seed = 22L)
+  badHess <- fixture$globalHess - diag(10, ncol(fixture$globalHess))
+  cv <- FederatedLearning:::.pdaAdapLeadCv(
+    xDesign = fixture$xDesign,
+    y = fixture$y,
+    betaLead = fixture$betaLead,
+    betaBar = fixture$betaBar,
+    globalGrad = fixture$globalGrad,
+    globalHess = badHess,
+    lambdaSeq = c(0.1),
+    totalN = fixture$totalN,
+    foldsK = 3L,
+    search = "grid",
+    collectDiagnostics = TRUE
+  )
+
+  expect_s3_class(cv$diagnostics, "data.frame")
+  expect_equal(unname(cv$scores), 1e100)
+  expect_true(all(cv$diagnostics$fitFailed == 1))
+  expect_true(all(cv$diagnostics$failureReason == "non_positive_coordinate_curvature"))
+  expect_true(all(cv$diagnostics$scoreFinite == 0))
 })
 
 test_that("compiled sparse ADAP surrogate solvers match dense R fallback", {
