@@ -380,3 +380,34 @@ test_that("variance from client moments is finite and clipped at zero", {
     0
   )
 })
+
+test_that("diagnostic matrix downsampling keeps all cases and restores RNG state", {
+  y <- c(rep(1L, 3), rep(0L, 10))
+
+  set.seed(99)
+  seedBefore <- .Random.seed
+  rows <- FederatedLearning:::.diagnosticDownsampleRows(
+    y,
+    controlsPerCase = 2,
+    seed = 2026L
+  )
+  seedAfter <- .Random.seed
+
+  expect_identical(seedAfter, seedBefore)
+  expect_equal(length(rows), 9L)
+  expect_true(all(which(y == 1L) %in% rows))
+  expect_equal(sum(y[rows] == 0L), 6L)
+  expect_equal(
+    FederatedLearning:::.diagnosticDownsampleRows(
+      y,
+      controlsPerCase = 2,
+      seed = 2026L
+    ),
+    rows
+  )
+  expect_error(
+    FederatedLearning:::.diagnosticDownsampleRows(y, controlsPerCase = -1),
+    "diagnosticControlsPerCase"
+  )
+  expect_null(FederatedLearning:::.diagnosticDownsampleRows(y, controlsPerCase = Inf))
+})

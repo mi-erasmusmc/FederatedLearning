@@ -16,7 +16,42 @@
   names(xDf) <- paste0("x", seq_len(ncol(xDf)))
   dat <- cbind(status = y, xDf)
   fit <- stats::glm(status ~ 0 + ., data = dat, family = stats::binomial())
-  as.numeric(stats::coef(fit))
+  beta <- as.numeric(stats::coef(fit))
+  if (length(beta) != ncol(xRaw) || any(!is.finite(beta))) {
+    stop("glm returned non-finite or incorrectly sized coefficients")
+  }
+  beta
+}
+
+.fitLocalLogisticRidge <- function(xRaw, xDesign, y, config, reason) {
+  if (!requireNamespace("glmnet", quietly = TRUE)) {
+    stop("ODAL local logistic fit failed and glmnet is unavailable: ", conditionMessage(reason))
+  }
+  fit <- glmnet::glmnet(
+    x = xRaw,
+    y = y,
+    family = "binomial",
+    alpha = 0,
+    lambda = config$odalRidgeLambda %||% 1e-8,
+    intercept = TRUE,
+    standardize = config$standardize %||% TRUE
+  )
+  beta <- as.numeric(stats::coef(fit, s = config$odalRidgeLambda %||% 1e-8))
+  if (length(beta) != ncol(xDesign) || any(!is.finite(beta))) {
+    stop("ODAL ridge fallback produced non-finite or incorrectly sized coefficients")
+  }
+  beta
+}
+
+.odalInitMode <- function(config) {
+  if (isTRUE(config$odalRidgeFallback)) {
+    return("ridgeFallback")
+  }
+  mode <- config$odalInit %||% "pda"
+  if (!identical(mode, "pda") && !identical(mode, "ridgeFallback")) {
+    stop("config$odalInit must be one of: pda, ridgeFallback")
+  }
+  mode
 }
 
 .clientUpdateODAL <- function(clientData, serverBroadcast, config) {
@@ -26,24 +61,14 @@
   y <- clientData$yLabels
 
   if (phase == 0L) {
-    beta <- tryCatch(
-      .fitLocalLogistic(xDesign, y),
-      error = function(e) {
-        if (!requireNamespace("glmnet", quietly = TRUE)) {
-          stop("ODAL local logistic fit failed and glmnet is unavailable: ", conditionMessage(e))
-        }
-        fit <- glmnet::glmnet(
-          x = xRaw,
-          y = y,
-          family = "binomial",
-          alpha = 0,
-          lambda = 1e-8,
-          intercept = TRUE,
-          standardize = config$standardize %||% TRUE
-        )
-        as.numeric(stats::coef(fit, s = 1e-8))
-      }
-    )
+    beta <- if (identical(.odalInitMode(config), "ridgeFallback")) {
+      tryCatch(
+        .fitLocalLogistic(xDesign, y),
+        error = function(e) .fitLocalLogisticRidge(xRaw, xDesign, y, config, e)
+      )
+    } else {
+      .fitLocalLogistic(xDesign, y)
+    }
     return(list(bhat = beta, n = clientData$n))
   }
 

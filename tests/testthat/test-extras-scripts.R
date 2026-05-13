@@ -587,6 +587,8 @@ test_that("comparison runner helpers parse external comparison settings", {
     "--lambda-search=optimize",
     "--lambda-search-tol=0.2",
     "--lambda-search-max-evals=12",
+    "--diagnostic-controls-per-case=2",
+    "--odal-init=ridgeFallback",
     "--dualavg-convergence-objective=cyclopsGradient"
   ))
 
@@ -601,6 +603,7 @@ test_that("comparison runner helpers parse external comparison settings", {
   expect_equal(cfg$lambdaSearch, "optimize")
   expect_equal(cfg$lambdaSearchTol, 0.2)
   expect_equal(cfg$lambdaSearchMaxEvals, 12L)
+  expect_equal(cfg$diagnosticControlsPerCase, 2)
   expect_equal(runnerEnv$taskRiskWindow("dementia"), 5 * 365)
   expect_equal(runnerEnv$taskRiskWindow("dementiaPhenotypes"), 5 * 365)
   expect_equal(runnerEnv$taskRiskWindow("taskA"), 30L)
@@ -609,6 +612,10 @@ test_that("comparison runner helpers parse external comparison settings", {
   expect_equal(dualAvgCfg$convergenceObjective, "cyclopsGradient")
   expect_true(runnerEnv$shouldTuneDualAvg(args))
   expect_equal(runnerEnv$dualAvgStartingVariance(args), 0.01)
+
+  odalCfg <- runnerEnv$methodConfig("ODAL", "ageSexPhenotypes", args)
+  expect_equal(odalCfg$odalInit, "ridgeFallback")
+  expect_equal(odalCfg$odalRidgeLambda, 1e-8)
 
   gridArgs <- runnerEnv$parseArgs(c(
     "--eta-client=0.5,1",
@@ -676,12 +683,14 @@ test_that("comparison runner helpers parse external comparison settings", {
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSearch, "optimize")
   expect_equal(runnerEnv$methodConfig("ADAP1", "ageSex", defaultArgs)$lambdaSearch, "optimize")
   expect_equal(runnerEnv$methodConfig("ADAPDiag", "ageSex", defaultArgs)$lambdaSearch, "optimize")
-  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSelectionMetric, "auc")
-  expect_equal(runnerEnv$methodConfig("ADAP1", "ageSex", defaultArgs)$lambdaSelectionMetric, "auc")
-  expect_equal(runnerEnv$methodConfig("ADAPDiag", "ageSex", defaultArgs)$lambdaSelectionMetric, "auc")
-  expect_equal(runnerEnv$methodConfig("ADAP_PDA", "ageSex", defaultArgs)$lambdaSelectionMetric, "auc")
+  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
+  expect_equal(runnerEnv$methodConfig("ADAP1", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
+  expect_equal(runnerEnv$methodConfig("ADAPDiag", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
+  expect_equal(runnerEnv$methodConfig("ADAP_PDA", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
+  expect_equal(runnerEnv$methodConfig("ODAL", "ageSex", defaultArgs)$odalInit, "pda")
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaCvMaxRows, Inf)
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaCvGlobalAdjustment, "leaveValOut")
+  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$diagnosticControlsPerCase, Inf)
 
   fixedDualAvgArgs <- runnerEnv$parseArgs(c("--dualavg-lambda=1e-05"))
   expect_false(runnerEnv$shouldTuneDualAvg(fixedDualAvgArgs))

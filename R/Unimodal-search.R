@@ -222,6 +222,7 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
 
   search <- unimodalSearchInit(stdStep, stopByY, stopByX, firstCut, init = initLambda)
   useWarmStarts <- isTRUE(configBase$warmStartLambdaPath)
+  useWarmStartRoundOffset <- isTRUE(configBase$warmStartRoundOffset %||% TRUE)
   warmState <- new.env(parent = emptyenv())
 
   fitValidationFold <- function(lambda, valId, iterLabel) {
@@ -247,13 +248,13 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     )
     if (!is.null(ws)) {
       cfg$initialZ <- ws$z
-      cfg$roundOffset <- ws$roundOffset
+      cfg$roundOffset <- if (useWarmStartRoundOffset) ws$roundOffset else 0L
     }
     if (verbose) {
       message(
         "Fitting on folds ", paste(train2, collapse = ""),
         " validating on fold ", valId,
-        if (!is.null(ws)) sprintf(" (warm start roundOffset=%s)", ws$roundOffset) else ""
+        if (!is.null(ws)) sprintf(" (warm start roundOffset=%s)", cfg$roundOffset) else ""
       )
     }
     res <- fitFederated(trainCluster, algorithm, cfg, verbose = verbose)

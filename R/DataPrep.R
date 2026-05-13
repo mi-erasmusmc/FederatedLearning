@@ -115,6 +115,44 @@ filterCovariateRef <- function(covariateRef,
   pmax(x2Means - xMeans^2, 0)
 }
 
+.diagnosticDownsampleRows <- function(yLabels, controlsPerCase = Inf, seed = 42L) {
+  if (!is.finite(controlsPerCase)) {
+    return(NULL)
+  }
+  controlsPerCase <- as.numeric(controlsPerCase)
+  if (length(controlsPerCase) != 1L || is.na(controlsPerCase) || controlsPerCase < 0) {
+    stop("config$diagnosticControlsPerCase must be a non-negative finite value")
+  }
+  cases <- which(yLabels == 1L)
+  controls <- which(yLabels == 0L)
+  if (length(cases) == 0L || length(controls) == 0L) {
+    return(seq_along(yLabels))
+  }
+
+  nControls <- min(length(controls), ceiling(controlsPerCase * length(cases)))
+  if (nControls == length(controls)) {
+    return(seq_along(yLabels))
+  }
+
+  oldSeed <- if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+    get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  } else {
+    NULL
+  }
+  on.exit({
+    if (is.null(oldSeed)) {
+      if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+        rm(".Random.seed", envir = .GlobalEnv)
+      }
+    } else {
+      assign(".Random.seed", oldSeed, envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+  set.seed(seed)
+
+  sort(c(cases, sample(controls, nControls)))
+}
+
 #' Create a local sparse design matrix from PLP data and a global map
 #' @param plpData a PLP data object with a populated `population`
 #' @param config list containing `mapping` and `intercept`
@@ -133,6 +171,15 @@ createClientMatrix <- function(plpData, config) {
     )
   }
   yLabels <- as.integer(plpData$population$outcomeCount)
+  rows <- .diagnosticDownsampleRows(
+    yLabels,
+    controlsPerCase = config$diagnosticControlsPerCase %||% Inf,
+    seed = config$diagnosticDownsampleSeed %||% 42L
+  )
+  if (!is.null(rows)) {
+    xMatrix <- xMatrix[rows, , drop = FALSE]
+    yLabels <- yLabels[rows]
+  }
   n <- nrow(xMatrix)
   moments <- .clientMatrixMoments(xMatrix, intercept = isTRUE(config$intercept))
 

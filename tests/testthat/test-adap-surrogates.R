@@ -328,6 +328,52 @@ test_that("ADAP and ODAL phase aggregation uses sample-size weights and configur
   expect_equal(odalRound1$state$otherHess, expectedHess)
 })
 
+test_that("ODAL local initialization uses explicit ridge fallback for singular coefficients", {
+  skip_if_not_installed("glmnet")
+
+  x <- Matrix::Matrix(
+    cbind(
+      1,
+      c(0, 0, 1, 1, 0, 1),
+      c(0, 0, 1, 1, 0, 1)
+    ),
+    sparse = TRUE
+  )
+  y <- c(0, 0, 1, 1, 0, 1)
+
+  expect_error(
+    FederatedLearning:::.clientUpdateODAL(
+      clientData = list(xMatrix = x, yLabels = y, n = length(y)),
+      serverBroadcast = list(phase = 0L),
+      config = list(intercept = TRUE, standardize = FALSE)
+    ),
+    "glm returned non-finite"
+  )
+
+  report <- suppressWarnings(
+    FederatedLearning:::.clientUpdateODAL(
+      clientData = list(xMatrix = x, yLabels = y, n = length(y)),
+      serverBroadcast = list(phase = 0L),
+      config = list(intercept = TRUE, standardize = FALSE, odalInit = "ridgeFallback")
+    )
+  )
+
+  expect_length(report$bhat, ncol(x))
+  expect_true(all(is.finite(report$bhat)))
+  expect_equal(report$n, length(y))
+})
+
+test_that("AUC lambda tie-break prefers stronger regularization", {
+  lambdaSeq <- c(1e-2, 1e-4, 1e-6)
+  idx <- FederatedLearning:::.adapBestLambdaIndex(
+    scores = c(0.6, 0.6, 0.6),
+    lambdaSeq = lambdaSeq,
+    metric = "auc",
+    tieTolerance = 1e-8
+  )
+  expect_equal(lambdaSeq[idx], 1e-2)
+})
+
 test_that("ADAP reduced phase aggregation distinguishes first-order and diagonal modes", {
   ns <- c(5, 15)
   b1 <- c(0.1, 0.0, 0.2)
@@ -524,7 +570,7 @@ test_that("ADAP1 and ADAPDiag lead CV support bounded log-lambda search", {
   expect_true(diagCv$lambda <= max(diagLambdaSeq))
 })
 
-test_that("ADAP lead CV can select lambda by AUC without choosing an intercept-only tie", {
+test_that("ADAP lead CV can select lambda by AUC", {
   set.seed(21)
   n <- 120L
   age <- stats::rnorm(n)
@@ -587,9 +633,12 @@ test_that("ADAP lead CV can select lambda by AUC without choosing an intercept-o
     selectionMetric = "auc"
   )
 
-  expect_equal(firstCv$lambda, 1e-6)
-  expect_equal(diagCv$lambda, 1e-6)
-  expect_equal(pdaCv$lambda, 1e-6)
+  expect_true(firstCv$lambda %in% lambdaSeq)
+  expect_true(diagCv$lambda %in% lambdaSeq)
+  expect_true(pdaCv$lambda %in% lambdaSeq)
+  expect_equal(firstCv$scores[match(firstCv$lambda, lambdaSeq)], max(firstCv$scores, na.rm = TRUE))
+  expect_equal(diagCv$scores[match(diagCv$lambda, lambdaSeq)], max(diagCv$scores, na.rm = TRUE))
+  expect_equal(pdaCv$scores[match(pdaCv$lambda, lambdaSeq)], max(pdaCv$scores, na.rm = TRUE))
   expect_gt(max(firstCv$scores, na.rm = TRUE), 0.5)
   expect_gt(max(diagCv$scores, na.rm = TRUE), 0.5)
   expect_gt(max(pdaCv$scores, na.rm = TRUE), 0.5)

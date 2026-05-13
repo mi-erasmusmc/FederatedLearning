@@ -191,6 +191,49 @@ appendCombinationRows <- function(rows, newRows, task, fold, featureSet, method)
   dplyr::bind_rows(rows, newRows)
 }
 
+safeFilePart <- function(x) {
+  gsub("[^A-Za-z0-9_.-]+", "-", as.character(x))
+}
+
+debugPath <- function(debugDirectory, task, fold, featureSet, method = NULL,
+                      suffix = "debug", extension = "rds") {
+  parts <- c(
+    safeFilePart(task),
+    paste0("fold", safeFilePart(fold)),
+    safeFilePart(featureSet),
+    if (!is.null(method)) safeFilePart(method),
+    safeFilePart(suffix)
+  )
+  file.path(debugDirectory, paste0(paste(parts, collapse = "_"), ".", extension))
+}
+
+writeDebugObject <- function(x, debugDirectory, task, fold, featureSet,
+                             method = NULL, suffix = "debug") {
+  if (is.null(debugDirectory)) {
+    return(invisible(NULL))
+  }
+  dir.create(debugDirectory, recursive = TRUE, showWarnings = FALSE)
+  saveRDS(
+    x,
+    debugPath(debugDirectory, task, fold, featureSet, method, suffix, "rds")
+  )
+  invisible(NULL)
+}
+
+writeDebugCsv <- function(x, debugDirectory, task, fold, featureSet,
+                          method = NULL, suffix = "debug") {
+  if (is.null(debugDirectory)) {
+    return(invisible(NULL))
+  }
+  dir.create(debugDirectory, recursive = TRUE, showWarnings = FALSE)
+  utils::write.csv(
+    x,
+    debugPath(debugDirectory, task, fold, featureSet, method, suffix, "csv"),
+    row.names = FALSE
+  )
+  invisible(NULL)
+}
+
 isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
   if (!nonEmptyRows(rows)) {
     return(FALSE)
@@ -204,7 +247,7 @@ isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
 
 methodConfig <- function(method, featureSet, args) {
   defaultLambdaSearch <- if (method %in% c("ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) "optimize" else "grid"
-  defaultLambdaMetric <- if (method %in% c("ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) "auc" else "deviance"
+  defaultLambdaMetric <- "deviance"
   cfg <- list(
     mapType = firstValue(charCsvArg(argValue(args, "map-type"), "intersection")),
     featureSet = featureSet,
@@ -238,6 +281,11 @@ methodConfig <- function(method, featureSet, args) {
       argValue(args, "adap-lambda-cv-global-adjustment") %||% argValue(args, "lambda-cv-global-adjustment"),
       "leaveValOut"
     )),
+    diagnosticControlsPerCase = firstValue(numCsvArg(
+      argValue(args, "diagnostic-controls-per-case"),
+      Inf
+    )),
+    diagnosticDownsampleSeed = intArg(argValue(args, "diagnostic-downsample-seed"), 42L),
     convergenceObjective = firstValue(charCsvArg(argValue(args, "convergence-objective"), "negLogLikelihood"))
   )
 
@@ -254,6 +302,14 @@ methodConfig <- function(method, featureSet, args) {
   } else {
     lambdaArg <- argValue(args, "lambda")
     cfg$lambda <- if (!is.null(lambdaArg)) firstValue(numCsvArg(lambdaArg, NA_real_)) else NULL
+  }
+
+  if (identical(method, "ODAL")) {
+    cfg$odalInit <- firstValue(charCsvArg(
+      argValue(args, "odal-init"),
+      if (logicalArg(argValue(args, "odal-ridge-fallback"), FALSE)) "ridgeFallback" else "pda"
+    ))
+    cfg$odalRidgeLambda <- firstValue(numCsvArg(argValue(args, "odal-ridge-lambda"), 1e-8))
   }
 
   if (identical(method, "ADAPDiag") && !is.null(argValue(args, "adapdiag-style"))) {
@@ -296,8 +352,16 @@ methodConfigGridValues <- function(method, base, args) {
     lambdaCvGlobalAdjustment = charCsvArg(
       argValue(args, "adap-lambda-cv-global-adjustment") %||% argValue(args, "lambda-cv-global-adjustment"),
       base$lambdaCvGlobalAdjustment
+    ),
+    diagnosticControlsPerCase = numCsvArg(
+      argValue(args, "diagnostic-controls-per-case"),
+      base$diagnosticControlsPerCase
     )
   )
+  if (identical(method, "ODAL")) {
+    values$odalInit <- charCsvArg(argValue(args, "odal-init"), base$odalInit)
+    values$odalRidgeLambda <- numCsvArg(argValue(args, "odal-ridge-lambda"), base$odalRidgeLambda)
+  }
   if (method %in% dualAvgMethods) {
     values$etaClient <- numCsvArg(argValue(args, "eta-client"), base$etaClient)
     values$etaServer <- numCsvArg(argValue(args, "eta-server"), base$etaServer)
@@ -356,6 +420,83 @@ dualAvgStartingVariance <- function(args) {
   )
 }
 
+diagnosticMatrixSizes <- function(cl, config) {
+  if (!is.finite(config$diagnosticControlsPerCase %||% Inf)) {
+    return(NULL)
+  }
+  parallel::clusterCall(
+    cl,
+    function(mapping, config) {
+      FederatedLearning:::.assertWorkerState(
+        "plpData",
+        action = "Run clusterLoadData() before computing diagnostic matrix sizes."
+      )
+      config <- within(config, {
+        mapping <- mapping
+        p <- nrow(mapping)
+      })
+      clientData <- FederatedLearning::createClientMatrix(
+        plpData,
+        config = config
+      )
+      length(clientData$yLabels)
+    },
+    mapping = config$mapping,
+    config = config
+  )
+}
+
+collectDebugDiagnostics <- function(cl, config, debugDirectory, task, fold,
+                                    featureSet, role, clientIds, clientIndexes,
+                                    verbose = TRUE) {
+  if (is.null(debugDirectory)) {
+    return(NULL)
+  }
+  out <- tryCatch(
+    {
+      FederatedLearning::clusterCreateMatrices(cl, config)
+      diagRows <- FederatedLearning::clusterDiagnostics(cl, config)
+      diagRows$task <- task
+      diagRows$fold <- fold
+      diagRows$featureSet <- featureSet
+      diagRows$role <- role
+      diagRows$clientIndex <- clientIndexes[diagRows$client]
+      diagRows$clientId <- clientIds[diagRows$client]
+      writeDebugCsv(
+        diagRows,
+        debugDirectory = debugDirectory,
+        task = task,
+        fold = fold,
+        featureSet = featureSet,
+        method = role,
+        suffix = "matrix-diagnostics"
+      )
+      diagRows
+    },
+    error = function(e) {
+      writeDebugObject(
+        list(
+          role = role,
+          error = conditionMessage(e),
+          class = class(e),
+          call = if (!is.null(conditionCall(e))) deparse(conditionCall(e)) else NULL
+        ),
+        debugDirectory = debugDirectory,
+        task = task,
+        fold = fold,
+        featureSet = featureSet,
+        method = role,
+        suffix = "matrix-diagnostics-error"
+      )
+      if (isTRUE(verbose)) {
+        message("Unable to write debug diagnostics for ", role, ": ", conditionMessage(e))
+      }
+      NULL
+    }
+  )
+  out
+}
+
 tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, verbose) {
   if (!method %in% dualAvgMethods || !shouldTuneDualAvg(args)) {
     return(config)
@@ -378,6 +519,20 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
     analysisIds = config$analysisIds
   )
   totalPopSize <- sum(trainPopSizes)
+  diagnosticSizes <- diagnosticMatrixSizes(clTrain, c(
+    config,
+    list(mapping = globalMap, p = nrow(globalMap))
+  ))
+  if (!is.null(diagnosticSizes)) {
+    trainPopSizes <- as.numeric(unlist(diagnosticSizes, use.names = FALSE))
+    totalPopSize <- sum(trainPopSizes)
+    if (isTRUE(verbose)) {
+      message(
+        "Using diagnostic downsampled matrix sizes for DualAvg lambda scaling: ",
+        paste(trainPopSizes, collapse = ", ")
+      )
+    }
+  }
   lambdaDefault <- dualAvgStartingVariance(args)
 
   configBase <- config
@@ -388,13 +543,18 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
     argValue(args, "dualavg-warm-start-lambda-path"),
     TRUE
   )
+  configBase$warmStartRoundOffset <- logicalArg(
+    argValue(args, "dualavg-warm-start-round-offset"),
+    FALSE
+  )
 
   if (isTRUE(verbose)) {
     message(sprintf(
-      "Tuning %s lambda by federated inner CV; starting variance = %.5g; warm starts = %s",
+      "Tuning %s lambda by federated inner CV; starting variance = %.5g; warm starts = %s; warm-start round offset = %s",
       method,
       lambdaDefault,
-      configBase$warmStartLambdaPath
+      configBase$warmStartLambdaPath,
+      configBase$warmStartRoundOffset
     ))
   }
   tuned <- FederatedLearning:::tuneLambda(
@@ -785,7 +945,8 @@ communicationMessages <- function(fit, config) {
 }
 
 fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
-                             task, featureSet, fold, testClientIds, verbose) {
+                             task, featureSet, fold, testClientIds, verbose,
+                             debugDirectory = NULL) {
   start <- Sys.time()
   fit <- FederatedLearning::fitFederated(
     cl = clTrain,
@@ -801,6 +962,46 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
   FederatedLearning::clusterCreateMatrices(clTest, testConfig)
   evalRows <- FederatedLearning::clusterEvaluateModel(clTest, fit$w)
   evalRows$clientId <- testClientIds[evalRows$client]
+
+  if (!is.null(debugDirectory)) {
+    writeDebugObject(
+      list(
+        task = task,
+        fold = fold,
+        featureSet = featureSet,
+        method = method,
+        config = fit$config,
+        roundsCompleted = fit$roundsCompleted %||% NA_integer_,
+        selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
+        lambdaSearchBest = fit$config$lambdaSearchBest %||% NA_real_,
+        lambdaSearchInnerAuc = fit$config$lambdaSearchInnerAuc %||% NA_real_,
+        leadIndex = fit$leadIndex %||% NA_integer_,
+        hessianDim = fit$hessianDim %||% NA_character_,
+        hessianDiagMin = fit$hessianDiagMin %||% NA_real_,
+        hessianDiagMax = fit$hessianDiagMax %||% NA_real_,
+        hessianCondition = fit$hessianCondition %||% NA_real_,
+        lambdaSeq = fit$lambdaSeq %||% NULL,
+        cvScores = fit$cvScores %||% NULL,
+        lambdaSelectionMetric = fit$lambdaSelectionMetric %||% NA_character_,
+        coefficients = fit$w,
+        coefficientSummary = c(
+          length = length(fit$w),
+          nonFinite = sum(!is.finite(fit$w)),
+          min = suppressWarnings(min(fit$w, na.rm = TRUE)),
+          max = suppressWarnings(max(fit$w, na.rm = TRUE)),
+          l1 = sum(abs(fit$w), na.rm = TRUE),
+          nonzero = sum(abs(fit$w) > 1e-8, na.rm = TRUE)
+        ),
+        evaluation = evalRows
+      ),
+      debugDirectory = debugDirectory,
+      task = task,
+      fold = fold,
+      featureSet = featureSet,
+      method = method,
+      suffix = "fit"
+    )
+  }
 
   lambdaPathFile <- NA_character_
   if (!is.null(fit$lambdaSeq) && length(fit$lambdaSeq) > 0L) {
@@ -886,6 +1087,15 @@ runComparison <- function(args) {
   verbose <- logicalArg(args[["verbose"]], TRUE)
   resume <- logicalArg(args[["resume"]], TRUE)
   rerunErrors <- logicalArg(args[["rerun-errors"]], TRUE)
+  debugDirectory <- if (logicalArg(args[["debug-diagnostics"]], FALSE)) {
+    file.path(resultDirectory, "debug")
+  } else {
+    NULL
+  }
+  if (!is.null(debugDirectory)) {
+    dir.create(debugDirectory, recursive = TRUE, showWarnings = FALSE)
+    message("Writing debug diagnostics to ", debugDirectory)
+  }
 
   rows <- if (isTRUE(resume)) readCsvIfExists(resultFile) else NULL
   diagnostics <- if (isTRUE(resume)) readCsvIfExists(diagnosticsFile) else NULL
@@ -971,6 +1181,43 @@ runComparison <- function(args) {
           FederatedLearning::clusterLoadData(clTest, testPaths, popSettings)
 
           for (featureSet in featureSets) {
+            featureDebugConfig <- NULL
+            if (!is.null(debugDirectory)) {
+              featureDebugConfig <- methodConfig(methods[[1]], featureSet, args)
+              featureDebugConfig$mapping <- FederatedLearning::clusterCollectCovRefs(
+                clTrain,
+                type = featureDebugConfig$mapType,
+                featureSet = featureSet,
+                covariateIds = featureDebugConfig$covariateIds,
+                analysisIds = featureDebugConfig$analysisIds
+              )
+              featureDebugConfig$p <- nrow(featureDebugConfig$mapping)
+              collectDebugDiagnostics(
+                cl = clTrain,
+                config = featureDebugConfig,
+                debugDirectory = debugDirectory,
+                task = task,
+                fold = fold,
+                featureSet = featureSet,
+                role = "train",
+                clientIds = clientIds[trainIds],
+                clientIndexes = trainIds,
+                verbose = verbose
+              )
+              collectDebugDiagnostics(
+                cl = clTest,
+                config = featureDebugConfig,
+                debugDirectory = debugDirectory,
+                task = task,
+                fold = fold,
+                featureSet = featureSet,
+                role = "test",
+                clientIds = clientIds[testIds],
+                clientIndexes = testIds,
+                verbose = verbose
+              )
+            }
+
             for (method in methods) {
               if (isCompletedCombination(rows, task, fold, featureSet, method, rerunErrors = rerunErrors)) {
                 message(sprintf(
@@ -988,9 +1235,11 @@ runComparison <- function(args) {
                 config$trainClientPaths <- trainPaths
                 config
               })
+              selectedConfig <- NULL
               res <- tryCatch(
                 if (method %in% baselineMethods) {
                   config <- configs[[1]]
+                  selectedConfig <- config
                   fitBaselineFold(
                     method = method,
                     trainPaths = trainPaths,
@@ -1014,6 +1263,7 @@ runComparison <- function(args) {
                     args = args,
                     verbose = verbose
                   )
+                  selectedConfig <- config
                   fitFederatedFold(
                     method = method,
                     clTrain = clTrain,
@@ -1024,7 +1274,8 @@ runComparison <- function(args) {
                     featureSet = featureSet,
                     fold = fold,
                     testClientIds = clientIds[testIds],
-                    verbose = verbose
+                    verbose = verbose,
+                    debugDirectory = debugDirectory
                   )
                 },
                 error = function(e) {
@@ -1033,6 +1284,28 @@ runComparison <- function(args) {
                     format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method,
                     conditionMessage(e)
                   ))
+                  writeDebugObject(
+                    list(
+                      task = task,
+                      fold = fold,
+                      featureSet = featureSet,
+                      method = method,
+                      error = conditionMessage(e),
+                      class = class(e),
+                      call = if (!is.null(conditionCall(e))) deparse(conditionCall(e)) else NULL,
+                      calls = vapply(sys.calls(), function(x) paste(deparse(x), collapse = "\n"), character(1)),
+                      configs = configs,
+                      selectedConfig = selectedConfig,
+                      trainClientIds = clientIds[trainIds],
+                      testClientIds = clientIds[testIds]
+                    ),
+                    debugDirectory = debugDirectory,
+                    task = task,
+                    fold = fold,
+                    featureSet = featureSet,
+                    method = method,
+                    suffix = "error"
+                  )
                   data.frame(
                     method = method,
                     featureSet = featureSet,

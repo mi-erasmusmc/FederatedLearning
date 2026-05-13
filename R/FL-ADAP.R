@@ -110,7 +110,7 @@
   if (identical(metric, "auc")) {
     best <- max(scores[finite], na.rm = TRUE)
     candidates <- which(finite & scores >= best - tieTolerance)
-    return(candidates[which.min(lambdaSeq[candidates])])
+    return(candidates[which.max(lambdaSeq[candidates])])
   }
   best <- min(scores[finite], na.rm = TRUE)
   candidates <- which(finite & scores <= best + tieTolerance)

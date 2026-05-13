@@ -243,10 +243,29 @@ clusterDiagnostics <- function(cl, config = list()) {
       )
       if (exists("clientData", envir = .GlobalEnv, inherits = FALSE)) {
         pLocal <- ncol(clientData$xMatrix)
+        matrixRows <- nrow(clientData$xMatrix)
+        matrixOutcomes <- sum(clientData$yLabels)
+        matrixOutcomeRate <- mean(clientData$yLabels)
+        matrixNonzero <- if (inherits(clientData$xMatrix, "sparseMatrix")) {
+          length(clientData$xMatrix@x)
+        } else {
+          sum(clientData$xMatrix != 0)
+        }
+        matrixDensity <- matrixNonzero / (nrow(clientData$xMatrix) * ncol(clientData$xMatrix))
       } else if (!is.null(config$mapping)) {
         pLocal <- nrow(config$mapping) + as.integer(isTRUE(config$intercept))
+        matrixRows <- NA_integer_
+        matrixOutcomes <- NA_integer_
+        matrixOutcomeRate <- NA_real_
+        matrixNonzero <- NA_integer_
+        matrixDensity <- NA_real_
       } else {
         pLocal <- NA_integer_
+        matrixRows <- NA_integer_
+        matrixOutcomes <- NA_integer_
+        matrixOutcomeRate <- NA_real_
+        matrixNonzero <- NA_integer_
+        matrixDensity <- NA_real_
       }
       data.frame(
         client = i,
@@ -256,6 +275,11 @@ clusterDiagnostics <- function(cl, config = list()) {
         covariatesAvailable = nrow(covRef),
         covariatesSelected = nrow(filtered),
         matrixColumns = pLocal,
+        matrixRows = matrixRows,
+        matrixOutcomes = matrixOutcomes,
+        matrixOutcomeRate = matrixOutcomeRate,
+        matrixNonzero = matrixNonzero,
+        matrixDensity = matrixDensity,
         stringsAsFactors = FALSE
       )
     },
