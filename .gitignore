@@ -9,3 +9,4 @@ extras/atlas_json
 *.o
 *.so
 src/symbols.rds
+*.tar.gz

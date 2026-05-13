@@ -5,6 +5,7 @@
 ^\.aider\.input\.history$
 ^\.aider\.tags\.cache\.v4$
 ^.*\.Rcheck$
+^.*\.tar\.gz$
 ^src/.*\.o$
 ^src/.*\.so$
 ^src/symbols\.rds$

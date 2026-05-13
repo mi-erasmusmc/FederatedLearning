@@ -190,41 +190,37 @@ test_that("ADAP_PDA final lead-site estimate matches public PDA full-CD surrogat
   globalGrad <- as.numeric(cbind(d1$logL_D1, d2$logL_D1) %*% weights)
   globalHess <- d1$logL_D2 * weights[1] + d2$logL_D2 * weights[2]
   xSparse <- Matrix::Matrix(cbind(1, x1), sparse = TRUE)
-  lambdaSeq <- FederatedLearning:::.pdaAdapLambdaSeq(
-    xDesign = xSparse,
-    y = y1,
-    betaLead = beta0,
-    betaBar = beta0,
+  lambdaSeq <- FederatedLearning:::.pdaAdapPdaLambdaSeq(
     globalGrad = globalGrad,
-    globalHess = globalHess,
+    nLead = n1,
+    p = length(beta0),
     gridLen = 100L
   )
-  cv <- FederatedLearning:::.pdaAdapLeadCv(
+  cv <- FederatedLearning:::.pdaAdapPdaLeadCv(
     xDesign = xSparse,
     y = y1,
-    betaLead = beta0,
     betaBar = beta0,
     globalGrad = globalGrad,
     globalHess = globalHess,
     lambdaSeq = lambdaSeq,
-    totalN = n1 + n2,
+    useFull = TRUE,
     foldsK = control$nfolds,
     seed = control$cv_seed,
-    maxOuter = control$maxIter,
-    maxInner = 100L,
-    tol = control$tol
+    maxIter = control$maxIter,
+    tol = control$tol,
+    ridge = control$hessian_ridge
   )
-  expected <- FederatedLearning:::.fitPdaAdapSurrogate(
+  expected <- FederatedLearning:::.fitPdaAdapPdaProx(
     xDesign = xSparse,
     y = y1,
-    betaLead = beta0,
-    betaBar = beta0,
+    beta0 = beta0,
     globalGrad = globalGrad,
     globalHess = globalHess,
     lambda = cv$lambda,
-    maxOuter = control$maxIter,
-    maxInner = 100L,
-    tol = control$tol
+    useFull = TRUE,
+    maxIter = control$maxIter,
+    tol = control$tol,
+    ridge = control$hessian_ridge
   )
 
   old <- getOption("FederatedLearning.localId")
@@ -244,7 +240,7 @@ test_that("ADAP_PDA final lead-site estimate matches public PDA full-CD surrogat
       globalGrad = globalGrad,
       globalHess = globalHess,
       totalN = n1 + n2,
-      adapSolveStyle = "fullQuadratic"
+      adapSolveStyle = "pda"
     ),
     config = list(
       intercept = FALSE,

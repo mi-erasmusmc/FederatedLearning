@@ -573,6 +573,8 @@ List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                              const Eigen::VectorXd& gradBar,
                              const Eigen::MatrixXd& hBar,
                              double lambda,
+                             double leadWeight = 1.0,
+                             double proxRho = 0.0,
                              int maxOuter = 100,
                              int maxInner = 100,
                              double tol = 1e-5,
@@ -587,14 +589,23 @@ List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
       hBar.rows() != p || hBar.cols() != p) {
     stop("adapFullSurrogateFitCpp dimension mismatch");
   }
+  if (!R_finite(leadWeight) || leadWeight <= 0.0) {
+    stop("leadWeight must be a positive finite value");
+  }
+  if (!R_finite(proxRho) || proxRho < 0.0) {
+    stop("proxRho must be a finite non-negative value");
+  }
   std::vector<int> penalize(p, 1);
   if (p > 0) {
     penalize[0] = 0;
   }
 
   Eigen::VectorXd beta = betaStart;
-  const Eigen::MatrixXd hCorrection = globalHess - hBar;
-  const Eigen::VectorXd aCorrection = globalGrad - gradBar - hCorrection * betaBar;
+  Eigen::MatrixXd hCorrection = globalHess - leadWeight * hBar;
+  if (proxRho > 0.0) {
+    hCorrection.diagonal().array() += proxRho;
+  }
+  const Eigen::VectorXd aCorrection = globalGrad - leadWeight * gradBar - hCorrection * betaBar;
   int iterations = 0;
   bool converged = false;
   std::string failureReason = "";
@@ -606,8 +617,8 @@ List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
     Eigen::VectorXd grad;
     Eigen::MatrixXd hEval;
     logistic_gradient_hessian_full(x, beta, y, eps, grad, hEval);
-    Eigen::MatrixXd bMatrix = hEval + hCorrection;
-    Eigen::VectorXd aTilde = grad - hEval * beta + aCorrection;
+    Eigen::MatrixXd bMatrix = leadWeight * hEval + hCorrection;
+    Eigen::VectorXd aTilde = leadWeight * grad - leadWeight * hEval * beta + aCorrection;
     cdResult = quadratic_lasso_cd_impl(
       aTilde, bMatrix, beta, lambda, maxInner, tol, penalize,
       initialStepBound, minStep, maxBacktracks);

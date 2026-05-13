@@ -121,9 +121,12 @@ methodRounds <- function(method, args) {
     DualAvgR = firstValue(intCsvArg(argValue(args, "dualavg-rounds"), 10000L)),
     ODAL = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     ADAP = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    ADAP2 = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     ADAP_PDA = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     ADAP1 = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     ADAPDiag = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    `Prox-ADAP` = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    `C-ADAP` = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     firstValue(intCsvArg(argValue(args, "rounds"), 1000L))
   )
 }
@@ -246,7 +249,8 @@ isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
 }
 
 methodConfig <- function(method, featureSet, args) {
-  defaultLambdaSearch <- if (method %in% c("ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) "optimize" else "grid"
+  adapMethods <- c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP")
+  defaultLambdaSearch <- if (method %in% adapMethods) "optimize" else "grid"
   defaultLambdaMetric <- "deviance"
   cfg <- list(
     mapType = firstValue(charCsvArg(argValue(args, "map-type"), "intersection")),
@@ -288,6 +292,7 @@ methodConfig <- function(method, featureSet, args) {
     diagnosticDownsampleSeed = intArg(argValue(args, "diagnostic-downsample-seed"), 42L),
     adapCvDiagnostics = logicalArg(argValue(args, "adap-cv-diagnostics"), FALSE),
     adapTraceDiagnostics = logicalArg(argValue(args, "adap-trace-diagnostics"), FALSE),
+    adapProxTau = firstValue(numCsvArg(argValue(args, "adap-prox-tau"), 1e-8)),
     convergenceObjective = firstValue(charCsvArg(argValue(args, "convergence-objective"), "negLogLikelihood"))
   )
 
@@ -326,7 +331,7 @@ methodConfigGridValues <- function(method, base, args) {
     epsilon = numCsvArg(argValue(args, "epsilon"), base$epsilon),
     rounds = if (method %in% dualAvgMethods) {
       intCsvArg(argValue(args, "dualavg-rounds"), base$rounds)
-    } else if (method %in% c("ODAL", "ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) {
+    } else if (method %in% c("ODAL", "ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP")) {
       intCsvArg(argValue(args, "pda-rounds"), base$rounds)
     } else {
       intCsvArg(argValue(args, "rounds"), base$rounds)
@@ -358,6 +363,10 @@ methodConfigGridValues <- function(method, base, args) {
     diagnosticControlsPerCase = numCsvArg(
       argValue(args, "diagnostic-controls-per-case"),
       base$diagnosticControlsPerCase
+    ),
+    adapProxTau = numCsvArg(
+      argValue(args, "adap-prox-tau"),
+      base$adapProxTau
     )
   )
   if (identical(method, "ODAL")) {
@@ -950,7 +959,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
                              task, featureSet, fold, testClientIds, verbose,
                              debugDirectory = NULL) {
   if (isTRUE(config$adapTraceDiagnostics) && !is.null(debugDirectory) &&
-      method %in% c("ADAP", "ADAP1", "ADAPDiag")) {
+      method %in% c("ADAP", "ADAP2", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP")) {
     config$adapTraceFile <- debugPath(
       debugDirectory,
       task,
@@ -1127,7 +1136,7 @@ runComparison <- function(args) {
 
   tasks <- csvArg(args[["tasks"]], c("dementia", "readmission", "lungCancer"))
   featureSets <- csvArg(args[["feature-sets"]], c("ageSex", "ageSexPhenotypes"))
-  methods <- csvArg(args[["methods"]], c("DualAvg", "ODAL", "ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag"))
+  methods <- csvArg(args[["methods"]], c("DualAvg", "ODAL", "ADAP2", "Prox-ADAP", "C-ADAP", "ADAP1", "ADAPDiag"))
   clientIds <- csvArg(args[["client-ids"]], character())
   nClients <- intArg(args[["clients"]], if (length(clientIds) > 0L) length(clientIds) else 5L)
   if (length(clientIds) == 0L) {
@@ -1290,7 +1299,7 @@ runComparison <- function(args) {
               configs <- methodConfigGrid(method, featureSet, args)
               configs <- lapply(configs, function(config) {
                 config$trainClientPaths <- trainPaths
-                if (!is.null(debugDirectory) && method %in% c("ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) {
+                if (!is.null(debugDirectory) && method %in% c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP")) {
                   config$adapCvDiagnostics <- TRUE
                 }
                 config

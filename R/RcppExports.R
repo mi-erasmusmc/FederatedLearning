@@ -44,8 +44,8 @@ quadraticLassoCdCpp <- function(aTilde, bMatrix, betaInit, lambda, maxIter = 100
     .Call(`_FederatedLearning_quadraticLassoCdCpp`, aTilde, bMatrix, betaInit, lambda, maxIter, tol, penalizeNullable, initialStepBound, minStep, maxBacktracks)
 }
 
-adapFullSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {
-    .Call(`_FederatedLearning_adapFullSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks)
+adapFullSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, leadWeight = 1.0, proxRho = 0.0, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {
+    .Call(`_FederatedLearning_adapFullSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, leadWeight, proxRho, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks)
 }
 
 adapFirstSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, gradBar, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {

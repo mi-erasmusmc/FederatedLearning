@@ -141,6 +141,71 @@
   )
 }
 
+.adapHessianScale <- function(H) {
+  diagVals <- if (is.matrix(H) || inherits(H, "Matrix")) diag(H) else as.numeric(H)
+  diagVals <- diagVals[is.finite(diagVals)]
+  if (!length(diagVals)) {
+    return(1)
+  }
+  max(1, mean(abs(diagVals)))
+}
+
+.adapEigenRange <- function(B) {
+  vals <- tryCatch(
+    eigen((as.matrix(B) + t(as.matrix(B))) / 2, symmetric = TRUE, only.values = TRUE)$values,
+    error = function(e) NA_real_
+  )
+  finite <- is.finite(vals)
+  list(
+    min = if (any(finite)) min(vals[finite]) else NA_real_,
+    max = if (any(finite)) max(vals[finite]) else NA_real_
+  )
+}
+
+.adapEpsilonEig <- function(referenceHess, tau = 1e-10) {
+  tau * .adapHessianScale(referenceHess)
+}
+
+.adapEpsilonFloor <- function(referenceHess, tau = 1e-8) {
+  tau * .adapHessianScale(referenceHess)
+}
+
+.adapFailureResult <- function(beta, reason, diagnostics = list()) {
+  c(
+    list(
+      beta = as.numeric(beta),
+      outerIterations = 0L,
+      converged = FALSE,
+      failureReason = reason,
+      innerIterations = NA_integer_,
+      innerConverged = NA,
+      innerObjective = NA_real_,
+      innerMaxAbsStep = NA_real_,
+      innerBacktracks = NA_integer_,
+      failingCoordinate = NA_integer_,
+      coordinateCurvature = NA_real_,
+      coordinateGradient = NA_real_,
+      failureDiagMin = NA_real_,
+      failureDiagMax = NA_real_,
+      failureDiagNonPositive = NA_real_
+    ),
+    diagnostics
+  )
+}
+
+.adapProxShift <- function(globalHess, correction, tau = 1e-8) {
+  eig <- .adapEigenRange(correction)
+  epsilonFloor <- .adapEpsilonFloor(globalHess, tau = tau)
+  rho <- if (is.finite(eig$min)) max(0, epsilonFloor - eig$min) else NA_real_
+  list(
+    rho = rho,
+    epsilonFloor = epsilonFloor,
+    C_eigen_min = eig$min,
+    C_eigen_max = eig$max,
+    C_eigen_min_after_shift = if (is.finite(eig$min) && is.finite(rho)) eig$min + rho else NA_real_
+  )
+}
+
 .adapDesignSummary <- function(xDesign, y) {
   n <- nrow(xDesign)
   p <- ncol(xDesign)
@@ -549,6 +614,9 @@
   beta <- .adapFitBeta(fit)
   if (!all(is.finite(beta))) {
     return("non_finite_beta")
+  }
+  if (is.list(fit) && !is.null(fit$converged) && isFALSE(fit$converged)) {
+    return("max_outer_no_convergence")
   }
   ""
 }
@@ -978,7 +1046,8 @@
 
 .adapSurrogateComponents <- function(betaEval, betaBar, xDesign, y,
                                      globalGrad, globalHess,
-                                     gradBar = NULL, hBar = NULL) {
+                                     gradBar = NULL, hBar = NULL,
+                                     leadWeight = 1, proxRho = 0) {
   evalTerms <- .logisticNegGradientHessian(betaEval, xDesign, y)
   hEval <- evalTerms$hessian
   if (is.null(hBar)) {
@@ -987,13 +1056,17 @@
   if (is.null(gradBar)) {
     gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   }
-  B <- hEval + globalHess - hBar
-  aTilde <- evalTerms$gradient -
-    as.numeric(t(betaEval) %*% hEval) +
+  correction <- globalHess - leadWeight * hBar
+  if (is.finite(proxRho) && proxRho != 0) {
+    correction <- correction + diag(proxRho, nrow(correction), ncol(correction))
+  }
+  B <- leadWeight * hEval + correction
+  aTilde <- leadWeight * evalTerms$gradient -
+    as.numeric(t(betaEval) %*% (leadWeight * hEval)) +
     globalGrad -
-    gradBar -
-    as.numeric(t(betaBar) %*% (globalHess - hBar))
-  list(aTilde = as.numeric(aTilde), B = B)
+    leadWeight * gradBar -
+    as.numeric(t(betaBar) %*% correction)
+  list(aTilde = as.numeric(aTilde), B = B, correction = correction)
 }
 
 .adapFirstOrderSurrogateComponents <- function(betaEval, betaBar, xDesign, y,
@@ -1043,9 +1116,70 @@
                                  cdMinStep = 1e-8,
                                  cdMaxBacktracks = 25L,
                                  traceDiagnostics = FALSE,
-                                 traceContext = list()) {
+                                 traceContext = list(),
+                                 leadWeight = 1,
+                                 proxRho = 0,
+                                 strictCorrection = c("exact", "prox", "convex"),
+                                 eigToleranceTau = 1e-10,
+                                 proxTau = 1e-8) {
+  strictCorrection <- match.arg(strictCorrection)
   beta <- if (is.null(betaInit)) betaLead else betaInit
-  if (isTRUE(traceDiagnostics)) {
+  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  hBar <- .logisticNegHessian(betaBar, xDesign)
+  baseCorrection <- globalHess - leadWeight * hBar
+  eig <- .adapEigenRange(baseCorrection)
+  epsilonEig <- .adapEpsilonEig(globalHess, tau = eigToleranceTau)
+  epsilonFloor <- NA_real_
+  C_eigen_min_after_shift <- NA_real_
+  if (identical(strictCorrection, "exact") && is.finite(eig$min) && eig$min < -epsilonEig) {
+    fail <- .adapFailureResult(
+      beta,
+      "negative_C_eigenvalue",
+      list(
+        C_eigen_min = eig$min,
+        C_eigen_max = eig$max,
+        epsilonEig = epsilonEig,
+        correction_diag_min = min(diag(baseCorrection), na.rm = TRUE),
+        correction_diag_max = max(diag(baseCorrection), na.rm = TRUE)
+      )
+    )
+    if (isTRUE(returnDetails)) {
+      return(fail)
+    }
+    stop("negative_C_eigenvalue", call. = FALSE)
+  }
+  if (identical(strictCorrection, "convex") && is.finite(eig$min) && eig$min < -epsilonEig) {
+    fail <- .adapFailureResult(
+      beta,
+      "remote_hessian_not_psd",
+      list(
+        R_eigen_min = eig$min,
+        R_eigen_max = eig$max,
+        epsilonEig = epsilonEig,
+        R_diag_min = min(diag(baseCorrection), na.rm = TRUE),
+        R_diag_max = max(diag(baseCorrection), na.rm = TRUE)
+      )
+    )
+    if (isTRUE(returnDetails)) {
+      return(fail)
+    }
+    stop("remote_hessian_not_psd", call. = FALSE)
+  }
+  if (identical(strictCorrection, "prox")) {
+    shift <- .adapProxShift(globalHess, baseCorrection, tau = proxTau)
+    proxRho <- shift$rho
+    epsilonFloor <- shift$epsilonFloor
+    C_eigen_min_after_shift <- shift$C_eigen_min_after_shift
+    if (!is.finite(proxRho)) {
+      fail <- .adapFailureResult(beta, "non_finite_prox_rho", shift)
+      if (isTRUE(returnDetails)) {
+        return(fail)
+      }
+      stop("non_finite_prox_rho", call. = FALSE)
+    }
+  }
+  if (isTRUE(traceDiagnostics) && identical(strictCorrection, "exact") &&
+      isTRUE(all.equal(leadWeight, 1)) && isTRUE(all.equal(proxRho, 0))) {
     out <- .fitAdapTraceSurrogate(
       kind = "full",
       xDesign = xDesign,
@@ -1064,14 +1198,17 @@
       cdMaxBacktracks = cdMaxBacktracks,
       traceContext = traceContext
     )
+    out$C_eigen_min <- eig$min
+    out$C_eigen_max <- eig$max
+    out$rho <- proxRho
+    out$epsilonFloor <- epsilonFloor
+    out$C_eigen_min_after_shift <- C_eigen_min_after_shift
     if (isTRUE(returnDetails)) {
       return(out)
     }
     return(as.numeric(out$beta))
   }
   if (inherits(xDesign, "sparseMatrix")) {
-    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
-    hBar <- .logisticNegHessian(betaBar, xDesign)
     out <- adapFullSurrogateFitCpp(
       x = .asDgCMatrix(xDesign),
       y = y,
@@ -1081,6 +1218,8 @@
       globalHess = as.matrix(globalHess),
       gradBar = gradBar,
       hBar = as.matrix(hBar),
+      leadWeight = leadWeight,
+      proxRho = proxRho,
       lambda = lambda,
       maxOuter = maxOuter,
       maxInner = maxInner,
@@ -1089,15 +1228,26 @@
       minStep = cdMinStep,
       maxBacktracks = as.integer(cdMaxBacktracks)
     )
+    if (!isTRUE(out$converged) && !nzchar(out$failureReason %||% "")) {
+      out$failureReason <- "max_outer_no_convergence"
+    }
+    out$C_eigen_min <- eig$min
+    out$C_eigen_max <- eig$max
+    out$rho <- proxRho
+    out$epsilonFloor <- epsilonFloor
+    out$C_eigen_min_after_shift <- C_eigen_min_after_shift
+    out$correction_diag_min <- min(diag(baseCorrection), na.rm = TRUE)
+    out$correction_diag_max <- max(diag(baseCorrection), na.rm = TRUE)
     if (isTRUE(returnDetails)) {
       return(out)
+    }
+    if (.adapFitFailed(out)) {
+      stop(.adapFitFailureReason(out), call. = FALSE)
     }
     return(as.numeric(out$beta))
   }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
-  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
-  hBar <- .logisticNegHessian(betaBar, xDesign)
   iterations <- 0L
   converged <- FALSE
   failureReason <- ""
@@ -1125,7 +1275,9 @@
       globalGrad = globalGrad,
       globalHess = globalHess,
       gradBar = gradBar,
-      hBar = hBar
+      hBar = hBar,
+      leadWeight = leadWeight,
+      proxRho = proxRho
     )
     cd <- .coordDescentQuadraticLasso(
       aTilde = comp$aTilde,
@@ -1156,6 +1308,9 @@
     }
   }
   if (isTRUE(returnDetails)) {
+    if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
+      failureReason <- "max_outer_no_convergence"
+    }
     return(list(
       beta = beta,
       outerIterations = iterations,
@@ -1171,8 +1326,21 @@
       coordinateGradient = cd$coordinateGradient %||% NA_real_,
       failureDiagMin = cd$failureDiagMin %||% NA_real_,
       failureDiagMax = cd$failureDiagMax %||% NA_real_,
-      failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_
+      failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_,
+      C_eigen_min = eig$min,
+      C_eigen_max = eig$max,
+      rho = proxRho,
+      epsilonFloor = epsilonFloor,
+      C_eigen_min_after_shift = C_eigen_min_after_shift,
+      correction_diag_min = min(diag(baseCorrection), na.rm = TRUE),
+      correction_diag_max = max(diag(baseCorrection), na.rm = TRUE)
     ))
+  }
+  if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
+    stop("max_outer_no_convergence", call. = FALSE)
+  }
+  if (nzchar(failureReason %||% "")) {
+    stop(failureReason, call. = FALSE)
   }
   beta
 }
@@ -1336,8 +1504,31 @@
                                            cdMinStep = 1e-8,
                                            cdMaxBacktracks = 25L,
                                            traceDiagnostics = FALSE,
-                                           traceContext = list()) {
+                                           traceContext = list(),
+                                           diagToleranceTau = 1e-10) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
+  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
+  correctionDiag <- globalHessDiag - hBarDiag
+  epsilonDiag <- diagToleranceTau * max(1, stats::median(abs(globalHessDiag[is.finite(globalHessDiag)]), na.rm = TRUE))
+  if (!is.finite(epsilonDiag)) {
+    epsilonDiag <- diagToleranceTau
+  }
+  if (any(is.finite(correctionDiag) & correctionDiag < -epsilonDiag)) {
+    fail <- .adapFailureResult(
+      beta,
+      "negative_diagonal_correction",
+      list(
+        correction_diag_min = min(correctionDiag, na.rm = TRUE),
+        correction_diag_max = max(correctionDiag, na.rm = TRUE),
+        epsilonDiag = epsilonDiag
+      )
+    )
+    if (isTRUE(returnDetails)) {
+      return(fail)
+    }
+    stop("negative_diagonal_correction", call. = FALSE)
+  }
   if (isTRUE(traceDiagnostics)) {
     out <- .fitAdapTraceSurrogate(
       kind = "diag",
@@ -1363,8 +1554,6 @@
     return(as.numeric(out$beta))
   }
   if (inherits(xDesign, "sparseMatrix")) {
-    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
-    hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
     out <- adapDiagSurrogateFitCpp(
       x = .asDgCMatrix(xDesign),
       y = y,
@@ -1382,15 +1571,22 @@
       minStep = cdMinStep,
       maxBacktracks = as.integer(cdMaxBacktracks)
     )
+    if (!isTRUE(out$converged) && !nzchar(out$failureReason %||% "")) {
+      out$failureReason <- "max_outer_no_convergence"
+    }
+    out$correction_diag_min <- min(correctionDiag, na.rm = TRUE)
+    out$correction_diag_max <- max(correctionDiag, na.rm = TRUE)
+    out$epsilonDiag <- epsilonDiag
     if (isTRUE(returnDetails)) {
       return(out)
+    }
+    if (.adapFitFailed(out)) {
+      stop(.adapFitFailureReason(out), call. = FALSE)
     }
     return(as.numeric(out$beta))
   }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
-  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
-  hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
   iterations <- 0L
   converged <- FALSE
   failureReason <- ""
@@ -1449,6 +1645,9 @@
     }
   }
   if (isTRUE(returnDetails)) {
+    if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
+      failureReason <- "max_outer_no_convergence"
+    }
     return(list(
       beta = beta,
       outerIterations = iterations,
@@ -1464,8 +1663,17 @@
       coordinateGradient = cd$coordinateGradient %||% NA_real_,
       failureDiagMin = cd$failureDiagMin %||% NA_real_,
       failureDiagMax = cd$failureDiagMax %||% NA_real_,
-      failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_
+      failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_,
+      correction_diag_min = min(correctionDiag, na.rm = TRUE),
+      correction_diag_max = max(correctionDiag, na.rm = TRUE),
+      epsilonDiag = epsilonDiag
     ))
+  }
+  if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
+    stop("max_outer_no_convergence", call. = FALSE)
+  }
+  if (nzchar(failureReason %||% "")) {
+    stop(failureReason, call. = FALSE)
   }
   beta
 }
@@ -1521,8 +1729,14 @@
       minStep = cdMinStep,
       maxBacktracks = as.integer(cdMaxBacktracks)
     )
+    if (!isTRUE(out$converged) && !nzchar(out$failureReason %||% "")) {
+      out$failureReason <- "max_outer_no_convergence"
+    }
     if (isTRUE(returnDetails)) {
       return(out)
+    }
+    if (.adapFitFailed(out)) {
+      stop(.adapFitFailureReason(out), call. = FALSE)
     }
     return(as.numeric(out$beta))
   }
@@ -1585,6 +1799,9 @@
     }
   }
   if (isTRUE(returnDetails)) {
+    if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
+      failureReason <- "max_outer_no_convergence"
+    }
     return(list(
       beta = beta,
       outerIterations = iterations,
@@ -1603,18 +1820,26 @@
       failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_
     ))
   }
+  if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
+    stop("max_outer_no_convergence", call. = FALSE)
+  }
+  if (nzchar(failureReason %||% "")) {
+    stop(failureReason, call. = FALSE)
+  }
   beta
 }
 
 .pdaAdapLambdaSeq <- function(xDesign, y, betaLead, betaBar, globalGrad, globalHess,
-                              gridLen = 100L) {
+                              gridLen = 100L, leadWeight = 1, proxRho = 0) {
   comp <- .adapSurrogateComponents(
     betaEval = betaLead,
     betaBar = betaBar,
     xDesign = xDesign,
     y = y,
     globalGrad = globalGrad,
-    globalHess = globalHess
+    globalHess = globalHess,
+    leadWeight = leadWeight,
+    proxRho = proxRho
   )
   p <- length(betaLead)
   offDiag <- comp$B - diag(diag(comp$B), p, p)
@@ -1884,8 +2109,13 @@
                            traceFile = NULL,
                            cdStepBound = 1,
                            cdMinStep = 1e-8,
-                           cdMaxBacktracks = 25L) {
+                           cdMaxBacktracks = 25L,
+                           surrogateVariant = c("exact", "prox", "convex"),
+                           leadWeight = 1,
+                           proxTau = 1e-8) {
   globalAdjustment <- match.arg(globalAdjustment)
+  surrogateVariant <- match.arg(surrogateVariant)
+  surrogateLabel <- switch(surrogateVariant, exact = "full", prox = "prox", convex = "convex")
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
   yCv <- y[cvIdx]
@@ -1908,13 +2138,24 @@
         denom <- max(totalN - info$nVal, 1L)
         gradTrainGlobal <- (globalGrad * totalN - gradVal * info$nVal) / denom
         hessTrainGlobal <- (globalHess * totalN - hessVal * info$nVal) / denom
+        leadWeightTrain <- if (identical(surrogateVariant, "convex")) length(info$idxTr) / denom else leadWeight
       } else {
         gradTrainGlobal <- globalGrad
         hessTrainGlobal <- globalHess
+        leadWeightTrain <- leadWeight
+      }
+      hBarTrain <- .logisticNegHessian(betaBar, xCv[info$idxTr, , drop = FALSE])
+      baseCorrection <- hessTrainGlobal - leadWeightTrain * hBarTrain
+      proxRhoTrain <- if (identical(surrogateVariant, "prox")) {
+        .adapProxShift(hessTrainGlobal, baseCorrection, tau = proxTau)$rho
+      } else {
+        0
       }
       list(
         gradTrainGlobal = gradTrainGlobal,
         hessTrainGlobal = hessTrainGlobal,
+        leadWeightTrain = leadWeightTrain,
+        proxRhoTrain = proxRhoTrain,
         diagnostics = if (isTRUE(collectDiagnostics)) {
           .adapSurrogateStats(
             kind = "full",
@@ -1948,13 +2189,17 @@
         cdMinStep = cdMinStep,
         cdMaxBacktracks = cdMaxBacktracks,
         traceDiagnostics = collectTrace,
-        traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = "full"))
+        traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = surrogateLabel)),
+        leadWeight = info$leadWeightTrain,
+        proxRho = info$proxRhoTrain,
+        strictCorrection = surrogateVariant,
+        proxTau = proxTau
       )
     },
     collectDiagnostics = collectDiagnostics,
-    surrogateKind = "full",
+    surrogateKind = surrogateLabel,
     collectTrace = collectTrace,
-    traceContext = c(traceContext, list(surrogateKind = "full")),
+    traceContext = c(traceContext, list(surrogateKind = surrogateLabel)),
     traceFile = traceFile
   )
 }
@@ -2203,6 +2448,27 @@
   state
 }
 
+.serverInitPdaAdap2 <- function(config) {
+  state <- .serverInitPdaAdap(config)
+  state$adapMethodName <- "ADAP2"
+  state$adapSurrogateVariant <- "exact"
+  state
+}
+
+.serverInitProxAdap <- function(config) {
+  state <- .serverInitPdaAdap(config)
+  state$adapMethodName <- "Prox-ADAP"
+  state$adapSurrogateVariant <- "prox"
+  state
+}
+
+.serverInitCAdap <- function(config) {
+  state <- .serverInitPdaAdap(config)
+  state$adapMethodName <- "C-ADAP"
+  state$adapSurrogateVariant <- "convex"
+  state
+}
+
 .clientUpdatePdaAdap <- function(clientData, serverBroadcast, config) {
   phase <- serverBroadcast$phase %||% 0L
   xRaw <- .stripInterceptColumn(clientData$xMatrix, config)
@@ -2235,6 +2501,13 @@
     lambdaSeq <- serverBroadcast$lambdaSeq
     fixedLambda <- .fixedAdapLambda(config)
     solveStyle <- serverBroadcast$adapSolveStyle %||% config$adapSolveStyle %||% "fullQuadratic"
+    surrogateVariant <- match.arg(
+      serverBroadcast$adapSurrogateVariant %||% config$adapSurrogateVariant %||% "exact",
+      c("exact", "prox", "convex")
+    )
+    methodName <- serverBroadcast$adapMethodName %||% config$adapMethodName %||%
+      switch(surrogateVariant, exact = "ADAP", prox = "Prox-ADAP", convex = "C-ADAP")
+    leadWeight <- serverBroadcast$leadWeight %||% 1
     cvDiagnostics <- NULL
     cvValid <- NULL
     cvTrace <- NULL
@@ -2313,6 +2586,20 @@
       cvScores <- NA_real_
     } else {
       if (is.null(lambdaSeq)) {
+        if (identical(surrogateVariant, "prox")) {
+          hBarFull <- .logisticNegHessian(betaBar, xDesign)
+          proxInit <- .adapProxShift(globalHess, globalHess - hBarFull, tau = config$adapProxTau %||% 1e-8)
+          lambdaSeq <- .pdaAdapLambdaSeq(
+            xDesign,
+            y,
+            betaLead,
+            betaBar,
+            globalGrad,
+            globalHess,
+            gridLen = config$lambdaGridLen %||% 100L,
+            proxRho = proxInit$rho
+          )
+        } else {
         lambdaSeq <- .pdaAdapLambdaSeq(
           xDesign,
           y,
@@ -2320,8 +2607,10 @@
           betaBar,
           globalGrad,
           globalHess,
-          gridLen = config$lambdaGridLen %||% 100L
+          gridLen = config$lambdaGridLen %||% 100L,
+          leadWeight = leadWeight
         )
+      }
       }
       cv <- .pdaAdapLeadCv(
         xDesign = xDesign,
@@ -2346,11 +2635,14 @@
         globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
         collectDiagnostics = isTRUE(config$adapCvDiagnostics),
         collectTrace = traceEnabled,
-        traceContext = c(baseTraceContext, list(method = "ADAP", phase = "cv")),
+        traceContext = c(baseTraceContext, list(method = methodName, phase = "cv")),
         traceFile = config$adapTraceFile %||% NULL,
         cdStepBound = config$adapCdStepBound %||% 1,
         cdMinStep = config$adapCdMinStep %||% 1e-8,
-        cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
+        cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
+        surrogateVariant = surrogateVariant,
+        leadWeight = leadWeight,
+        proxTau = config$adapProxTau %||% 1e-8
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
@@ -2373,10 +2665,16 @@
       cdStepBound = config$adapCdStepBound %||% 1,
       cdMinStep = config$adapCdMinStep %||% 1e-8,
       cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
-      returnDetails = traceEnabled,
+      returnDetails = TRUE,
       traceDiagnostics = traceEnabled,
-      traceContext = c(baseTraceContext, list(method = "ADAP", phase = "final", selectedLambda = lambda))
+      traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda)),
+      leadWeight = leadWeight,
+      strictCorrection = surrogateVariant,
+      proxTau = config$adapProxTau %||% 1e-8
     )
+    if (.adapFitFailed(fitObj)) {
+      stop(sprintf("%s final fit failed: %s", methodName, .adapFitFailureReason(fitObj)), call. = FALSE)
+    }
     w <- .adapFitBeta(fitObj)
     finalTrace <- if (isTRUE(traceEnabled) && !is.null(fitObj$trace)) fitObj$trace else NULL
     return(list(
@@ -2410,6 +2708,7 @@
     state$betaBar <- betaBar
     state$betaLead <- betaLead
     state$leadIndex <- leadIndex
+    state$leadWeight <- weights[[leadIndex]]
     state$totalN <- sum(ns)
     state$w <- betaBar
     return(list(
@@ -2417,6 +2716,7 @@
       report = list(
         w = betaBar,
         leadIndex = leadIndex,
+        leadWeight = state$leadWeight,
         skipConvergence = TRUE,
         communicationNumbers = length(betaBar) * length(clientReports)
       )
@@ -2435,6 +2735,7 @@
     state$globalGrad <- globalGrad
     state$globalHess <- globalHess
     state$lambdaSeq <- config$lambdaSeq
+    state$leadWeight <- weights[[state$leadIndex]]
     hDiag <- diag(globalHess)
     hCond <- tryCatch(kappa(globalHess), error = function(e) NA_real_)
     state$hessianDim <- paste(dim(globalHess), collapse = "x")
@@ -2446,6 +2747,7 @@
       report = list(
         w = state$w,
         leadIndex = state$leadIndex,
+        leadWeight = state$leadWeight,
         skipConvergence = TRUE,
         hessianDim = state$hessianDim,
         hessianDiagMin = state$hessianDiagMin,
@@ -2512,6 +2814,33 @@
 .registerAlgorithm(
   "ADAP_PDA",
   serverInit = .serverInitPdaAdapPda,
+  clientInit = NULL,
+  clientUpdate = .clientUpdatePdaAdap,
+  serverRound = .serverRoundPdaAdap,
+  lambdaStrategy = .lambdaStrategyPdaAdap()
+)
+
+.registerAlgorithm(
+  "ADAP2",
+  serverInit = .serverInitPdaAdap2,
+  clientInit = NULL,
+  clientUpdate = .clientUpdatePdaAdap,
+  serverRound = .serverRoundPdaAdap,
+  lambdaStrategy = .lambdaStrategyPdaAdap()
+)
+
+.registerAlgorithm(
+  "Prox-ADAP",
+  serverInit = .serverInitProxAdap,
+  clientInit = NULL,
+  clientUpdate = .clientUpdatePdaAdap,
+  serverRound = .serverRoundPdaAdap,
+  lambdaStrategy = .lambdaStrategyPdaAdap()
+)
+
+.registerAlgorithm(
+  "C-ADAP",
+  serverInit = .serverInitCAdap,
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdap,
   serverRound = .serverRoundPdaAdap,
@@ -2661,10 +2990,13 @@
         cdStepBound = config$adapCdStepBound %||% 1,
         cdMinStep = config$adapCdMinStep %||% 1e-8,
         cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
-        returnDetails = traceEnabled,
+        returnDetails = TRUE,
         traceDiagnostics = traceEnabled,
         traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda))
       )
+      if (.adapFitFailed(fitObj)) {
+        stop(sprintf("%s final fit failed: %s", methodName, .adapFitFailureReason(fitObj)), call. = FALSE)
+      }
       w <- .adapFitBeta(fitObj)
       finalTrace <- if (isTRUE(traceEnabled) && !is.null(fitObj$trace)) fitObj$trace else NULL
       return(list(
@@ -2805,10 +3137,13 @@
       cdStepBound = config$adapCdStepBound %||% 1,
       cdMinStep = config$adapCdMinStep %||% 1e-8,
       cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
-      returnDetails = traceEnabled,
+      returnDetails = TRUE,
       traceDiagnostics = traceEnabled,
       traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda))
     )
+    if (.adapFitFailed(fitObj)) {
+      stop(sprintf("%s final fit failed: %s", methodName, .adapFitFailureReason(fitObj)), call. = FALSE)
+    }
     w <- .adapFitBeta(fitObj)
     finalTrace <- if (isTRUE(traceEnabled) && !is.null(fitObj$trace)) fitObj$trace else NULL
     return(list(
