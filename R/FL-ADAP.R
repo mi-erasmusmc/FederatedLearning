@@ -260,6 +260,70 @@
   )
 }
 
+.adapApplyKktStatus <- function(fit, comp, lambda, penalize,
+                                kktTolerance = 1e-4,
+                                betaAbsThreshold = 1e4,
+                                etaAbsThreshold = 1e4,
+                                xDesign = NULL) {
+  beta <- .adapFitBeta(fit)
+  fit$kktMaxAbs <- NA_real_
+  fit$kktViolating <- NA_integer_
+  fit$kktMaxCoordinate <- NA_integer_
+  fit$betaMaxAbs <- if (length(beta)) max(abs(beta), na.rm = TRUE) else NA_real_
+  fit$etaMaxAbs <- NA_real_
+  fit$convergenceReason <- fit$convergenceReason %||% ""
+
+  if (!length(beta) || any(!is.finite(beta))) {
+    fit$failureReason <- "non_finite_solution"
+    fit$converged <- FALSE
+    return(fit)
+  }
+  if (is.finite(betaAbsThreshold) && is.finite(fit$betaMaxAbs) &&
+      fit$betaMaxAbs > betaAbsThreshold) {
+    fit$failureReason <- "beta_abs_too_large"
+    fit$converged <- FALSE
+    return(fit)
+  }
+  if (!is.null(xDesign)) {
+    eta <- as.numeric(xDesign %*% beta)
+    fit$etaMaxAbs <- if (length(eta)) max(abs(eta), na.rm = TRUE) else NA_real_
+    if (any(!is.finite(eta))) {
+      fit$failureReason <- "non_finite_linear_predictor"
+      fit$converged <- FALSE
+      return(fit)
+    }
+    if (is.finite(etaAbsThreshold) && is.finite(fit$etaMaxAbs) &&
+        fit$etaMaxAbs > etaAbsThreshold) {
+      fit$failureReason <- "eta_abs_too_large"
+      fit$converged <- FALSE
+      return(fit)
+    }
+  }
+
+  kkt <- .adapKktStats(comp$aTilde, comp$B, beta, lambda, penalize, tol = kktTolerance)
+  fit$kktMaxAbs <- kkt$maxViolation
+  fit$kktViolating <- kkt$violating
+  fit$kktMaxCoordinate <- kkt$maxCoordinate
+  if (!is.finite(fit$kktMaxAbs)) {
+    fit$failureReason <- "non_finite_kkt"
+    fit$converged <- FALSE
+    return(fit)
+  }
+
+  currentFailure <- fit$failureReason %||% ""
+  if (fit$kktMaxAbs <= kktTolerance) {
+    if (!nzchar(currentFailure) || identical(currentFailure, "max_outer_no_convergence")) {
+      fit$failureReason <- ""
+      fit$converged <- TRUE
+      fit$convergenceReason <- "kkt_tolerance"
+    }
+  } else if (!nzchar(currentFailure) || isTRUE(fit$converged)) {
+    fit$failureReason <- "kkt_not_satisfied"
+    fit$converged <- FALSE
+  }
+  fit
+}
+
 .adapTraceRow <- function(iteration, betaBefore, betaAfter, xDesign, y,
                           comp, lambda, penalize, cd, failureReason = "") {
   etaBefore <- as.numeric(xDesign %*% betaBefore)
@@ -633,6 +697,10 @@
     .adapRangeStats(beta, "beta"),
     betaNonzero = sum(abs(beta) > 1e-8, na.rm = TRUE),
     fitFailed = .adapFitFailed(fit),
+    kktMaxAbs = if (is.list(fit) && !is.null(fit$kktMaxAbs)) fit$kktMaxAbs else NA_real_,
+    kktViolating = if (is.list(fit) && !is.null(fit$kktViolating)) fit$kktViolating else NA_real_,
+    kktMaxCoordinate = if (is.list(fit) && !is.null(fit$kktMaxCoordinate)) fit$kktMaxCoordinate else NA_real_,
+    etaMaxAbs = if (is.list(fit) && !is.null(fit$etaMaxAbs)) fit$etaMaxAbs else NA_real_,
     innerIterations = if (is.list(fit) && !is.null(fit$innerIterations)) fit$innerIterations else NA_real_,
     innerConverged = if (is.list(fit) && !is.null(fit$innerConverged)) isTRUE(fit$innerConverged) else NA,
     innerObjective = if (is.list(fit) && !is.null(fit$innerObjective)) fit$innerObjective else NA_real_,
@@ -1121,7 +1189,10 @@
                                  proxRho = 0,
                                  strictCorrection = c("exact", "prox", "convex"),
                                  eigToleranceTau = 1e-10,
-                                 proxTau = 1e-8) {
+                                 proxTau = 1e-8,
+                                 kktTolerance = 1e-4,
+                                 betaAbsThreshold = 1e4,
+                                 etaAbsThreshold = 1e4) {
   strictCorrection <- match.arg(strictCorrection)
   beta <- if (is.null(betaInit)) betaLead else betaInit
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -1203,6 +1274,27 @@
     out$rho <- proxRho
     out$epsilonFloor <- epsilonFloor
     out$C_eigen_min_after_shift <- C_eigen_min_after_shift
+    finalComp <- .adapSurrogateComponents(
+      betaEval = .adapFitBeta(out),
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      globalHess = globalHess,
+      gradBar = gradBar,
+      hBar = hBar,
+      leadWeight = leadWeight,
+      proxRho = proxRho
+    )
+    penalize <- rep(TRUE, length(beta))
+    penalize[1] <- FALSE
+    out <- .adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
+    )
     if (isTRUE(returnDetails)) {
       return(out)
     }
@@ -1231,6 +1323,27 @@
     if (!isTRUE(out$converged) && !nzchar(out$failureReason %||% "")) {
       out$failureReason <- "max_outer_no_convergence"
     }
+    finalComp <- .adapSurrogateComponents(
+      betaEval = .adapFitBeta(out),
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      globalHess = globalHess,
+      gradBar = gradBar,
+      hBar = hBar,
+      leadWeight = leadWeight,
+      proxRho = proxRho
+    )
+    penalize <- rep(TRUE, length(beta))
+    penalize[1] <- FALSE
+    out <- .adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
+    )
     out$C_eigen_min <- eig$min
     out$C_eigen_max <- eig$max
     out$rho <- proxRho
@@ -1311,7 +1424,7 @@
     if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
       failureReason <- "max_outer_no_convergence"
     }
-    return(list(
+    out <- list(
       beta = beta,
       outerIterations = iterations,
       converged = converged,
@@ -1334,6 +1447,25 @@
       C_eigen_min_after_shift = C_eigen_min_after_shift,
       correction_diag_min = min(diag(baseCorrection), na.rm = TRUE),
       correction_diag_max = max(diag(baseCorrection), na.rm = TRUE)
+    )
+    finalComp <- .adapSurrogateComponents(
+      betaEval = beta,
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      globalHess = globalHess,
+      gradBar = gradBar,
+      hBar = hBar,
+      leadWeight = leadWeight,
+      proxRho = proxRho
+    )
+    return(.adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
     ))
   }
   if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
@@ -1505,7 +1637,10 @@
                                            cdMaxBacktracks = 25L,
                                            traceDiagnostics = FALSE,
                                            traceContext = list(),
-                                           diagToleranceTau = 1e-10) {
+                                           diagToleranceTau = 1e-10,
+                                           kktTolerance = 1e-4,
+                                           betaAbsThreshold = 1e4,
+                                           etaAbsThreshold = 1e4) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
@@ -1548,6 +1683,25 @@
       cdMaxBacktracks = cdMaxBacktracks,
       traceContext = traceContext
     )
+    finalComp <- .adapLocalFullRemoteDiagSurrogateComponents(
+      betaEval = .adapFitBeta(out),
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      globalHessDiag = globalHessDiag,
+      gradBar = gradBar,
+      hBarDiag = hBarDiag
+    )
+    penalize <- rep(TRUE, length(beta))
+    penalize[1] <- FALSE
+    out <- .adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
+    )
     if (isTRUE(returnDetails)) {
       return(out)
     }
@@ -1574,6 +1728,25 @@
     if (!isTRUE(out$converged) && !nzchar(out$failureReason %||% "")) {
       out$failureReason <- "max_outer_no_convergence"
     }
+    finalComp <- .adapLocalFullRemoteDiagSurrogateComponents(
+      betaEval = .adapFitBeta(out),
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      globalHessDiag = globalHessDiag,
+      gradBar = gradBar,
+      hBarDiag = hBarDiag
+    )
+    penalize <- rep(TRUE, length(beta))
+    penalize[1] <- FALSE
+    out <- .adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
+    )
     out$correction_diag_min <- min(correctionDiag, na.rm = TRUE)
     out$correction_diag_max <- max(correctionDiag, na.rm = TRUE)
     out$epsilonDiag <- epsilonDiag
@@ -1648,7 +1821,7 @@
     if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
       failureReason <- "max_outer_no_convergence"
     }
-    return(list(
+    out <- list(
       beta = beta,
       outerIterations = iterations,
       converged = converged,
@@ -1667,6 +1840,23 @@
       correction_diag_min = min(correctionDiag, na.rm = TRUE),
       correction_diag_max = max(correctionDiag, na.rm = TRUE),
       epsilonDiag = epsilonDiag
+    )
+    finalComp <- .adapLocalFullRemoteDiagSurrogateComponents(
+      betaEval = beta,
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      globalHessDiag = globalHessDiag,
+      gradBar = gradBar,
+      hBarDiag = hBarDiag
+    )
+    return(.adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
     ))
   }
   if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
@@ -1687,7 +1877,10 @@
                                            cdMinStep = 1e-8,
                                            cdMaxBacktracks = 25L,
                                            traceDiagnostics = FALSE,
-                                           traceContext = list()) {
+                                           traceContext = list(),
+                                           kktTolerance = 1e-4,
+                                           betaAbsThreshold = 1e4,
+                                           etaAbsThreshold = 1e4) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   if (isTRUE(traceDiagnostics)) {
     out <- .fitAdapTraceSurrogate(
@@ -1706,6 +1899,23 @@
       cdMinStep = cdMinStep,
       cdMaxBacktracks = cdMaxBacktracks,
       traceContext = traceContext
+    )
+    finalComp <- .adapFirstOrderSurrogateComponents(
+      betaEval = .adapFitBeta(out),
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      gradBar = .logisticNegGradient(betaBar, xDesign, y)
+    )
+    penalize <- rep(TRUE, length(beta))
+    penalize[1] <- FALSE
+    out <- .adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
     )
     if (isTRUE(returnDetails)) {
       return(out)
@@ -1732,6 +1942,23 @@
     if (!isTRUE(out$converged) && !nzchar(out$failureReason %||% "")) {
       out$failureReason <- "max_outer_no_convergence"
     }
+    finalComp <- .adapFirstOrderSurrogateComponents(
+      betaEval = .adapFitBeta(out),
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      gradBar = gradBar
+    )
+    penalize <- rep(TRUE, length(beta))
+    penalize[1] <- FALSE
+    out <- .adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
+    )
     if (isTRUE(returnDetails)) {
       return(out)
     }
@@ -1802,7 +2029,7 @@
     if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
       failureReason <- "max_outer_no_convergence"
     }
-    return(list(
+    out <- list(
       beta = beta,
       outerIterations = iterations,
       converged = converged,
@@ -1818,6 +2045,21 @@
       failureDiagMin = cd$failureDiagMin %||% NA_real_,
       failureDiagMax = cd$failureDiagMax %||% NA_real_,
       failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_
+    )
+    finalComp <- .adapFirstOrderSurrogateComponents(
+      betaEval = beta,
+      betaBar = betaBar,
+      xDesign = xDesign,
+      y = y,
+      globalGrad = globalGrad,
+      gradBar = gradBar
+    )
+    return(.adapApplyKktStatus(
+      out, finalComp, lambda, penalize,
+      kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold,
+      xDesign = xDesign
     ))
   }
   if (!isTRUE(converged) && !nzchar(failureReason %||% "")) {
@@ -2112,7 +2354,10 @@
                            cdMaxBacktracks = 25L,
                            surrogateVariant = c("exact", "prox", "convex"),
                            leadWeight = 1,
-                           proxTau = 1e-8) {
+                           proxTau = 1e-8,
+                           kktTolerance = 1e-4,
+                           betaAbsThreshold = 1e4,
+                           etaAbsThreshold = 1e4) {
   globalAdjustment <- match.arg(globalAdjustment)
   surrogateVariant <- match.arg(surrogateVariant)
   surrogateLabel <- switch(surrogateVariant, exact = "full", prox = "prox", convex = "convex")
@@ -2193,7 +2438,10 @@
         leadWeight = info$leadWeightTrain,
         proxRho = info$proxRhoTrain,
         strictCorrection = surrogateVariant,
-        proxTau = proxTau
+        proxTau = proxTau,
+        kktTolerance = kktTolerance,
+        betaAbsThreshold = betaAbsThreshold,
+        etaAbsThreshold = etaAbsThreshold
       )
     },
     collectDiagnostics = collectDiagnostics,
@@ -2241,7 +2489,10 @@
                                 traceFile = NULL,
                                 cdStepBound = 1,
                                 cdMinStep = 1e-8,
-                                cdMaxBacktracks = 25L) {
+                                cdMaxBacktracks = 25L,
+                                kktTolerance = 1e-4,
+                                betaAbsThreshold = 1e4,
+                                etaAbsThreshold = 1e4) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -2299,7 +2550,10 @@
         cdMinStep = cdMinStep,
         cdMaxBacktracks = cdMaxBacktracks,
         traceDiagnostics = collectTrace,
-        traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = "first"))
+        traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = "first")),
+        kktTolerance = kktTolerance,
+        betaAbsThreshold = betaAbsThreshold,
+        etaAbsThreshold = etaAbsThreshold
       )
     },
     collectDiagnostics = collectDiagnostics,
@@ -2350,7 +2604,10 @@
                                traceFile = NULL,
                                cdStepBound = 1,
                                cdMinStep = 1e-8,
-                               cdMaxBacktracks = 25L) {
+                               cdMaxBacktracks = 25L,
+                               kktTolerance = 1e-4,
+                               betaAbsThreshold = 1e4,
+                               etaAbsThreshold = 1e4) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -2414,7 +2671,10 @@
         cdMinStep = cdMinStep,
         cdMaxBacktracks = cdMaxBacktracks,
         traceDiagnostics = collectTrace,
-        traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = "diag"))
+        traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = "diag")),
+        kktTolerance = kktTolerance,
+        betaAbsThreshold = betaAbsThreshold,
+        etaAbsThreshold = etaAbsThreshold
       )
     },
     collectDiagnostics = collectDiagnostics,
@@ -2513,6 +2773,7 @@
     cvTrace <- NULL
     finalTrace <- NULL
     traceEnabled <- isTRUE(config$adapTraceDiagnostics)
+    finalMaxOuter <- config$adapFinalMaxOuter %||% max(500L, config$maxOuter %||% 100L)
     baseTraceContext <- c(
       config$adapTraceContext %||% list(),
       list(
@@ -2642,7 +2903,10 @@
         cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
         surrogateVariant = surrogateVariant,
         leadWeight = leadWeight,
-        proxTau = config$adapProxTau %||% 1e-8
+        proxTau = config$adapProxTau %||% 1e-8,
+        kktTolerance = config$adapKktTolerance %||% 1e-4,
+        betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
+        etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
@@ -2659,7 +2923,7 @@
       globalGrad = globalGrad,
       globalHess = globalHess,
       lambda = lambda,
-      maxOuter = config$maxOuter %||% 100L,
+      maxOuter = finalMaxOuter,
       maxInner = config$maxInner %||% 100L,
       tol = config$tol %||% 1e-5,
       cdStepBound = config$adapCdStepBound %||% 1,
@@ -2670,7 +2934,10 @@
       traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda)),
       leadWeight = leadWeight,
       strictCorrection = surrogateVariant,
-      proxTau = config$adapProxTau %||% 1e-8
+      proxTau = config$adapProxTau %||% 1e-8,
+      kktTolerance = config$adapKktTolerance %||% 1e-4,
+      betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
+      etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
     )
     if (.adapFitFailed(fitObj)) {
       stop(sprintf("%s final fit failed: %s", methodName, .adapFitFailureReason(fitObj)), call. = FALSE)
@@ -2917,6 +3184,7 @@
     finalTrace <- NULL
     traceEnabled <- isTRUE(config$adapTraceDiagnostics)
     methodName <- if (identical(mode, "first")) "ADAP1" else "ADAPDiag"
+    finalMaxOuter <- config$adapFinalMaxOuter %||% max(500L, config$maxOuter %||% 100L)
     baseTraceContext <- c(
       config$adapTraceContext %||% list(),
       list(
@@ -2968,7 +3236,10 @@
           traceFile = config$adapTraceFile %||% NULL,
           cdStepBound = config$adapCdStepBound %||% 1,
           cdMinStep = config$adapCdMinStep %||% 1e-8,
-          cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
+          cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
+          kktTolerance = config$adapKktTolerance %||% 1e-4,
+          betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
+          etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
         )
         lambda <- cv$lambda
         cvScores <- cv$scores
@@ -2984,7 +3255,7 @@
         betaBar = betaBar,
         globalGrad = globalGrad,
         lambda = lambda,
-        maxOuter = config$maxOuter %||% 100L,
+        maxOuter = finalMaxOuter,
         maxInner = config$maxInner %||% 100L,
         tol = config$tol %||% 1e-5,
         cdStepBound = config$adapCdStepBound %||% 1,
@@ -2992,7 +3263,10 @@
         cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
         returnDetails = TRUE,
         traceDiagnostics = traceEnabled,
-        traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda))
+        traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda)),
+        kktTolerance = config$adapKktTolerance %||% 1e-4,
+        betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
+        etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
       )
       if (.adapFitFailed(fitObj)) {
         stop(sprintf("%s final fit failed: %s", methodName, .adapFitFailureReason(fitObj)), call. = FALSE)
@@ -3114,7 +3388,10 @@
         traceFile = config$adapTraceFile %||% NULL,
         cdStepBound = config$adapCdStepBound %||% 1,
         cdMinStep = config$adapCdMinStep %||% 1e-8,
-        cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L
+        cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
+        kktTolerance = config$adapKktTolerance %||% 1e-4,
+        betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
+        etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
@@ -3131,7 +3408,7 @@
       globalGrad = globalGrad,
       globalHessDiag = globalHessDiag,
       lambda = lambda,
-      maxOuter = config$maxOuter %||% 100L,
+      maxOuter = finalMaxOuter,
       maxInner = config$maxInner %||% 100L,
       tol = config$tol %||% 1e-5,
       cdStepBound = config$adapCdStepBound %||% 1,
@@ -3139,7 +3416,10 @@
       cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
       returnDetails = TRUE,
       traceDiagnostics = traceEnabled,
-      traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda))
+      traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda)),
+      kktTolerance = config$adapKktTolerance %||% 1e-4,
+      betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
+      etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
     )
     if (.adapFitFailed(fitObj)) {
       stop(sprintf("%s final fit failed: %s", methodName, .adapFitFailureReason(fitObj)), call. = FALSE)

@@ -293,6 +293,10 @@ methodConfig <- function(method, featureSet, args) {
     adapCvDiagnostics = logicalArg(argValue(args, "adap-cv-diagnostics"), FALSE),
     adapTraceDiagnostics = logicalArg(argValue(args, "adap-trace-diagnostics"), FALSE),
     adapProxTau = firstValue(numCsvArg(argValue(args, "adap-prox-tau"), 1e-8)),
+    adapFinalMaxOuter = firstValue(intCsvArg(argValue(args, "adap-final-max-outer"), 500L)),
+    adapKktTolerance = firstValue(numCsvArg(argValue(args, "adap-kkt-tolerance"), 1e-4)),
+    adapBetaAbsThreshold = firstValue(numCsvArg(argValue(args, "adap-beta-abs-threshold"), 1e4)),
+    adapEtaAbsThreshold = firstValue(numCsvArg(argValue(args, "adap-eta-abs-threshold"), 1e4)),
     convergenceObjective = firstValue(charCsvArg(argValue(args, "convergence-objective"), "negLogLikelihood"))
   )
 
@@ -367,6 +371,22 @@ methodConfigGridValues <- function(method, base, args) {
     adapProxTau = numCsvArg(
       argValue(args, "adap-prox-tau"),
       base$adapProxTau
+    ),
+    adapFinalMaxOuter = intCsvArg(
+      argValue(args, "adap-final-max-outer"),
+      base$adapFinalMaxOuter
+    ),
+    adapKktTolerance = numCsvArg(
+      argValue(args, "adap-kkt-tolerance"),
+      base$adapKktTolerance
+    ),
+    adapBetaAbsThreshold = numCsvArg(
+      argValue(args, "adap-beta-abs-threshold"),
+      base$adapBetaAbsThreshold
+    ),
+    adapEtaAbsThreshold = numCsvArg(
+      argValue(args, "adap-eta-abs-threshold"),
+      base$adapEtaAbsThreshold
     )
   )
   if (identical(method, "ODAL")) {
