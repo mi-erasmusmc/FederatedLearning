@@ -100,6 +100,139 @@
   as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
 }
 
+.adapRangeStats <- function(x, prefix) {
+  x <- as.numeric(x)
+  finite <- is.finite(x)
+  out <- c(
+    length = length(x),
+    finite = sum(finite),
+    nonFinite = sum(!finite),
+    min = NA_real_,
+    max = NA_real_,
+    maxAbs = NA_real_
+  )
+  if (any(finite)) {
+    out["min"] <- min(x[finite])
+    out["max"] <- max(x[finite])
+    out["maxAbs"] <- max(abs(x[finite]))
+  }
+  suffix <- paste0(toupper(substr(names(out), 1, 1)), substring(names(out), 2))
+  stats::setNames(out, paste0(prefix, suffix))
+}
+
+.adapMatrixStats <- function(B, prefix = "B") {
+  B <- as.matrix(B)
+  vals <- as.numeric(B)
+  diagVals <- diag(B)
+  finite <- is.finite(vals)
+  eig <- tryCatch(
+    eigen((B + t(B)) / 2, symmetric = TRUE, only.values = TRUE)$values,
+    error = function(e) NA_real_
+  )
+  eigFinite <- is.finite(eig)
+  c(
+    stats::setNames(c(nrow(B), ncol(B), sum(!finite)), paste0(prefix, c("Rows", "Cols", "NonFinite"))),
+    .adapRangeStats(diagVals, paste0(prefix, "Diag")),
+    stats::setNames(sum(is.finite(diagVals) & diagVals <= 0), paste0(prefix, "DiagNonPositive")),
+    stats::setNames(if (any(eigFinite)) min(eig[eigFinite]) else NA_real_, paste0(prefix, "EigenMin")),
+    stats::setNames(if (any(eigFinite)) max(eig[eigFinite]) else NA_real_, paste0(prefix, "EigenMax")),
+    stats::setNames(sum(is.finite(eig) & eig <= 0), paste0(prefix, "EigenNonPositive")),
+    stats::setNames(tryCatch(kappa(B), error = function(e) NA_real_), paste0(prefix, "Kappa"))
+  )
+}
+
+.adapSurrogateStats <- function(kind, xTrain, yTrain, betaLead, betaBar,
+                                globalGrad, globalHess = NULL,
+                                globalHessDiag = NULL) {
+  tryCatch({
+    comp <- switch(kind,
+      full = .adapSurrogateComponents(
+        betaEval = betaLead,
+        betaBar = betaBar,
+        xDesign = xTrain,
+        y = yTrain,
+        globalGrad = globalGrad,
+        globalHess = globalHess
+      ),
+      first = .adapFirstOrderSurrogateComponents(
+        betaEval = betaLead,
+        betaBar = betaBar,
+        xDesign = xTrain,
+        y = yTrain,
+        globalGrad = globalGrad
+      ),
+      diag = .adapLocalFullRemoteDiagSurrogateComponents(
+        betaEval = betaLead,
+        betaBar = betaBar,
+        xDesign = xTrain,
+        y = yTrain,
+        globalGrad = globalGrad,
+        globalHessDiag = globalHessDiag
+      ),
+      stop("Unsupported ADAP surrogate diagnostic kind: ", kind, call. = FALSE)
+    )
+    c(
+      surrogateDiagnosticFailed = 0,
+      .adapRangeStats(comp$aTilde, "aTilde"),
+      .adapMatrixStats(comp$B, "B")
+    )
+  }, error = function(e) {
+    c(
+      surrogateDiagnosticFailed = 1,
+      aTildeLength = NA_real_,
+      aTildeFinite = NA_real_,
+      aTildeNonFinite = NA_real_,
+      aTildeMin = NA_real_,
+      aTildeMax = NA_real_,
+      aTildeMaxAbs = NA_real_,
+      BRows = NA_real_,
+      BCols = NA_real_,
+      BNonFinite = NA_real_,
+      BDiagLength = NA_real_,
+      BDiagFinite = NA_real_,
+      BDiagNonFinite = NA_real_,
+      BDiagMin = NA_real_,
+      BDiagMax = NA_real_,
+      BDiagMaxAbs = NA_real_,
+      BDiagNonPositive = NA_real_,
+      BEigenMin = NA_real_,
+      BEigenMax = NA_real_,
+      BEigenNonPositive = NA_real_,
+      BKappa = NA_real_
+    )
+  })
+}
+
+.adapValidationStats <- function(beta, xVal, yVal, metric) {
+  eta <- as.numeric(xVal %*% beta)
+  rawDeviance <- binaryLogLoss(eta, yVal, meanLoss = TRUE)
+  score <- .adapCvMetric(beta, xVal, yVal, metric = metric)
+  c(
+    score = score,
+    rawDeviance = rawDeviance,
+    rawDevianceFinite = is.finite(rawDeviance),
+    scoreFinite = is.finite(score),
+    .adapRangeStats(eta, "eta")
+  )
+}
+
+.adapFitBeta <- function(fit) {
+  if (is.list(fit) && !is.null(fit$beta)) {
+    return(as.numeric(fit$beta))
+  }
+  as.numeric(fit)
+}
+
+.adapFitDiagnostics <- function(fit) {
+  beta <- .adapFitBeta(fit)
+  c(
+    outerIterations = if (is.list(fit) && !is.null(fit$outerIterations)) fit$outerIterations else NA_real_,
+    converged = if (is.list(fit) && !is.null(fit$converged)) isTRUE(fit$converged) else NA,
+    .adapRangeStats(beta, "beta"),
+    betaNonzero = sum(abs(beta) > 1e-8, na.rm = TRUE)
+  )
+}
+
 .adapBestLambdaIndex <- function(scores, lambdaSeq, metric = c("deviance", "auc"),
                                  tieTolerance = 1e-8) {
   metric <- match.arg(metric)
@@ -303,7 +436,8 @@
 .fitPdaAdapSurrogate <- function(xDesign, y, betaLead, betaBar,
                                  globalGrad, globalHess, lambda,
                                  maxOuter = 100L, maxInner = 100L,
-                                 tol = 1e-5, betaInit = NULL) {
+                                 tol = 1e-5, betaInit = NULL,
+                                 returnDetails = FALSE) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   if (inherits(xDesign, "sparseMatrix")) {
     gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -322,13 +456,19 @@
       maxInner = maxInner,
       tol = tol
     )
+    if (isTRUE(returnDetails)) {
+      return(out)
+    }
     return(as.numeric(out$beta))
   }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   hBar <- .logisticNegHessian(betaBar, xDesign)
+  iterations <- 0L
+  converged <- FALSE
   for (iter in seq_len(maxOuter)) {
+    iterations <- iter
     old <- beta
     comp <- .adapSurrogateComponents(
       betaEval = beta,
@@ -351,8 +491,12 @@
     )
     delta <- max(abs(beta - old), na.rm = TRUE)
     if (is.finite(delta) && delta < tol) {
+      converged <- TRUE
       break
     }
+  }
+  if (isTRUE(returnDetails)) {
+    return(list(beta = beta, outerIterations = iterations, converged = converged))
   }
   beta
 }
@@ -369,7 +513,8 @@
 .fitPdaAdapPdaProx <- function(xDesign, y, beta0, globalGrad, globalHess,
                                lambda, useFull = TRUE,
                                maxIter = 1000L, tol = 1e-6,
-                               ridge = 1e-4, betaInit = NULL) {
+                               ridge = 1e-4, betaInit = NULL,
+                               returnDetails = FALSE) {
   beta <- if (is.null(betaInit)) beta0 else betaInit
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
@@ -383,7 +528,10 @@
   }
 
   bCorr <- globalGrad - leadTerms$gradient
+  iterations <- 0L
+  converged <- FALSE
   for (iter in seq_len(maxIter)) {
+    iterations <- iter
     betaOld <- beta
     localTerms <- .logisticNegGradientHessianDiag(beta, xDesign, y)
     gLocal <- localTerms$gradient
@@ -406,8 +554,12 @@
     }
     delta <- max(abs(beta - betaOld), na.rm = TRUE)
     if (is.finite(delta) && delta < tol) {
+      converged <- TRUE
       break
     }
+  }
+  if (isTRUE(returnDetails)) {
+    return(list(beta = beta, outerIterations = iterations, converged = converged))
   }
   beta
 }
@@ -418,19 +570,21 @@
                               maxIter = 1000L, tol = 1e-6,
                               ridge = 1e-4,
                               selectionMetric = c("deviance", "auc"),
-                              tieTolerance = 1e-8) {
+                              tieTolerance = 1e-8,
+                              collectDiagnostics = FALSE) {
   selectionMetric <- match.arg(selectionMetric)
   set.seed(seed)
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
   scores <- rep(NA_real_, length(lambdaSeq))
   warmStarts <- rep(list(betaBar), foldsK)
+  diagnosticRows <- list()
   for (li in seq_along(lambdaSeq)) {
     foldLoss <- numeric(foldsK)
     for (fold in seq_len(foldsK)) {
       idxVal <- which(folds == fold)
       idxTr <- setdiff(seq_len(n), idxVal)
-      fit <- .fitPdaAdapPdaProx(
+      fitObj <- .fitPdaAdapPdaProx(
         xDesign = xDesign[idxTr, , drop = FALSE],
         y = y[idxTr],
         beta0 = betaBar,
@@ -441,27 +595,62 @@
         maxIter = maxIter,
         tol = tol,
         ridge = ridge,
-        betaInit = warmStarts[[fold]]
+        betaInit = warmStarts[[fold]],
+        returnDetails = collectDiagnostics
       )
+      fit <- .adapFitBeta(fitObj)
       warmStarts[[fold]] <- fit
-      foldLoss[fold] <- .adapCvMetric(
+      valStats <- .adapValidationStats(
         fit,
         xDesign[idxVal, , drop = FALSE],
         y[idxVal],
         metric = selectionMetric
       )
+      foldLoss[fold] <- unname(valStats["score"])
+      if (isTRUE(collectDiagnostics)) {
+        leadTerms <- if (isTRUE(useFull)) {
+          .logisticNegGradientHessian(betaBar, xDesign[idxTr, , drop = FALSE], y[idxTr])
+        } else {
+          .logisticNegGradientHessianDiag(betaBar, xDesign[idxTr, , drop = FALSE], y[idxTr])
+        }
+        hStats <- if (isTRUE(useFull)) {
+          .adapMatrixStats(globalHess - leadTerms$hessian, "hCorrection")
+        } else {
+          .adapRangeStats(globalHess - leadTerms$hessianDiag, "hCorrection")
+        }
+        diagnosticRows[[length(diagnosticRows) + 1L]] <<- data.frame(
+          lambda = lambdaSeq[li],
+          lambdaKey = format(lambdaSeq[li], digits = 17, scientific = TRUE),
+          innerFold = fold,
+          nTrain = length(idxTr),
+          trainOutcomes = sum(y[idxTr] == 1),
+          trainOutcomeRate = mean(y[idxTr] == 1),
+          nValidation = length(idxVal),
+          validationOutcomes = sum(y[idxVal] == 1),
+          validationOutcomeRate = mean(y[idxVal] == 1),
+          surrogateKind = if (isTRUE(useFull)) "pdaFull" else "pdaDiag",
+          t(c(.adapFitDiagnostics(fitObj), valStats, hStats)),
+          stringsAsFactors = FALSE,
+          check.names = FALSE
+        )
+      }
     }
     scores[li] <- mean(foldLoss, na.rm = TRUE)
   }
   idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
-  list(lambda = lambdaSeq[idx], scores = scores)
+  list(
+    lambda = lambdaSeq[idx],
+    scores = scores,
+    diagnostics = if (length(diagnosticRows)) do.call(rbind, diagnosticRows) else NULL
+  )
 }
 
 .fitPdaAdapRemoteDiagSurrogate <- function(xDesign, y, betaLead, betaBar,
                                            globalGrad, globalHessDiag,
                                            lambda,
                                            maxOuter = 100L, maxInner = 100L,
-                                           tol = 1e-5, betaInit = NULL) {
+                                           tol = 1e-5, betaInit = NULL,
+                                           returnDetails = FALSE) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   if (inherits(xDesign, "sparseMatrix")) {
     gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -480,13 +669,19 @@
       maxInner = maxInner,
       tol = tol
     )
+    if (isTRUE(returnDetails)) {
+      return(out)
+    }
     return(as.numeric(out$beta))
   }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
+  iterations <- 0L
+  converged <- FALSE
   for (iter in seq_len(maxOuter)) {
+    iterations <- iter
     old <- beta
     comp <- .adapLocalFullRemoteDiagSurrogateComponents(
       betaEval = beta,
@@ -509,8 +704,12 @@
     )
     delta <- max(abs(beta - old), na.rm = TRUE)
     if (is.finite(delta) && delta < tol) {
+      converged <- TRUE
       break
     }
+  }
+  if (isTRUE(returnDetails)) {
+    return(list(beta = beta, outerIterations = iterations, converged = converged))
   }
   beta
 }
@@ -518,7 +717,8 @@
 .fitPdaAdapFirstOrderSurrogate <- function(xDesign, y, betaLead, betaBar,
                                            globalGrad, lambda,
                                            maxOuter = 100L, maxInner = 100L,
-                                           tol = 1e-5, betaInit = NULL) {
+                                           tol = 1e-5, betaInit = NULL,
+                                           returnDetails = FALSE) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   if (inherits(xDesign, "sparseMatrix")) {
     gradBar <- .logisticNegGradient(betaBar, xDesign, y)
@@ -534,12 +734,18 @@
       maxInner = maxInner,
       tol = tol
     )
+    if (isTRUE(returnDetails)) {
+      return(out)
+    }
     return(as.numeric(out$beta))
   }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  iterations <- 0L
+  converged <- FALSE
   for (iter in seq_len(maxOuter)) {
+    iterations <- iter
     old <- beta
     comp <- .adapFirstOrderSurrogateComponents(
       betaEval = beta,
@@ -560,8 +766,12 @@
     )
     delta <- max(abs(beta - old), na.rm = TRUE)
     if (is.finite(delta) && delta < tol) {
+      converged <- TRUE
       break
     }
+  }
+  if (isTRUE(returnDetails)) {
+    return(list(beta = beta, outerIterations = iterations, converged = converged))
   }
   beta
 }
@@ -594,7 +804,9 @@
                                     selectionMetric = c("deviance", "auc"),
                                     tieTolerance = 1e-8,
                                     makeFoldInfo,
-                                    fitFold) {
+                                    fitFold,
+                                    collectDiagnostics = FALSE,
+                                    surrogateKind = NA_character_) {
   search <- match.arg(search)
   selectionMetric <- match.arg(selectionMetric)
   set.seed(seed)
@@ -613,6 +825,7 @@
   })
 
   evalCache <- new.env(parent = emptyenv())
+  diagnosticRows <- list()
   lambdaFits <- vector("list", foldsK)
   for (fold in seq_len(foldsK)) {
     lambdaFits[[fold]] <- list()
@@ -635,14 +848,38 @@
     foldLoss <- numeric(foldsK)
     for (fold in seq_len(foldsK)) {
       info <- foldInfo[[fold]]
-      fit <- fitFold(info, lambda, closestWarmStart(fold, lambda))
+      warmStart <- closestWarmStart(fold, lambda)
+      fitObj <- fitFold(info, lambda, warmStart, collectDiagnostics = collectDiagnostics)
+      fit <- .adapFitBeta(fitObj)
       lambdaFits[[fold]][[key]] <<- fit
-      foldLoss[fold] <- .adapCvMetric(
+      valStats <- .adapValidationStats(
         fit,
         xDesign[info$idxVal, , drop = FALSE],
         y[info$idxVal],
         metric = selectionMetric
       )
+      foldLoss[fold] <- unname(valStats["score"])
+      if (isTRUE(collectDiagnostics)) {
+        diagnosticRows <<- c(diagnosticRows, list(data.frame(
+          lambda = lambda,
+          lambdaKey = key,
+          innerFold = fold,
+          nTrain = length(info$idxTr),
+          trainOutcomes = sum(y[info$idxTr] == 1),
+          trainOutcomeRate = mean(y[info$idxTr] == 1),
+          nValidation = length(info$idxVal),
+          validationOutcomes = sum(y[info$idxVal] == 1),
+          validationOutcomeRate = mean(y[info$idxVal] == 1),
+          surrogateKind = surrogateKind,
+          t(c(
+            .adapFitDiagnostics(fitObj),
+            valStats,
+            info$diagnostics %||% NULL
+          )),
+          stringsAsFactors = FALSE,
+          check.names = FALSE
+        )))
+      }
     }
     score <- mean(foldLoss, na.rm = TRUE)
     assign(key, list(lambda = lambda, score = score), envir = evalCache)
@@ -652,14 +889,22 @@
   if (identical(search, "grid") || length(lambdaSeq) < 3L) {
     scores <- vapply(lambdaSeq, evaluateLambda, numeric(1))
     idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
-    return(list(lambda = lambdaSeq[idx], scores = scores))
+    return(list(
+      lambda = lambdaSeq[idx],
+      scores = scores,
+      diagnostics = if (length(diagnosticRows)) do.call(rbind, diagnosticRows) else NULL
+    ))
   }
 
   lambdaRange <- range(lambdaSeq[is.finite(lambdaSeq) & lambdaSeq > 0])
   if (!all(is.finite(lambdaRange)) || lambdaRange[1] <= 0 || lambdaRange[1] == lambdaRange[2]) {
     scores <- vapply(lambdaSeq, evaluateLambda, numeric(1))
     idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
-    return(list(lambda = lambdaSeq[idx], scores = scores))
+    return(list(
+      lambda = lambdaSeq[idx],
+      scores = scores,
+      diagnostics = if (length(diagnosticRows)) do.call(rbind, diagnosticRows) else NULL
+    ))
   }
 
   maxEvals <- as.integer(maxEvals)
@@ -711,7 +956,12 @@
   lambdaVals <- lambdaVals[keep]
   scores <- scores[keep]
   idx <- .adapBestLambdaIndex(scores, lambdaVals, selectionMetric, tieTolerance)
-  list(lambda = lambdaVals[idx], scores = scores, lambdaSeq = lambdaVals)
+  list(
+    lambda = lambdaVals[idx],
+    scores = scores,
+    lambdaSeq = lambdaVals,
+    diagnostics = if (length(diagnosticRows)) do.call(rbind, diagnosticRows) else NULL
+  )
 }
 
 .pdaAdapLeadCv <- function(xDesign, y, betaLead, betaBar,
@@ -726,7 +976,8 @@
                            selectionMetric = c("deviance", "auc"),
                            tieTolerance = 1e-8,
                            cvMaxRows = Inf,
-                           globalAdjustment = c("leaveValOut", "pda")) {
+                           globalAdjustment = c("leaveValOut", "pda"),
+                           collectDiagnostics = FALSE) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -748,17 +999,31 @@
         gradVal <- .logisticNegGradient(betaBar, xCv[info$idxVal, , drop = FALSE], yCv[info$idxVal])
         hessVal <- .logisticNegHessian(betaBar, xCv[info$idxVal, , drop = FALSE])
         denom <- max(totalN - info$nVal, 1L)
-        return(list(
-          gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom,
-          hessTrainGlobal = (globalHess * totalN - hessVal * info$nVal) / denom
-        ))
+        gradTrainGlobal <- (globalGrad * totalN - gradVal * info$nVal) / denom
+        hessTrainGlobal <- (globalHess * totalN - hessVal * info$nVal) / denom
+      } else {
+        gradTrainGlobal <- globalGrad
+        hessTrainGlobal <- globalHess
       }
       list(
-        gradTrainGlobal = globalGrad,
-        hessTrainGlobal = globalHess
+        gradTrainGlobal = gradTrainGlobal,
+        hessTrainGlobal = hessTrainGlobal,
+        diagnostics = if (isTRUE(collectDiagnostics)) {
+          .adapSurrogateStats(
+            kind = "full",
+            xTrain = xCv[info$idxTr, , drop = FALSE],
+            yTrain = yCv[info$idxTr],
+            betaLead = betaLead,
+            betaBar = betaBar,
+            globalGrad = gradTrainGlobal,
+            globalHess = hessTrainGlobal
+          )
+        } else {
+          NULL
+        }
       )
     },
-    fitFold = function(info, lambda, warmStart) {
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE) {
       .fitPdaAdapSurrogate(
         xDesign = xCv[info$idxTr, , drop = FALSE],
         y = yCv[info$idxTr],
@@ -770,9 +1035,12 @@
         maxOuter = maxOuter,
         maxInner = maxInner,
         tol = tol,
-        betaInit = warmStart
+        betaInit = warmStart,
+        returnDetails = collectDiagnostics
       )
-    }
+    },
+    collectDiagnostics = collectDiagnostics,
+    surrogateKind = "full"
   )
 }
 
@@ -806,7 +1074,8 @@
                                 selectionMetric = c("deviance", "auc"),
                                 tieTolerance = 1e-8,
                                 cvMaxRows = Inf,
-                                globalAdjustment = c("leaveValOut", "pda")) {
+                                globalAdjustment = c("leaveValOut", "pda"),
+                                collectDiagnostics = FALSE) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -827,13 +1096,27 @@
       if (identical(globalAdjustment, "leaveValOut")) {
         gradVal <- .logisticNegGradient(betaBar, xCv[info$idxVal, , drop = FALSE], yCv[info$idxVal])
         denom <- max(totalN - info$nVal, 1L)
-        return(list(
-          gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom
-        ))
+        gradTrainGlobal <- (globalGrad * totalN - gradVal * info$nVal) / denom
+      } else {
+        gradTrainGlobal <- globalGrad
       }
-      list(gradTrainGlobal = globalGrad)
+      list(
+        gradTrainGlobal = gradTrainGlobal,
+        diagnostics = if (isTRUE(collectDiagnostics)) {
+          .adapSurrogateStats(
+            kind = "first",
+            xTrain = xCv[info$idxTr, , drop = FALSE],
+            yTrain = yCv[info$idxTr],
+            betaLead = betaLead,
+            betaBar = betaBar,
+            globalGrad = gradTrainGlobal
+          )
+        } else {
+          NULL
+        }
+      )
     },
-    fitFold = function(info, lambda, warmStart) {
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE) {
       .fitPdaAdapFirstOrderSurrogate(
         xDesign = xCv[info$idxTr, , drop = FALSE],
         y = yCv[info$idxTr],
@@ -844,9 +1127,12 @@
         maxOuter = maxOuter,
         maxInner = maxInner,
         tol = tol,
-        betaInit = warmStart
+        betaInit = warmStart,
+        returnDetails = collectDiagnostics
       )
-    }
+    },
+    collectDiagnostics = collectDiagnostics,
+    surrogateKind = "first"
   )
 }
 
@@ -883,7 +1169,8 @@
                                selectionMetric = c("deviance", "auc"),
                                tieTolerance = 1e-8,
                                cvMaxRows = Inf,
-                               globalAdjustment = c("leaveValOut", "pda")) {
+                               globalAdjustment = c("leaveValOut", "pda"),
+                               collectDiagnostics = FALSE) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -905,17 +1192,31 @@
         gradVal <- .logisticNegGradient(betaBar, xCv[info$idxVal, , drop = FALSE], yCv[info$idxVal])
         denom <- max(totalN - info$nVal, 1L)
         hessValDiag <- .logisticNegHessianDiag(betaBar, xCv[info$idxVal, , drop = FALSE])
-        return(list(
-          gradTrainGlobal = (globalGrad * totalN - gradVal * info$nVal) / denom,
-          hessTrainGlobalDiag = (globalHessDiag * totalN - hessValDiag * info$nVal) / denom
-        ))
+        gradTrainGlobal <- (globalGrad * totalN - gradVal * info$nVal) / denom
+        hessTrainGlobalDiag <- (globalHessDiag * totalN - hessValDiag * info$nVal) / denom
+      } else {
+        gradTrainGlobal <- globalGrad
+        hessTrainGlobalDiag <- globalHessDiag
       }
       list(
-        gradTrainGlobal = globalGrad,
-        hessTrainGlobalDiag = globalHessDiag
+        gradTrainGlobal = gradTrainGlobal,
+        hessTrainGlobalDiag = hessTrainGlobalDiag,
+        diagnostics = if (isTRUE(collectDiagnostics)) {
+          .adapSurrogateStats(
+            kind = "diag",
+            xTrain = xCv[info$idxTr, , drop = FALSE],
+            yTrain = yCv[info$idxTr],
+            betaLead = betaLead,
+            betaBar = betaBar,
+            globalGrad = gradTrainGlobal,
+            globalHessDiag = hessTrainGlobalDiag
+          )
+        } else {
+          NULL
+        }
       )
     },
-    fitFold = function(info, lambda, warmStart) {
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE) {
       .fitPdaAdapRemoteDiagSurrogate(
         xDesign = xCv[info$idxTr, , drop = FALSE],
         y = yCv[info$idxTr],
@@ -927,9 +1228,12 @@
         maxOuter = maxOuter,
         maxInner = maxInner,
         tol = tol,
-        betaInit = warmStart
+        betaInit = warmStart,
+        returnDetails = collectDiagnostics
       )
-    }
+    },
+    collectDiagnostics = collectDiagnostics,
+    surrogateKind = "diag"
   )
 }
 
@@ -988,6 +1292,7 @@
     lambdaSeq <- serverBroadcast$lambdaSeq
     fixedLambda <- .fixedAdapLambda(config)
     solveStyle <- serverBroadcast$adapSolveStyle %||% config$adapSolveStyle %||% "fullQuadratic"
+    cvDiagnostics <- NULL
     if (identical(solveStyle, "pda")) {
       if (!is.null(fixedLambda)) {
         lambda <- fixedLambda
@@ -1016,10 +1321,12 @@
           tol = config$tol %||% 1e-6,
           ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4,
           selectionMetric = config$lambdaSelectionMetric %||% "deviance",
-          tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8
+          tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
+          collectDiagnostics = isTRUE(config$adapCvDiagnostics)
         )
         lambda <- cv$lambda
         cvScores <- cv$scores
+        cvDiagnostics <- cv$diagnostics %||% NULL
       }
       w <- .fitPdaAdapPdaProx(
         xDesign = xDesign,
@@ -1038,6 +1345,7 @@
         selectedLambda = lambda,
         lambdaSeq = lambdaSeq,
         cvScores = cvScores,
+        adapCvDiagnostics = cvDiagnostics,
         lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
       ))
     }
@@ -1077,11 +1385,13 @@
         selectionMetric = config$lambdaSelectionMetric %||% "deviance",
         tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
         cvMaxRows = config$lambdaCvMaxRows %||% Inf,
-        globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut"
+        globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
+        collectDiagnostics = isTRUE(config$adapCvDiagnostics)
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
       lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
+      cvDiagnostics <- cv$diagnostics %||% NULL
     }
     w <- .fitPdaAdapSurrogate(
       xDesign = xDesign,
@@ -1100,6 +1410,7 @@
       selectedLambda = lambda,
       lambdaSeq = lambdaSeq,
       cvScores = cvScores,
+      adapCvDiagnostics = cvDiagnostics,
       lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
     ))
   }
@@ -1186,6 +1497,7 @@
           selectedLambda = leadReport$selectedLambda,
           lambdaSeq = leadReport$lambdaSeq,
           cvScores = leadReport$cvScores,
+          adapCvDiagnostics = leadReport$adapCvDiagnostics %||% NULL,
           lambdaSelectionMetric = leadReport$lambdaSelectionMetric %||% NA_character_,
           hessianDim = state$hessianDim %||% NA_character_,
           hessianDiagMin = state$hessianDiagMin %||% NA_real_,
@@ -1290,6 +1602,7 @@
     globalHessDiag <- serverBroadcast$globalHessDiag
     lambdaSeq <- serverBroadcast$lambdaSeq
     fixedLambda <- .fixedAdapLambda(config)
+    cvDiagnostics <- NULL
     if (identical(mode, "first")) {
       if (!is.null(fixedLambda)) {
         lambda <- fixedLambda
@@ -1325,11 +1638,13 @@
           selectionMetric = config$lambdaSelectionMetric %||% "deviance",
           tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
           cvMaxRows = config$lambdaCvMaxRows %||% Inf,
-          globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut"
+          globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
+          collectDiagnostics = isTRUE(config$adapCvDiagnostics)
         )
         lambda <- cv$lambda
         cvScores <- cv$scores
         lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
+        cvDiagnostics <- cv$diagnostics %||% NULL
       }
       w <- .fitPdaAdapFirstOrderSurrogate(
         xDesign = xDesign,
@@ -1347,6 +1662,7 @@
         selectedLambda = lambda,
         lambdaSeq = lambdaSeq,
         cvScores = cvScores,
+        adapCvDiagnostics = cvDiagnostics,
         lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
       ))
     }
@@ -1377,10 +1693,14 @@
           seed = config$cvSeed %||% 42L,
           maxIter = config$maxIter %||% 1000L,
           tol = config$tol %||% 1e-6,
-          ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
+          ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4,
+          selectionMetric = config$lambdaSelectionMetric %||% "deviance",
+          tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
+          collectDiagnostics = isTRUE(config$adapCvDiagnostics)
         )
         lambda <- cv$lambda
         cvScores <- cv$scores
+        cvDiagnostics <- cv$diagnostics %||% NULL
       }
       w <- .fitPdaAdapPdaProx(
         xDesign = xDesign,
@@ -1399,7 +1719,8 @@
         selectedLambda = lambda,
         lambdaSeq = lambdaSeq,
         cvScores = cvScores,
-        lambdaSelectionMetric = "deviance"
+        adapCvDiagnostics = cvDiagnostics,
+        lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
       ))
     }
 
@@ -1439,11 +1760,13 @@
         selectionMetric = config$lambdaSelectionMetric %||% "deviance",
         tieTolerance = config$lambdaSelectionTieTolerance %||% 1e-8,
         cvMaxRows = config$lambdaCvMaxRows %||% Inf,
-        globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut"
+        globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
+        collectDiagnostics = isTRUE(config$adapCvDiagnostics)
       )
       lambda <- cv$lambda
       cvScores <- cv$scores
       lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
+      cvDiagnostics <- cv$diagnostics %||% NULL
     }
     w <- .fitPdaAdapRemoteDiagSurrogate(
       xDesign = xDesign,
@@ -1462,6 +1785,7 @@
       selectedLambda = lambda,
       lambdaSeq = lambdaSeq,
       cvScores = cvScores,
+      adapCvDiagnostics = cvDiagnostics,
       lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
     ))
   }
@@ -1553,6 +1877,7 @@
           selectedLambda = leadReport$selectedLambda,
           lambdaSeq = leadReport$lambdaSeq,
           cvScores = leadReport$cvScores,
+          adapCvDiagnostics = leadReport$adapCvDiagnostics %||% NULL,
           lambdaSelectionMetric = leadReport$lambdaSelectionMetric %||% NA_character_,
           hessianDim = if (identical(mode, "diag")) paste0(length(state$globalHessDiag), " diagonal") else NA_character_,
           hessianDiagMin = if (identical(mode, "diag")) min(state$globalHessDiag, na.rm = TRUE) else NA_real_,

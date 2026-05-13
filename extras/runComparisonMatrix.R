@@ -286,6 +286,7 @@ methodConfig <- function(method, featureSet, args) {
       Inf
     )),
     diagnosticDownsampleSeed = intArg(argValue(args, "diagnostic-downsample-seed"), 42L),
+    adapCvDiagnostics = logicalArg(argValue(args, "adap-cv-diagnostics"), FALSE),
     convergenceObjective = firstValue(charCsvArg(argValue(args, "convergence-objective"), "negLogLikelihood"))
   )
 
@@ -983,6 +984,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         lambdaSeq = fit$lambdaSeq %||% NULL,
         cvScores = fit$cvScores %||% NULL,
         lambdaSelectionMetric = fit$lambdaSelectionMetric %||% NA_character_,
+        adapCvDiagnostics = fit$adapCvDiagnostics %||% NULL,
         coefficients = fit$w,
         coefficientSummary = c(
           length = length(fit$w),
@@ -1001,6 +1003,17 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       method = method,
       suffix = "fit"
     )
+    if (!is.null(fit$adapCvDiagnostics)) {
+      writeDebugCsv(
+        fit$adapCvDiagnostics,
+        debugDirectory = debugDirectory,
+        task = task,
+        fold = fold,
+        featureSet = featureSet,
+        method = method,
+        suffix = "adap-cv"
+      )
+    }
   }
 
   lambdaPathFile <- NA_character_
@@ -1233,6 +1246,9 @@ runComparison <- function(args) {
               configs <- methodConfigGrid(method, featureSet, args)
               configs <- lapply(configs, function(config) {
                 config$trainClientPaths <- trainPaths
+                if (!is.null(debugDirectory) && method %in% c("ADAP", "ADAP_PDA", "ADAP1", "ADAPDiag")) {
+                  config$adapCvDiagnostics <- TRUE
+                }
                 config
               })
               selectedConfig <- NULL

@@ -915,6 +915,32 @@ test_that("ADAP warm starts do not change CV scores after convergence", {
   expect_equal(warm$lambda, lambdaSeq[which.min(manualScores)])
 })
 
+test_that("ADAP CV diagnostics capture fold-level solver and curvature details", {
+  fixture <- make_adap_phase2_fixture(n = 30L, p = 3L, seed = 20L)
+  cv <- FederatedLearning:::.pdaAdapLeadCv(
+    xDesign = fixture$xDesign,
+    y = fixture$y,
+    betaLead = fixture$betaLead,
+    betaBar = fixture$betaBar,
+    globalGrad = fixture$globalGrad,
+    globalHess = fixture$globalHess,
+    lambdaSeq = c(0.1, 0.01),
+    totalN = fixture$totalN,
+    foldsK = 3L,
+    search = "grid",
+    collectDiagnostics = TRUE
+  )
+
+  expect_s3_class(cv$diagnostics, "data.frame")
+  expect_equal(nrow(cv$diagnostics), 6L)
+  expect_true(all(c(
+    "lambda", "innerFold", "score", "rawDeviance", "outerIterations",
+    "converged", "betaMaxAbs", "etaNonFinite", "BEigenMin",
+    "BEigenNonPositive"
+  ) %in% names(cv$diagnostics)))
+  expect_true(all(is.finite(cv$diagnostics$score)))
+})
+
 test_that("compiled sparse ADAP surrogate solvers match dense R fallback", {
   fixture <- make_adap_phase2_fixture(n = 24L, p = 4L, seed = 21L)
   xSparse <- fixture$xDesign
