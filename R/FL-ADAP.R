@@ -269,7 +269,13 @@
     innerConverged = if (is.list(fit) && !is.null(fit$innerConverged)) isTRUE(fit$innerConverged) else NA,
     innerObjective = if (is.list(fit) && !is.null(fit$innerObjective)) fit$innerObjective else NA_real_,
     innerMaxAbsStep = if (is.list(fit) && !is.null(fit$innerMaxAbsStep)) fit$innerMaxAbsStep else NA_real_,
-    innerBacktracks = if (is.list(fit) && !is.null(fit$innerBacktracks)) fit$innerBacktracks else NA_real_
+    innerBacktracks = if (is.list(fit) && !is.null(fit$innerBacktracks)) fit$innerBacktracks else NA_real_,
+    failingCoordinate = if (is.list(fit) && !is.null(fit$failingCoordinate)) fit$failingCoordinate else NA_real_,
+    coordinateCurvature = if (is.list(fit) && !is.null(fit$coordinateCurvature)) fit$coordinateCurvature else NA_real_,
+    coordinateGradient = if (is.list(fit) && !is.null(fit$coordinateGradient)) fit$coordinateGradient else NA_real_,
+    failureDiagMin = if (is.list(fit) && !is.null(fit$failureDiagMin)) fit$failureDiagMin else NA_real_,
+    failureDiagMax = if (is.list(fit) && !is.null(fit$failureDiagMax)) fit$failureDiagMax else NA_real_,
+    failureDiagNonPositive = if (is.list(fit) && !is.null(fit$failureDiagNonPositive)) fit$failureDiagNonPositive else NA_real_
   )
 }
 
@@ -288,6 +294,37 @@
   best <- min(scores[finite], na.rm = TRUE)
   candidates <- which(finite & scores <= best + tieTolerance)
   candidates[which.max(lambdaSeq[candidates])]
+}
+
+.adapCvFailureMessage <- function(method, scores, diagnostics = NULL) {
+  nScores <- length(scores)
+  reasonSummary <- "no failure diagnostics collected"
+  if (!is.null(diagnostics) && nrow(diagnostics) > 0L && "failureReason" %in% names(diagnostics)) {
+    reasons <- diagnostics$failureReason
+    reasons[is.na(reasons) | !nzchar(reasons)] <- "<none>"
+    tab <- sort(table(reasons), decreasing = TRUE)
+    reasonSummary <- paste(paste(names(tab), as.integer(tab), sep = "="), collapse = ", ")
+  }
+  coordinateSummary <- ""
+  if (!is.null(diagnostics) && nrow(diagnostics) > 0L &&
+      all(c("failingCoordinate", "coordinateCurvature", "coordinateGradient") %in% names(diagnostics))) {
+    failed <- diagnostics[!is.na(diagnostics$failingCoordinate), , drop = FALSE]
+    if (nrow(failed) > 0L) {
+      coordinateSummary <- sprintf(
+        "; first failing coordinate=%s curvature=%s gradient=%s",
+        failed$failingCoordinate[1],
+        signif(failed$coordinateCurvature[1], 6),
+        signif(failed$coordinateGradient[1], 6)
+      )
+    }
+  }
+  sprintf(
+    "%s lambda CV failed: no candidate lambda had successful inner fits across all folds (%s candidates). Reasons: %s%s",
+    method,
+    nScores,
+    reasonSummary,
+    coordinateSummary
+  )
 }
 
 .adapCvSubset <- function(y, maxRows = Inf, seed = 42L) {
@@ -402,7 +439,13 @@
           failureReason = conditionMessage(e),
           objective = NA_real_,
           maxAbsStep = NA_real_,
-          backtracks = NA_integer_
+          backtracks = NA_integer_,
+          failingCoordinate = NA_integer_,
+          coordinateCurvature = NA_real_,
+          coordinateGradient = NA_real_,
+          failureDiagMin = NA_real_,
+          failureDiagMax = NA_real_,
+          failureDiagNonPositive = NA_real_
         )
       }
     )
@@ -416,7 +459,13 @@
       failureReason = "",
       objective = NA_real_,
       maxAbsStep = NA_real_,
-      backtracks = NA_integer_
+      backtracks = NA_integer_,
+      failingCoordinate = NA_integer_,
+      coordinateCurvature = NA_real_,
+      coordinateGradient = NA_real_,
+      failureDiagMin = NA_real_,
+      failureDiagMax = NA_real_,
+      failureDiagNonPositive = NA_real_
     ))
   }
   beta <- betaInit
@@ -436,7 +485,9 @@
     penalize[1] <- FALSE
   }
   diagB <- if (is.matrix(B)) diag(B) else Matrix::diag(B)
-  fail <- function(reason, iter = 0L, objective = NA_real_, maxAbsStep = NA_real_, backtracks = NA_integer_) {
+  curvatureTol <- 1e-14
+  fail <- function(reason, iter = 0L, objective = NA_real_, maxAbsStep = NA_real_, backtracks = NA_integer_,
+                   coordinate = NA_integer_, curvature = NA_real_, gradient = NA_real_) {
     if (isTRUE(returnDetails)) {
       return(list(
         beta = beta,
@@ -445,7 +496,13 @@
         failureReason = reason,
         objective = objective,
         maxAbsStep = maxAbsStep,
-        backtracks = backtracks
+        backtracks = backtracks,
+        failingCoordinate = coordinate,
+        coordinateCurvature = curvature,
+        coordinateGradient = gradient,
+        failureDiagMin = suppressWarnings(min(diagB, na.rm = TRUE)),
+        failureDiagMax = suppressWarnings(max(diagB, na.rm = TRUE)),
+        failureDiagNonPositive = sum(is.finite(diagB) & diagB <= 0)
       ))
     }
     stop(reason, call. = FALSE)
@@ -453,8 +510,11 @@
   if (!all(is.finite(c(aTilde, as.numeric(B), beta, lambda)))) {
     return(fail("non_finite_surrogate_input"))
   }
-  if (any(!is.finite(diagB) | diagB <= 0)) {
-    return(fail("non_positive_coordinate_curvature"))
+  badCurvature <- which(!is.finite(diagB) | diagB < -curvatureTol)
+  if (length(badCurvature) > 0L) {
+    j <- badCurvature[1]
+    reason <- if (!is.finite(diagB[j])) "non_finite_coordinate_curvature" else "non_positive_coordinate_curvature"
+    return(fail(reason, coordinate = j, curvature = diagB[j]))
   }
   objective <- function(betaValue) {
     as.numeric(crossprod(aTilde, betaValue) +
@@ -474,22 +534,71 @@
     maxAbsStep <- 0
     for (j in seq_len(p)) {
       hjj <- diagB[j]
+      smoothGrad <- aTilde[j] + sum(as.numeric(B[j, ]) * beta)
+      if (!is.finite(hjj) || hjj < -curvatureTol) {
+        return(fail(
+          "non_positive_coordinate_curvature", iter, currentObjective, maxAbsStep, backtracks,
+          coordinate = j, curvature = hjj, gradient = smoothGrad
+        ))
+      }
+      if (abs(hjj) <= curvatureTol) {
+        if (!is.finite(smoothGrad)) {
+          return(fail(
+            "non_finite_coordinate_update", iter, currentObjective, maxAbsStep, backtracks,
+            coordinate = j, curvature = hjj, gradient = smoothGrad
+          ))
+        }
+        if (penalize[j]) {
+          kktTol <- lambda + 1e-10 * (abs(currentObjective) + 1)
+          if (abs(smoothGrad) <= kktTol) {
+            if (abs(beta[j]) <= minStep) {
+              next
+            }
+            oldBetaJ <- beta[j]
+            step <- -oldBetaJ
+            trialObjective <- currentObjective + smoothGrad * step - lambda * abs(oldBetaJ)
+            descentTol <- 1e-12 * (abs(currentObjective) + 1)
+            if (is.finite(trialObjective) && trialObjective <= currentObjective + descentTol) {
+              beta[j] <- 0
+              currentObjective <- trialObjective
+              maxAbsStep <- max(maxAbsStep, abs(step))
+              next
+            }
+          }
+          return(fail(
+            "zero_coordinate_curvature_unbounded", iter, currentObjective, maxAbsStep, backtracks,
+            coordinate = j, curvature = hjj, gradient = smoothGrad
+          ))
+        }
+        if (abs(smoothGrad) <= 1e-10 * (abs(currentObjective) + 1)) {
+          next
+        }
+        return(fail(
+          "zero_unpenalized_coordinate_curvature", iter, currentObjective, maxAbsStep, backtracks,
+          coordinate = j, curvature = hjj, gradient = smoothGrad
+        ))
+      }
       b <- aTilde[j] + sum(as.numeric(B[j, ]) * beta) - hjj * beta[j]
       z <- -b / hjj
       if (!is.finite(z)) {
-        return(fail("non_finite_coordinate_update", iter, currentObjective, maxAbsStep, backtracks))
+        return(fail(
+          "non_finite_coordinate_update", iter, currentObjective, maxAbsStep, backtracks,
+          coordinate = j, curvature = hjj, gradient = smoothGrad
+        ))
       }
       proposed <- if (penalize[j]) .softScalar(z, lambda / hjj) else z
       step <- proposed - beta[j]
       if (!is.finite(step)) {
-        return(fail("non_finite_coordinate_step", iter, currentObjective, maxAbsStep, backtracks))
+        return(fail(
+          "non_finite_coordinate_step", iter, currentObjective, maxAbsStep, backtracks,
+          coordinate = j, curvature = hjj, gradient = smoothGrad
+        ))
       }
       step <- max(min(step, stepBounds[j]), -stepBounds[j])
       if (abs(step) <= minStep) {
         next
       }
       oldBetaJ <- beta[j]
-      smoothGrad <- aTilde[j] + sum(as.numeric(B[j, ]) * beta)
       accepted <- FALSE
       acceptedObjective <- NA_real_
       for (bt in seq_len(maxBacktracks + 1L)) {
@@ -509,14 +618,20 @@
         }
       }
       if (!accepted) {
-        return(fail("non_descent_coordinate_step", iter, currentObjective, maxAbsStep, backtracks))
+        return(fail(
+          "non_descent_coordinate_step", iter, currentObjective, maxAbsStep, backtracks,
+          coordinate = j, curvature = hjj, gradient = smoothGrad
+        ))
       }
       beta[j] <- oldBetaJ + step
       currentObjective <- acceptedObjective
       maxAbsStep <- max(maxAbsStep, abs(step))
       stepBounds[j] <- max(2 * abs(step), stepBounds[j] / 2, minStep)
       if (!all(is.finite(beta)) || !is.finite(currentObjective)) {
-        return(fail("non_finite_coordinate_state", iter, currentObjective, maxAbsStep, backtracks))
+        return(fail(
+          "non_finite_coordinate_state", iter, currentObjective, maxAbsStep, backtracks,
+          coordinate = j, curvature = hjj, gradient = smoothGrad
+        ))
       }
     }
     diffObj <- currentObjective - oldObjective
@@ -529,7 +644,13 @@
           failureReason = "",
           objective = currentObjective,
           maxAbsStep = maxAbsStep,
-          backtracks = backtracks
+          backtracks = backtracks,
+          failingCoordinate = NA_integer_,
+          coordinateCurvature = NA_real_,
+          coordinateGradient = NA_real_,
+          failureDiagMin = suppressWarnings(min(diagB, na.rm = TRUE)),
+          failureDiagMax = suppressWarnings(max(diagB, na.rm = TRUE)),
+          failureDiagNonPositive = sum(is.finite(diagB) & diagB <= 0)
         ))
       }
       return(beta)
@@ -543,7 +664,13 @@
       failureReason = "",
       objective = currentObjective,
       maxAbsStep = maxAbsStep,
-      backtracks = backtracks
+      backtracks = backtracks,
+      failingCoordinate = NA_integer_,
+      coordinateCurvature = NA_real_,
+      coordinateGradient = NA_real_,
+      failureDiagMin = suppressWarnings(min(diagB, na.rm = TRUE)),
+      failureDiagMax = suppressWarnings(max(diagB, na.rm = TRUE)),
+      failureDiagNonPositive = sum(is.finite(diagB) & diagB <= 0)
     ))
   }
   beta
@@ -653,7 +780,13 @@
     converged = NA,
     objective = NA_real_,
     maxAbsStep = NA_real_,
-    backtracks = NA_integer_
+    backtracks = NA_integer_,
+    failingCoordinate = NA_integer_,
+    coordinateCurvature = NA_real_,
+    coordinateGradient = NA_real_,
+    failureDiagMin = NA_real_,
+    failureDiagMax = NA_real_,
+    failureDiagNonPositive = NA_real_
   )
   for (iter in seq_len(maxOuter)) {
     iterations <- iter
@@ -706,7 +839,13 @@
       innerConverged = cd$converged %||% NA,
       innerObjective = cd$objective %||% NA_real_,
       innerMaxAbsStep = cd$maxAbsStep %||% NA_real_,
-      innerBacktracks = cd$backtracks %||% NA_integer_
+      innerBacktracks = cd$backtracks %||% NA_integer_,
+      failingCoordinate = cd$failingCoordinate %||% NA_integer_,
+      coordinateCurvature = cd$coordinateCurvature %||% NA_real_,
+      coordinateGradient = cd$coordinateGradient %||% NA_real_,
+      failureDiagMin = cd$failureDiagMin %||% NA_real_,
+      failureDiagMax = cd$failureDiagMax %||% NA_real_,
+      failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_
     ))
   }
   beta
@@ -908,7 +1047,13 @@
     converged = NA,
     objective = NA_real_,
     maxAbsStep = NA_real_,
-    backtracks = NA_integer_
+    backtracks = NA_integer_,
+    failingCoordinate = NA_integer_,
+    coordinateCurvature = NA_real_,
+    coordinateGradient = NA_real_,
+    failureDiagMin = NA_real_,
+    failureDiagMax = NA_real_,
+    failureDiagNonPositive = NA_real_
   )
   for (iter in seq_len(maxOuter)) {
     iterations <- iter
@@ -961,7 +1106,13 @@
       innerConverged = cd$converged %||% NA,
       innerObjective = cd$objective %||% NA_real_,
       innerMaxAbsStep = cd$maxAbsStep %||% NA_real_,
-      innerBacktracks = cd$backtracks %||% NA_integer_
+      innerBacktracks = cd$backtracks %||% NA_integer_,
+      failingCoordinate = cd$failingCoordinate %||% NA_integer_,
+      coordinateCurvature = cd$coordinateCurvature %||% NA_real_,
+      coordinateGradient = cd$coordinateGradient %||% NA_real_,
+      failureDiagMin = cd$failureDiagMin %||% NA_real_,
+      failureDiagMax = cd$failureDiagMax %||% NA_real_,
+      failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_
     ))
   }
   beta
@@ -1009,7 +1160,13 @@
     converged = NA,
     objective = NA_real_,
     maxAbsStep = NA_real_,
-    backtracks = NA_integer_
+    backtracks = NA_integer_,
+    failingCoordinate = NA_integer_,
+    coordinateCurvature = NA_real_,
+    coordinateGradient = NA_real_,
+    failureDiagMin = NA_real_,
+    failureDiagMax = NA_real_,
+    failureDiagNonPositive = NA_real_
   )
   for (iter in seq_len(maxOuter)) {
     iterations <- iter
@@ -1060,7 +1217,13 @@
       innerConverged = cd$converged %||% NA,
       innerObjective = cd$objective %||% NA_real_,
       innerMaxAbsStep = cd$maxAbsStep %||% NA_real_,
-      innerBacktracks = cd$backtracks %||% NA_integer_
+      innerBacktracks = cd$backtracks %||% NA_integer_,
+      failingCoordinate = cd$failingCoordinate %||% NA_integer_,
+      coordinateCurvature = cd$coordinateCurvature %||% NA_real_,
+      coordinateGradient = cd$coordinateGradient %||% NA_real_,
+      failureDiagMin = cd$failureDiagMin %||% NA_real_,
+      failureDiagMax = cd$failureDiagMax %||% NA_real_,
+      failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_
     ))
   }
   beta
@@ -1136,12 +1299,14 @@
       return(get(key, envir = evalCache, inherits = FALSE)$score)
     }
     foldLoss <- numeric(foldsK)
+    foldFailed <- logical(foldsK)
     for (fold in seq_len(foldsK)) {
       info <- foldInfo[[fold]]
       warmStart <- closestWarmStart(fold, lambda)
       fitObj <- fitFold(info, lambda, warmStart, collectDiagnostics = collectDiagnostics)
       fit <- .adapFitBeta(fitObj)
       lambdaFits[[fold]][[key]] <<- fit
+      foldFailed[fold] <- .adapFitFailed(fitObj)
       valStats <- if (.adapFitFailed(fitObj)) {
         .adapFailedValidationStats(selectionMetric)
       } else {
@@ -1177,29 +1342,49 @@
       }
     }
     score <- mean(foldLoss, na.rm = TRUE)
-    assign(key, list(lambda = lambda, score = score), envir = evalCache)
+    assign(key, list(lambda = lambda, score = score, valid = !any(foldFailed)), envir = evalCache)
     score
+  }
+
+  cvResult <- function(lambdaVals, scores) {
+    evaluated <- as.list(evalCache)
+    if (length(evaluated) > 0L) {
+      validByKey <- vapply(evaluated, function(x) isTRUE(x$valid), logical(1))
+      names(validByKey) <- vapply(evaluated, function(x) lambdaKey(x$lambda), character(1))
+      valid <- unname(validByKey[lambdaKey(lambdaVals)])
+      valid[is.na(valid)] <- FALSE
+    } else {
+      valid <- rep(FALSE, length(lambdaVals))
+    }
+    selectScores <- scores
+    selectScores[!valid] <- NA_real_
+    idx <- .adapBestLambdaIndex(selectScores, lambdaVals, selectionMetric, tieTolerance)
+    diagnostics <- if (length(diagnosticRows)) do.call(rbind, diagnosticRows) else NULL
+    if (is.na(idx)) {
+      methodName <- if (length(surrogateKind) == 1L && !is.na(surrogateKind) && nzchar(surrogateKind)) {
+        surrogateKind
+      } else {
+        "ADAP"
+      }
+      stop(.adapCvFailureMessage(methodName, scores, diagnostics), call. = FALSE)
+    }
+    list(
+      lambda = lambdaVals[idx],
+      scores = scores,
+      valid = valid,
+      diagnostics = diagnostics
+    )
   }
 
   if (identical(search, "grid") || length(lambdaSeq) < 3L) {
     scores <- vapply(lambdaSeq, evaluateLambda, numeric(1))
-    idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
-    return(list(
-      lambda = lambdaSeq[idx],
-      scores = scores,
-      diagnostics = if (length(diagnosticRows)) do.call(rbind, diagnosticRows) else NULL
-    ))
+    return(cvResult(lambdaSeq, scores))
   }
 
   lambdaRange <- range(lambdaSeq[is.finite(lambdaSeq) & lambdaSeq > 0])
   if (!all(is.finite(lambdaRange)) || lambdaRange[1] <= 0 || lambdaRange[1] == lambdaRange[2]) {
     scores <- vapply(lambdaSeq, evaluateLambda, numeric(1))
-    idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
-    return(list(
-      lambda = lambdaSeq[idx],
-      scores = scores,
-      diagnostics = if (length(diagnosticRows)) do.call(rbind, diagnosticRows) else NULL
-    ))
+    return(cvResult(lambdaSeq, scores))
   }
 
   maxEvals <- as.integer(maxEvals)
@@ -1250,13 +1435,9 @@
   keep <- order(lambdaVals, decreasing = TRUE)
   lambdaVals <- lambdaVals[keep]
   scores <- scores[keep]
-  idx <- .adapBestLambdaIndex(scores, lambdaVals, selectionMetric, tieTolerance)
-  list(
-    lambda = lambdaVals[idx],
-    scores = scores,
-    lambdaSeq = lambdaVals,
-    diagnostics = if (length(diagnosticRows)) do.call(rbind, diagnosticRows) else NULL
-  )
+  out <- cvResult(lambdaVals, scores)
+  out$lambdaSeq <- lambdaVals
+  out
 }
 
 .pdaAdapLeadCv <- function(xDesign, y, betaLead, betaBar,
@@ -1606,6 +1787,7 @@
     fixedLambda <- .fixedAdapLambda(config)
     solveStyle <- serverBroadcast$adapSolveStyle %||% config$adapSolveStyle %||% "fullQuadratic"
     cvDiagnostics <- NULL
+    cvValid <- NULL
     if (identical(solveStyle, "pda")) {
       if (!is.null(fixedLambda)) {
         lambda <- fixedLambda
@@ -1708,6 +1890,7 @@
       cvScores <- cv$scores
       lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
       cvDiagnostics <- cv$diagnostics %||% NULL
+      cvValid <- cv$valid %||% NULL
     }
     w <- .fitPdaAdapSurrogate(
       xDesign = xDesign,
@@ -1729,6 +1912,7 @@
       selectedLambda = lambda,
       lambdaSeq = lambdaSeq,
       cvScores = cvScores,
+      cvValid = cvValid,
       adapCvDiagnostics = cvDiagnostics,
       lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
     ))
@@ -1816,6 +2000,7 @@
           selectedLambda = leadReport$selectedLambda,
           lambdaSeq = leadReport$lambdaSeq,
           cvScores = leadReport$cvScores,
+          cvValid = leadReport$cvValid %||% NULL,
           adapCvDiagnostics = leadReport$adapCvDiagnostics %||% NULL,
           lambdaSelectionMetric = leadReport$lambdaSelectionMetric %||% NA_character_,
           hessianDim = state$hessianDim %||% NA_character_,
@@ -1922,6 +2107,7 @@
     lambdaSeq <- serverBroadcast$lambdaSeq
     fixedLambda <- .fixedAdapLambda(config)
     cvDiagnostics <- NULL
+    cvValid <- NULL
     if (identical(mode, "first")) {
       if (!is.null(fixedLambda)) {
         lambda <- fixedLambda
@@ -1967,6 +2153,7 @@
         cvScores <- cv$scores
         lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
         cvDiagnostics <- cv$diagnostics %||% NULL
+        cvValid <- cv$valid %||% NULL
       }
       w <- .fitPdaAdapFirstOrderSurrogate(
         xDesign = xDesign,
@@ -1987,6 +2174,7 @@
         selectedLambda = lambda,
         lambdaSeq = lambdaSeq,
         cvScores = cvScores,
+        cvValid = cvValid,
         adapCvDiagnostics = cvDiagnostics,
         lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
       ))
@@ -2095,6 +2283,7 @@
       cvScores <- cv$scores
       lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
       cvDiagnostics <- cv$diagnostics %||% NULL
+      cvValid <- cv$valid %||% NULL
     }
     w <- .fitPdaAdapRemoteDiagSurrogate(
       xDesign = xDesign,
@@ -2116,6 +2305,7 @@
       selectedLambda = lambda,
       lambdaSeq = lambdaSeq,
       cvScores = cvScores,
+      cvValid = cvValid,
       adapCvDiagnostics = cvDiagnostics,
       lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
     ))
@@ -2208,6 +2398,7 @@
           selectedLambda = leadReport$selectedLambda,
           lambdaSeq = leadReport$lambdaSeq,
           cvScores = leadReport$cvScores,
+          cvValid = leadReport$cvValid %||% NULL,
           adapCvDiagnostics = leadReport$adapCvDiagnostics %||% NULL,
           lambdaSelectionMetric = leadReport$lambdaSelectionMetric %||% NA_character_,
           hessianDim = if (identical(mode, "diag")) paste0(length(state$globalHessDiag), " diagonal") else NA_character_,

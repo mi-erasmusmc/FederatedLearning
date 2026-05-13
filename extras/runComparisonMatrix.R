@@ -983,6 +983,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         hessianCondition = fit$hessianCondition %||% NA_real_,
         lambdaSeq = fit$lambdaSeq %||% NULL,
         cvScores = fit$cvScores %||% NULL,
+        cvValid = fit$cvValid %||% NULL,
         lambdaSelectionMetric = fit$lambdaSelectionMetric %||% NA_character_,
         adapCvDiagnostics = fit$adapCvDiagnostics %||% NULL,
         coefficients = fit$w,
@@ -1025,6 +1026,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     lambdaDf <- data.frame(
       lambda = fit$lambdaSeq,
       cvScore = fit$cvScores %||% NA_real_,
+      cvValid = fit$cvValid %||% NA,
       cvMetric = fit$lambdaSelectionMetric %||% NA_character_
     )
     utils::write.csv(lambdaDf, lambdaPathFile, row.names = FALSE)

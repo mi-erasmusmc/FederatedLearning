@@ -250,6 +250,12 @@ struct QuadraticCdResult {
   double objective;
   double maxAbsStep;
   int backtracks;
+  int failingCoordinate;
+  double coordinateCurvature;
+  double coordinateGradient;
+  double diagMin;
+  double diagMax;
+  int diagNonPositive;
 };
 
 static double l1_penalty_value(const Eigen::VectorXd& beta,
@@ -274,7 +280,32 @@ static QuadraticCdResult make_cd_result(const Eigen::VectorXd& beta,
   result.objective = NA_REAL;
   result.maxAbsStep = NA_REAL;
   result.backtracks = 0;
+  result.failingCoordinate = NA_INTEGER;
+  result.coordinateCurvature = NA_REAL;
+  result.coordinateGradient = NA_REAL;
+  result.diagMin = NA_REAL;
+  result.diagMax = NA_REAL;
+  result.diagNonPositive = NA_INTEGER;
   return result;
+}
+
+static void set_cd_failure(QuadraticCdResult& result,
+                           const std::string& reason,
+                           int iter,
+                           const Eigen::VectorXd& beta,
+                           double objective,
+                           double maxAbsStep,
+                           int coordinate,
+                           double curvature,
+                           double gradient) {
+  result.failureReason = reason;
+  result.iterations = iter;
+  result.beta = beta;
+  result.objective = objective;
+  result.maxAbsStep = maxAbsStep;
+  result.failingCoordinate = coordinate >= 0 ? coordinate + 1 : NA_INTEGER;
+  result.coordinateCurvature = curvature;
+  result.coordinateGradient = gradient;
 }
 
 static QuadraticCdResult quadratic_lasso_cd_impl(
@@ -294,13 +325,29 @@ static QuadraticCdResult quadratic_lasso_cd_impl(
   const Eigen::VectorXd diagB = bMatrix.diagonal();
   Eigen::VectorXd stepBounds = Eigen::VectorXd::Constant(p, initialStepBound);
   QuadraticCdResult result = make_cd_result(beta);
+  const double curvatureTol = 1e-14;
 
   if (!aTilde.allFinite() || !bMatrix.allFinite() || !beta.allFinite() || !bBeta.allFinite()) {
     return make_cd_result(beta, "non_finite_surrogate_input");
   }
+  if (p > 0) {
+    result.diagMin = diagB.minCoeff();
+    result.diagMax = diagB.maxCoeff();
+    result.diagNonPositive = 0;
+  }
   for (int j = 0; j < p; ++j) {
-    if (!R_finite(diagB[j]) || diagB[j] <= 0.0) {
-      return make_cd_result(beta, "non_positive_coordinate_curvature");
+    if (!R_finite(diagB[j])) {
+      set_cd_failure(result, "non_finite_coordinate_curvature", 0, beta, NA_REAL, NA_REAL,
+                     j, diagB[j], NA_REAL);
+      return result;
+    }
+    if (diagB[j] <= 0.0) {
+      ++result.diagNonPositive;
+    }
+    if (diagB[j] < -curvatureTol) {
+      set_cd_failure(result, "non_positive_coordinate_curvature", 0, beta, NA_REAL, NA_REAL,
+                     j, diagB[j], NA_REAL);
+      return result;
     }
   }
 
@@ -322,23 +369,59 @@ static QuadraticCdResult quadratic_lasso_cd_impl(
       const double hjj = diagB[j];
       const double oldBeta = beta[j];
       const double linearWithoutJ = aTilde[j] + bBeta[j] - diagB[j] * oldBeta;
+      const double smoothGradient = aTilde[j] + bBeta[j];
+      if (!R_finite(hjj) || hjj < -curvatureTol) {
+        set_cd_failure(result, "non_positive_coordinate_curvature", iter + 1, beta,
+                       currentObjective, maxAbsStepThisIter, j, hjj, smoothGradient);
+        return result;
+      }
+      if (std::abs(hjj) <= curvatureTol) {
+        if (!R_finite(smoothGradient)) {
+          set_cd_failure(result, "non_finite_coordinate_update", iter + 1, beta,
+                         currentObjective, maxAbsStepThisIter, j, hjj, smoothGradient);
+          return result;
+        }
+        if (penalize[j]) {
+          const double kktTol = lambda + 1e-10 * (std::abs(currentObjective) + 1.0);
+          if (std::abs(smoothGradient) <= kktTol) {
+            if (std::abs(oldBeta) <= minStep) {
+              continue;
+            }
+            const double deltaToZero = -oldBeta;
+            const double l1Delta = -lambda * std::abs(oldBeta);
+            const double trialObjective = currentObjective +
+              smoothGradient * deltaToZero + l1Delta;
+            const double descentTol = 1e-12 * (std::abs(currentObjective) + 1.0);
+            if (R_finite(trialObjective) && trialObjective <= currentObjective + descentTol) {
+              beta[j] = 0.0;
+              bBeta.noalias() += bMatrix.col(j) * deltaToZero;
+              currentObjective = trialObjective;
+              maxAbsStepThisIter = std::max(maxAbsStepThisIter, std::abs(deltaToZero));
+              continue;
+            }
+          }
+          set_cd_failure(result, "zero_coordinate_curvature_unbounded", iter + 1, beta,
+                         currentObjective, maxAbsStepThisIter, j, hjj, smoothGradient);
+          return result;
+        }
+        if (std::abs(smoothGradient) <= 1e-10 * (std::abs(currentObjective) + 1.0)) {
+          continue;
+        }
+        set_cd_failure(result, "zero_unpenalized_coordinate_curvature", iter + 1, beta,
+                       currentObjective, maxAbsStepThisIter, j, hjj, smoothGradient);
+        return result;
+      }
       double z = -linearWithoutJ / hjj;
       if (!R_finite(z)) {
-        result.failureReason = "non_finite_coordinate_update";
-        result.iterations = iter + 1;
-        result.beta = beta;
-        result.objective = currentObjective;
-        result.maxAbsStep = maxAbsStepThisIter;
+        set_cd_failure(result, "non_finite_coordinate_update", iter + 1, beta,
+                       currentObjective, maxAbsStepThisIter, j, hjj, smoothGradient);
         return result;
       }
       const double unboundedNewBeta = penalize[j] ? soft_threshold_scalar(z, lambda / hjj) : z;
       double delta = unboundedNewBeta - oldBeta;
       if (!R_finite(delta)) {
-        result.failureReason = "non_finite_coordinate_step";
-        result.iterations = iter + 1;
-        result.beta = beta;
-        result.objective = currentObjective;
-        result.maxAbsStep = maxAbsStepThisIter;
+        set_cd_failure(result, "non_finite_coordinate_step", iter + 1, beta,
+                       currentObjective, maxAbsStepThisIter, j, hjj, smoothGradient);
         return result;
       }
       if (delta > stepBounds[j]) {
@@ -350,7 +433,6 @@ static QuadraticCdResult quadratic_lasso_cd_impl(
         continue;
       }
 
-      const double smoothGradient = aTilde[j] + bBeta[j];
       double acceptedDelta = delta;
       double acceptedObjective = NA_REAL;
       bool accepted = false;
@@ -378,11 +460,8 @@ static QuadraticCdResult quadratic_lasso_cd_impl(
       }
 
       if (!accepted) {
-        result.failureReason = "non_descent_coordinate_step";
-        result.iterations = iter + 1;
-        result.beta = beta;
-        result.objective = currentObjective;
-        result.maxAbsStep = maxAbsStepThisIter;
+        set_cd_failure(result, "non_descent_coordinate_step", iter + 1, beta,
+                       currentObjective, maxAbsStepThisIter, j, hjj, smoothGradient);
         return result;
       }
 
@@ -392,11 +471,8 @@ static QuadraticCdResult quadratic_lasso_cd_impl(
       maxAbsStepThisIter = std::max(maxAbsStepThisIter, std::abs(acceptedDelta));
       stepBounds[j] = std::max(std::max(2.0 * std::abs(acceptedDelta), stepBounds[j] / 2.0), minStep);
       if (!beta.allFinite() || !bBeta.allFinite() || !R_finite(currentObjective)) {
-        result.failureReason = "non_finite_coordinate_state";
-        result.iterations = iter + 1;
-        result.beta = beta;
-        result.objective = currentObjective;
-        result.maxAbsStep = maxAbsStepThisIter;
+        set_cd_failure(result, "non_finite_coordinate_state", iter + 1, beta,
+                       currentObjective, maxAbsStepThisIter, j, hjj, smoothGradient);
         return result;
       }
     }
@@ -560,7 +636,13 @@ List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
     _["innerConverged"] = cdResult.converged,
     _["innerObjective"] = cdResult.objective,
     _["innerMaxAbsStep"] = cdResult.maxAbsStep,
-    _["innerBacktracks"] = cdResult.backtracks
+    _["innerBacktracks"] = cdResult.backtracks,
+    _["failingCoordinate"] = cdResult.failingCoordinate,
+    _["coordinateCurvature"] = cdResult.coordinateCurvature,
+    _["coordinateGradient"] = cdResult.coordinateGradient,
+    _["failureDiagMin"] = cdResult.diagMin,
+    _["failureDiagMax"] = cdResult.diagMax,
+    _["failureDiagNonPositive"] = cdResult.diagNonPositive
   );
 }
 
@@ -631,7 +713,13 @@ List adapFirstSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
     _["innerConverged"] = cdResult.converged,
     _["innerObjective"] = cdResult.objective,
     _["innerMaxAbsStep"] = cdResult.maxAbsStep,
-    _["innerBacktracks"] = cdResult.backtracks
+    _["innerBacktracks"] = cdResult.backtracks,
+    _["failingCoordinate"] = cdResult.failingCoordinate,
+    _["coordinateCurvature"] = cdResult.coordinateCurvature,
+    _["coordinateGradient"] = cdResult.coordinateGradient,
+    _["failureDiagMin"] = cdResult.diagMin,
+    _["failureDiagMax"] = cdResult.diagMax,
+    _["failureDiagNonPositive"] = cdResult.diagNonPositive
   );
 }
 
@@ -708,6 +796,12 @@ List adapDiagSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
     _["innerConverged"] = cdResult.converged,
     _["innerObjective"] = cdResult.objective,
     _["innerMaxAbsStep"] = cdResult.maxAbsStep,
-    _["innerBacktracks"] = cdResult.backtracks
+    _["innerBacktracks"] = cdResult.backtracks,
+    _["failingCoordinate"] = cdResult.failingCoordinate,
+    _["coordinateCurvature"] = cdResult.coordinateCurvature,
+    _["coordinateGradient"] = cdResult.coordinateGradient,
+    _["failureDiagMin"] = cdResult.diagMin,
+    _["failureDiagMax"] = cdResult.diagMax,
+    _["failureDiagNonPositive"] = cdResult.diagNonPositive
   );
 }

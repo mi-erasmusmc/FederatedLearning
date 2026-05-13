@@ -150,7 +150,7 @@ test_that("compiled quadratic coordinate descent matches the R fallback", {
 })
 
 test_that("quadratic coordinate descent fails clearly on invalid curvature", {
-  B <- diag(c(1, 0, 2))
+  B <- diag(c(1, -0.1, 2))
   a <- c(0.1, -0.2, 0.3)
   betaInit <- c(0, 0, 0)
   penalize <- c(FALSE, TRUE, TRUE)
@@ -176,6 +176,32 @@ test_that("quadratic coordinate descent fails clearly on invalid curvature", {
   expect_false(details$converged)
   expect_equal(details$failureReason, "non_positive_coordinate_curvature")
   expect_equal(details$beta, betaInit)
+})
+
+test_that("quadratic coordinate descent handles zero penalized curvature deliberately", {
+  betaInit <- c(0, 0, 0)
+  penalize <- c(FALSE, TRUE, TRUE)
+
+  bounded <- FederatedLearning:::.coordDescentQuadraticLasso(
+    aTilde = c(0.1, 0.05, 0.3),
+    B = diag(c(1, 0, 2)),
+    betaInit = betaInit,
+    lambda = 0.1,
+    penalize = penalize
+  )
+  expect_true(all(is.finite(bounded)))
+  expect_equal(bounded[2], 0)
+
+  expect_error(
+    FederatedLearning:::.coordDescentQuadraticLasso(
+      aTilde = c(0.1, -0.2, 0.3),
+      B = diag(c(1, 0, 2)),
+      betaInit = betaInit,
+      lambda = 0.1,
+      penalize = penalize
+    ),
+    "zero_coordinate_curvature_unbounded"
+  )
 })
 
 test_that("ADAPDiag keeps full local curvature with diagonal remote Hessian correction", {
@@ -606,7 +632,7 @@ test_that("ADAP lead CV can select lambda by AUC", {
     tol = 1e-7,
     search = "grid",
     selectionMetric = "auc",
-    globalAdjustment = "pda"
+    globalAdjustment = "leaveValOut"
   )
   diagCv <- FederatedLearning:::.pdaAdapDiagLeadCv(
     xDesign = x,
@@ -624,7 +650,7 @@ test_that("ADAP lead CV can select lambda by AUC", {
     tol = 1e-7,
     search = "grid",
     selectionMetric = "auc",
-    globalAdjustment = "pda"
+    globalAdjustment = "leaveValOut"
   )
   pdaCv <- FederatedLearning:::.pdaAdapPdaLeadCv(
     xDesign = x,
@@ -643,11 +669,17 @@ test_that("ADAP lead CV can select lambda by AUC", {
   expect_true(firstCv$lambda %in% lambdaSeq)
   expect_true(diagCv$lambda %in% lambdaSeq)
   expect_true(pdaCv$lambda %in% lambdaSeq)
-  expect_equal(firstCv$scores[match(firstCv$lambda, lambdaSeq)], max(firstCv$scores, na.rm = TRUE))
-  expect_equal(diagCv$scores[match(diagCv$lambda, lambdaSeq)], max(diagCv$scores, na.rm = TRUE))
+  expect_equal(
+    firstCv$scores[match(firstCv$lambda, lambdaSeq)],
+    max(firstCv$scores[firstCv$valid], na.rm = TRUE)
+  )
+  expect_equal(
+    diagCv$scores[match(diagCv$lambda, lambdaSeq)],
+    max(diagCv$scores[diagCv$valid], na.rm = TRUE)
+  )
   expect_equal(pdaCv$scores[match(pdaCv$lambda, lambdaSeq)], max(pdaCv$scores, na.rm = TRUE))
-  expect_gt(max(firstCv$scores, na.rm = TRUE), 0.5)
-  expect_gt(max(diagCv$scores, na.rm = TRUE), 0.5)
+  expect_gt(max(firstCv$scores[firstCv$valid], na.rm = TRUE), 0.5)
+  expect_gt(max(diagCv$scores[diagCv$valid], na.rm = TRUE), 0.5)
   expect_gt(max(pdaCv$scores, na.rm = TRUE), 0.5)
 })
 
@@ -944,7 +976,9 @@ test_that("ADAP CV diagnostics capture fold-level solver and curvature details",
     "lambda", "innerFold", "score", "rawDeviance", "outerIterations",
     "converged", "betaMaxAbs", "etaNonFinite", "BEigenMin",
     "BEigenNonPositive", "failureReason", "fitFailed",
-    "innerObjective", "innerMaxAbsStep", "innerBacktracks"
+    "innerObjective", "innerMaxAbsStep", "innerBacktracks",
+    "failingCoordinate", "coordinateCurvature", "coordinateGradient",
+    "failureDiagMin", "failureDiagMax", "failureDiagNonPositive"
   ) %in% names(cv$diagnostics)))
   expect_true(all(is.finite(cv$diagnostics$score)))
 })
@@ -952,25 +986,22 @@ test_that("ADAP CV diagnostics capture fold-level solver and curvature details",
 test_that("ADAP CV diagnostics report solver failure reasons", {
   fixture <- make_adap_phase2_fixture(n = 24L, p = 3L, seed = 22L)
   badHess <- fixture$globalHess - diag(10, ncol(fixture$globalHess))
-  cv <- FederatedLearning:::.pdaAdapLeadCv(
-    xDesign = fixture$xDesign,
-    y = fixture$y,
-    betaLead = fixture$betaLead,
-    betaBar = fixture$betaBar,
-    globalGrad = fixture$globalGrad,
-    globalHess = badHess,
-    lambdaSeq = c(0.1),
-    totalN = fixture$totalN,
-    foldsK = 3L,
-    search = "grid",
-    collectDiagnostics = TRUE
+  expect_error(
+    FederatedLearning:::.pdaAdapLeadCv(
+      xDesign = fixture$xDesign,
+      y = fixture$y,
+      betaLead = fixture$betaLead,
+      betaBar = fixture$betaBar,
+      globalGrad = fixture$globalGrad,
+      globalHess = badHess,
+      lambdaSeq = c(0.1),
+      totalN = fixture$totalN,
+      foldsK = 3L,
+      search = "grid",
+      collectDiagnostics = TRUE
+    ),
+    "lambda CV failed: no candidate lambda had successful inner fits"
   )
-
-  expect_s3_class(cv$diagnostics, "data.frame")
-  expect_equal(unname(cv$scores), 1e100)
-  expect_true(all(cv$diagnostics$fitFailed == 1))
-  expect_true(all(cv$diagnostics$failureReason == "non_positive_coordinate_curvature"))
-  expect_true(all(cv$diagnostics$scoreFinite == 0))
 })
 
 test_that("compiled sparse ADAP surrogate solvers match dense R fallback", {
