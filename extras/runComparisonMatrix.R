@@ -287,6 +287,7 @@ methodConfig <- function(method, featureSet, args) {
     )),
     diagnosticDownsampleSeed = intArg(argValue(args, "diagnostic-downsample-seed"), 42L),
     adapCvDiagnostics = logicalArg(argValue(args, "adap-cv-diagnostics"), FALSE),
+    adapTraceDiagnostics = logicalArg(argValue(args, "adap-trace-diagnostics"), FALSE),
     convergenceObjective = firstValue(charCsvArg(argValue(args, "convergence-objective"), "negLogLikelihood"))
   )
 
@@ -948,6 +949,26 @@ communicationMessages <- function(fit, config) {
 fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
                              task, featureSet, fold, testClientIds, verbose,
                              debugDirectory = NULL) {
+  if (isTRUE(config$adapTraceDiagnostics) && !is.null(debugDirectory) &&
+      method %in% c("ADAP", "ADAP1", "ADAPDiag")) {
+    config$adapTraceFile <- debugPath(
+      debugDirectory,
+      task,
+      fold,
+      featureSet,
+      method,
+      suffix = "adap-trace",
+      extension = "rds"
+    )
+    config$adapTraceContext <- list(
+      task = task,
+      fold = fold,
+      featureSet = featureSet,
+      method = method,
+      trainClientPaths = config$trainClientPaths %||% NULL,
+      testClientIds = testClientIds
+    )
+  }
   start <- Sys.time()
   fit <- FederatedLearning::fitFederated(
     cl = clTrain,
@@ -986,6 +1007,8 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         cvValid = fit$cvValid %||% NULL,
         lambdaSelectionMetric = fit$lambdaSelectionMetric %||% NA_character_,
         adapCvDiagnostics = fit$adapCvDiagnostics %||% NULL,
+        adapTrace = fit$adapTrace %||% NULL,
+        adapFinalTrace = fit$adapFinalTrace %||% NULL,
         coefficients = fit$w,
         coefficientSummary = c(
           length = length(fit$w),
@@ -1013,6 +1036,25 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         featureSet = featureSet,
         method = method,
         suffix = "adap-cv"
+      )
+    }
+    if (isTRUE(config$adapTraceDiagnostics) &&
+        (!is.null(fit$adapTrace) || !is.null(fit$adapFinalTrace))) {
+      writeDebugObject(
+        list(
+          task = task,
+          fold = fold,
+          featureSet = featureSet,
+          method = method,
+          cvTrace = fit$adapTrace %||% NULL,
+          finalTrace = fit$adapFinalTrace %||% NULL
+        ),
+        debugDirectory = debugDirectory,
+        task = task,
+        fold = fold,
+        featureSet = featureSet,
+        method = method,
+        suffix = "adap-trace"
       )
     }
   }

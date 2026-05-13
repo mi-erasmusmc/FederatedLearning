@@ -1004,6 +1004,113 @@ test_that("ADAP CV diagnostics report solver failure reasons", {
   )
 })
 
+test_that("ADAP CV trace diagnostics are collected for full, diagonal, and first-order surrogates", {
+  fixture <- make_adap_phase2_fixture(n = 30L, p = 3L, seed = 23L)
+  traceFiles <- stats::setNames(
+    file.path(tempdir(), paste0("adap-trace-", c("full", "diag", "first"), ".rds")),
+    c("full", "diag", "first")
+  )
+  unlink(traceFiles)
+
+  cvs <- list(
+    full = FederatedLearning:::.pdaAdapLeadCv(
+      xDesign = fixture$xDesign,
+      y = fixture$y,
+      betaLead = fixture$betaLead,
+      betaBar = fixture$betaBar,
+      globalGrad = fixture$globalGrad,
+      globalHess = fixture$globalHess,
+      lambdaSeq = c(0.1, 0.01),
+      totalN = fixture$totalN,
+      foldsK = 3L,
+      search = "grid",
+      collectTrace = TRUE,
+      traceContext = list(method = "ADAP", task = "unit"),
+      traceFile = traceFiles[["full"]]
+    ),
+    diag = FederatedLearning:::.pdaAdapDiagLeadCv(
+      xDesign = fixture$xDesign,
+      y = fixture$y,
+      betaLead = fixture$betaLead,
+      betaBar = fixture$betaBar,
+      globalGrad = fixture$globalGrad,
+      globalHessDiag = fixture$globalHessDiag,
+      lambdaSeq = c(0.1, 0.01),
+      totalN = fixture$totalN,
+      foldsK = 3L,
+      search = "grid",
+      collectTrace = TRUE,
+      traceContext = list(method = "ADAPDiag", task = "unit"),
+      traceFile = traceFiles[["diag"]]
+    ),
+    first = FederatedLearning:::.pdaAdapFirstLeadCv(
+      xDesign = fixture$xDesign,
+      y = fixture$y,
+      betaLead = fixture$betaLead,
+      betaBar = fixture$betaBar,
+      globalGrad = fixture$globalGrad,
+      lambdaSeq = c(0.1, 0.01),
+      totalN = fixture$totalN,
+      foldsK = 3L,
+      search = "grid",
+      collectTrace = TRUE,
+      traceContext = list(method = "ADAP1", task = "unit"),
+      traceFile = traceFiles[["first"]]
+    )
+  )
+
+  for (kind in names(cvs)) {
+    expect_true(file.exists(traceFiles[[kind]]))
+    diskTrace <- readRDS(traceFiles[[kind]])
+    expect_false(isTRUE(diskTrace$failed))
+    expect_equal(diskTrace$surrogateKind, kind)
+    expect_equal(cvs[[kind]]$trace$surrogateKind, kind)
+    expect_gt(length(diskTrace$fits), 0L)
+    expect_s3_class(diskTrace$fits[[1]]$trace$rows, "data.frame")
+    expect_gt(nrow(diskTrace$fits[[1]]$trace$rows), 0L)
+    expect_gt(length(diskTrace$fits[[1]]$trace$snapshots), 0L)
+    expect_true(all(c(
+      "outerIteration", "failureReason", "betaAfterMaxAbs", "deltaMaxAbs",
+      "etaAfterMaxAbs", "kktAfterMax", "BEigenMin", "BKappa",
+      "innerIterations", "innerConverged", "failingCoordinate"
+    ) %in% names(diskTrace$fits[[1]]$trace$rows)))
+    expect_true(all(c("aTilde", "B", "betaBefore", "betaAfter", "fixed", "kktAfter") %in%
+      names(diskTrace$fits[[1]]$trace$snapshots[[1]])))
+  }
+})
+
+test_that("ADAP CV trace diagnostics are written when all candidate lambdas fail", {
+  fixture <- make_adap_phase2_fixture(n = 24L, p = 3L, seed = 24L)
+  badHess <- fixture$globalHess - diag(10, ncol(fixture$globalHess))
+  traceFile <- tempfile(fileext = ".rds")
+
+  expect_error(
+    FederatedLearning:::.pdaAdapLeadCv(
+      xDesign = fixture$xDesign,
+      y = fixture$y,
+      betaLead = fixture$betaLead,
+      betaBar = fixture$betaBar,
+      globalGrad = fixture$globalGrad,
+      globalHess = badHess,
+      lambdaSeq = c(0.1),
+      totalN = fixture$totalN,
+      foldsK = 3L,
+      search = "grid",
+      collectDiagnostics = TRUE,
+      collectTrace = TRUE,
+      traceContext = list(method = "ADAP", task = "unit"),
+      traceFile = traceFile
+    ),
+    "lambda CV failed: no candidate lambda had successful inner fits"
+  )
+  expect_true(file.exists(traceFile))
+  trace <- readRDS(traceFile)
+  expect_true(isTRUE(trace$failed))
+  expect_gt(length(trace$fits), 0L)
+  expect_true(any(nzchar(trace$diagnostics$failureReason)))
+  expect_s3_class(trace$fits[[1]]$trace$rows, "data.frame")
+})
+
 test_that("compiled sparse ADAP surrogate solvers match dense R fallback", {
   fixture <- make_adap_phase2_fixture(n = 24L, p = 4L, seed = 21L)
   xSparse <- fixture$xDesign
