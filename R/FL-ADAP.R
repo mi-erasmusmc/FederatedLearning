@@ -715,6 +715,12 @@
   )
 }
 
+.adapFitDiagnosticsForReport <- function(fit) {
+  out <- as.list(.adapFitDiagnostics(fit))
+  out$failureReason <- .adapFitFailureReason(fit)
+  out
+}
+
 .adapBestLambdaIndex <- function(scores, lambdaSeq, metric = c("deviance", "auc"),
                                  tieTolerance = 1e-8) {
   metric <- match.arg(metric)
@@ -2773,7 +2779,7 @@
     cvTrace <- NULL
     finalTrace <- NULL
     traceEnabled <- isTRUE(config$adapTraceDiagnostics)
-    finalMaxOuter <- config$adapFinalMaxOuter %||% max(500L, config$maxOuter %||% 100L)
+    finalMaxOuter <- config$adapFinalMaxOuter %||% max(1000L, config$maxOuter %||% 500L)
     baseTraceContext <- c(
       config$adapTraceContext %||% list(),
       list(
@@ -2819,7 +2825,7 @@
         cvDiagnostics <- cv$diagnostics %||% NULL
         cvTrace <- cv$trace %||% NULL
       }
-      w <- .fitPdaAdapPdaProx(
+      fitObj <- .fitPdaAdapPdaProx(
         xDesign = xDesign,
         y = y,
         beta0 = betaBar,
@@ -2829,8 +2835,10 @@
         useFull = TRUE,
         maxIter = config$maxIter %||% 1000L,
         tol = config$tol %||% 1e-6,
-        ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
+        ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4,
+        returnDetails = TRUE
       )
+      w <- .adapFitBeta(fitObj)
       return(list(
         w = w,
         selectedLambda = lambda,
@@ -2838,6 +2846,7 @@
         cvScores = cvScores,
         adapCvDiagnostics = cvDiagnostics,
         adapTrace = cvTrace,
+        adapFinalDiagnostics = .adapFitDiagnosticsForReport(fitObj),
         lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
       ))
     }
@@ -2884,7 +2893,7 @@
         totalN = serverBroadcast$totalN,
         foldsK = config$foldsK %||% 5L,
         seed = config$cvSeed %||% 42L,
-        maxOuter = config$maxOuter %||% 100L,
+        maxOuter = config$maxOuter %||% 500L,
         maxInner = config$maxInner %||% 100L,
         tol = config$tol %||% 1e-5,
         search = config$lambdaSearch %||% "grid",
@@ -2953,6 +2962,7 @@
       adapCvDiagnostics = cvDiagnostics,
       adapTrace = cvTrace,
       adapFinalTrace = finalTrace,
+      adapFinalDiagnostics = .adapFitDiagnosticsForReport(fitObj),
       lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
     ))
   }
@@ -3047,6 +3057,7 @@
           adapCvDiagnostics = leadReport$adapCvDiagnostics %||% NULL,
           adapTrace = leadReport$adapTrace %||% NULL,
           adapFinalTrace = leadReport$adapFinalTrace %||% NULL,
+          adapFinalDiagnostics = leadReport$adapFinalDiagnostics %||% NULL,
           lambdaSelectionMetric = leadReport$lambdaSelectionMetric %||% NA_character_,
           hessianDim = state$hessianDim %||% NA_character_,
           hessianDiagMin = state$hessianDiagMin %||% NA_real_,
@@ -3184,7 +3195,7 @@
     finalTrace <- NULL
     traceEnabled <- isTRUE(config$adapTraceDiagnostics)
     methodName <- if (identical(mode, "first")) "ADAP1" else "ADAPDiag"
-    finalMaxOuter <- config$adapFinalMaxOuter %||% max(500L, config$maxOuter %||% 100L)
+    finalMaxOuter <- config$adapFinalMaxOuter %||% max(1000L, config$maxOuter %||% 500L)
     baseTraceContext <- c(
       config$adapTraceContext %||% list(),
       list(
@@ -3220,7 +3231,7 @@
           totalN = serverBroadcast$totalN,
           foldsK = config$foldsK %||% 5L,
           seed = config$cvSeed %||% 42L,
-          maxOuter = config$maxOuter %||% 100L,
+          maxOuter = config$maxOuter %||% 500L,
           maxInner = config$maxInner %||% 100L,
           tol = config$tol %||% 1e-5,
           search = config$lambdaSearch %||% "grid",
@@ -3282,6 +3293,7 @@
         adapCvDiagnostics = cvDiagnostics,
         adapTrace = cvTrace,
         adapFinalTrace = finalTrace,
+        adapFinalDiagnostics = .adapFitDiagnosticsForReport(fitObj),
         lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
       ))
     }
@@ -3322,7 +3334,7 @@
         cvDiagnostics <- cv$diagnostics %||% NULL
         cvTrace <- cv$trace %||% NULL
       }
-      w <- .fitPdaAdapPdaProx(
+      fitObj <- .fitPdaAdapPdaProx(
         xDesign = xDesign,
         y = y,
         beta0 = betaBar,
@@ -3332,8 +3344,10 @@
         useFull = FALSE,
         maxIter = config$maxIter %||% 1000L,
         tol = config$tol %||% 1e-6,
-        ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4
+        ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4,
+        returnDetails = TRUE
       )
+      w <- .adapFitBeta(fitObj)
       return(list(
         w = w,
         selectedLambda = lambda,
@@ -3341,6 +3355,7 @@
         cvScores = cvScores,
         adapCvDiagnostics = cvDiagnostics,
         adapTrace = cvTrace,
+        adapFinalDiagnostics = .adapFitDiagnosticsForReport(fitObj),
         lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
       ))
     }
@@ -3372,7 +3387,7 @@
         totalN = serverBroadcast$totalN,
         foldsK = config$foldsK %||% 5L,
         seed = config$cvSeed %||% 42L,
-        maxOuter = config$maxOuter %||% 100L,
+        maxOuter = config$maxOuter %||% 500L,
         maxInner = config$maxInner %||% 100L,
         tol = config$tol %||% 1e-5,
         search = config$lambdaSearch %||% "grid",
@@ -3435,6 +3450,7 @@
       adapCvDiagnostics = cvDiagnostics,
       adapTrace = cvTrace,
       adapFinalTrace = finalTrace,
+      adapFinalDiagnostics = .adapFitDiagnosticsForReport(fitObj),
       lambdaSelectionMetric = config$lambdaSelectionMetric %||% "deviance"
     ))
   }
@@ -3530,6 +3546,7 @@
           adapCvDiagnostics = leadReport$adapCvDiagnostics %||% NULL,
           adapTrace = leadReport$adapTrace %||% NULL,
           adapFinalTrace = leadReport$adapFinalTrace %||% NULL,
+          adapFinalDiagnostics = leadReport$adapFinalDiagnostics %||% NULL,
           lambdaSelectionMetric = leadReport$lambdaSelectionMetric %||% NA_character_,
           hessianDim = if (identical(mode, "diag")) paste0(length(state$globalHessDiag), " diagonal") else NA_character_,
           hessianDiagMin = if (identical(mode, "diag")) min(state$globalHessDiag, na.rm = TRUE) else NA_real_,

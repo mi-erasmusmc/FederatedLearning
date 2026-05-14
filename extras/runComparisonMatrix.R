@@ -263,7 +263,7 @@ methodConfig <- function(method, featureSet, args) {
     foldsK = firstValue(intCsvArg(argValue(args, "inner-folds"), 5L)),
     cvSeed = intArg(argValue(args, "cv-seed"), 42L),
     maxIter = firstValue(intCsvArg(argValue(args, "max-iter"), 1000L)),
-    maxOuter = firstValue(intCsvArg(argValue(args, "max-outer"), 100L)),
+    maxOuter = firstValue(intCsvArg(argValue(args, "max-outer"), 500L)),
     maxInner = firstValue(intCsvArg(argValue(args, "max-inner"), 100L)),
     lambdaGridLen = firstValue(intCsvArg(argValue(args, "lambda-grid-len"), 100L)),
     lambdaSearch = firstValue(charCsvArg(argValue(args, "lambda-search"), defaultLambdaSearch)),
@@ -293,7 +293,7 @@ methodConfig <- function(method, featureSet, args) {
     adapCvDiagnostics = logicalArg(argValue(args, "adap-cv-diagnostics"), FALSE),
     adapTraceDiagnostics = logicalArg(argValue(args, "adap-trace-diagnostics"), FALSE),
     adapProxTau = firstValue(numCsvArg(argValue(args, "adap-prox-tau"), 1e-8)),
-    adapFinalMaxOuter = firstValue(intCsvArg(argValue(args, "adap-final-max-outer"), 500L)),
+    adapFinalMaxOuter = firstValue(intCsvArg(argValue(args, "adap-final-max-outer"), 1000L)),
     adapKktTolerance = firstValue(numCsvArg(argValue(args, "adap-kkt-tolerance"), 1e-4)),
     adapBetaAbsThreshold = firstValue(numCsvArg(argValue(args, "adap-beta-abs-threshold"), 1e4)),
     adapEtaAbsThreshold = firstValue(numCsvArg(argValue(args, "adap-eta-abs-threshold"), 1e4)),
@@ -975,6 +975,18 @@ communicationMessages <- function(fit, config) {
   roundsCompleted * length(config$trainClientPaths)
 }
 
+adapFinalDiagnostic <- function(fit, name, default = NA_real_) {
+  diagnostics <- fit$adapFinalDiagnostics
+  if (is.null(diagnostics) || is.null(diagnostics[[name]])) {
+    return(default)
+  }
+  value <- diagnostics[[name]]
+  if (length(value) == 0L) {
+    return(default)
+  }
+  value[[1]]
+}
+
 fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
                              task, featureSet, fold, testClientIds, verbose,
                              debugDirectory = NULL) {
@@ -1038,6 +1050,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         adapCvDiagnostics = fit$adapCvDiagnostics %||% NULL,
         adapTrace = fit$adapTrace %||% NULL,
         adapFinalTrace = fit$adapFinalTrace %||% NULL,
+        adapFinalDiagnostics = fit$adapFinalDiagnostics %||% NULL,
         coefficients = fit$w,
         coefficientSummary = c(
           length = length(fit$w),
@@ -1116,6 +1129,15 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       hessianDiagMin = fit$hessianDiagMin %||% NA_real_,
       hessianDiagMax = fit$hessianDiagMax %||% NA_real_,
       hessianCondition = fit$hessianCondition %||% NA_real_,
+      adapCvMaxOuter = config$maxOuter %||% NA_integer_,
+      adapFinalMaxOuter = config$adapFinalMaxOuter %||% NA_integer_,
+      adapFinalOuterIterations = adapFinalDiagnostic(fit, "outerIterations", NA_real_),
+      adapFinalConverged = adapFinalDiagnostic(fit, "converged", NA),
+      adapFinalKktMaxAbs = adapFinalDiagnostic(fit, "kktMaxAbs", NA_real_),
+      adapFinalKktViolating = adapFinalDiagnostic(fit, "kktViolating", NA_real_),
+      adapFinalBetaMaxAbs = adapFinalDiagnostic(fit, "betaMaxAbs", NA_real_),
+      adapFinalEtaMaxAbs = adapFinalDiagnostic(fit, "etaMaxAbs", NA_real_),
+      adapFinalFailureReason = adapFinalDiagnostic(fit, "failureReason", NA_character_),
       elapsedSeconds = elapsed,
       configLabel = config$configLabel %||% "default",
       stringsAsFactors = FALSE

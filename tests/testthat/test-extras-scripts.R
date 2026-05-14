@@ -689,6 +689,8 @@ test_that("comparison runner helpers parse external comparison settings", {
   expect_equal(runnerEnv$methodConfig("ADAP_PDA", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
   expect_equal(runnerEnv$methodConfig("ODAL", "ageSex", defaultArgs)$odalInit, "pda")
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaCvMaxRows, Inf)
+  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$maxOuter, 500L)
+  expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$adapFinalMaxOuter, 1000L)
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaCvGlobalAdjustment, "leaveValOut")
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$diagnosticControlsPerCase, Inf)
 
