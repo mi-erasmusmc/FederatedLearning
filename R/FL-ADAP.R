@@ -2115,6 +2115,10 @@
                                     traceFile = NULL) {
   search <- match.arg(search)
   selectionMetric <- match.arg(selectionMetric)
+  lambdaSeq <- sort(unique(lambdaSeq[is.finite(lambdaSeq) & lambdaSeq > 0]), decreasing = TRUE)
+  if (length(lambdaSeq) == 0L) {
+    stop("lambdaSeq must contain at least one positive finite value", call. = FALSE)
+  }
   set.seed(seed)
   n <- length(y)
   folds <- sample(rep_len(seq_len(foldsK), n))
@@ -2139,15 +2143,23 @@
   }
   lambdaKey <- function(lambda) format(lambda, digits = 17, scientific = TRUE)
   closestWarmStart <- function(fold, lambda) {
+    lambda <- unname(as.numeric(lambda))[1]
     fits <- lambdaFits[[fold]]
     if (length(fits) == 0L) {
       return(betaInit)
     }
     fitLambdas <- as.numeric(names(fits))
+    stronger <- is.finite(fitLambdas) & fitLambdas >= lambda
+    if (!any(stronger)) {
+      return(betaInit)
+    }
+    fits <- fits[stronger]
+    fitLambdas <- fitLambdas[stronger]
     idx <- which.min(abs(log(fitLambdas) - log(lambda)))
     fits[[idx]]
   }
   evaluateLambda <- function(lambda) {
+    lambda <- unname(as.numeric(lambda))[1]
     key <- lambdaKey(lambda)
     if (exists(key, envir = evalCache, inherits = FALSE)) {
       return(get(key, envir = evalCache, inherits = FALSE)$score)
@@ -2165,8 +2177,10 @@
         collectTrace = collectTrace
       )
       fit <- .adapFitBeta(fitObj)
-      lambdaFits[[fold]][[key]] <<- fit
       foldFailed[fold] <- .adapFitFailed(fitObj)
+      if (!foldFailed[fold]) {
+        lambdaFits[[fold]][[key]] <<- fit
+      }
       if (isTRUE(collectTrace) && !is.null(fitObj$trace)) {
         traceRows[[length(traceRows) + 1L]] <<- c(
           list(
@@ -2216,7 +2230,7 @@
         )))
       }
     }
-    score <- mean(foldLoss, na.rm = TRUE)
+    score <- unname(mean(foldLoss, na.rm = TRUE))
     assign(key, list(lambda = lambda, score = score, valid = !any(foldFailed)), envir = evalCache)
     score
   }
@@ -2268,6 +2282,7 @@
     list(
       lambda = lambdaVals[idx],
       scores = scores,
+      lambdaSeq = lambdaVals,
       valid = valid,
       diagnostics = diagnostics,
       trace = if (isTRUE(collectTrace)) trace else NULL
@@ -2293,43 +2308,124 @@
     stop("searchTol must be a positive finite value")
   }
 
-  objective <- function(logLambda) {
-    evaluateLambda(exp(logLambda))
-  }
   lower <- log(lambdaRange[1])
   upper <- log(lambdaRange[2])
-  objective(lower)
-  objective(upper)
-  evalCount <- 2L
-  if (maxEvals > evalCount && (upper - lower) > searchTol) {
-    invPhi <- (sqrt(5) - 1) / 2
-    invPhi2 <- (3 - sqrt(5)) / 2
-    x1 <- lower + invPhi2 * (upper - lower)
-    x2 <- lower + invPhi * (upper - lower)
-    f1 <- objective(x1)
-    f2 <- objective(x2)
-    evalCount <- evalCount + 2L
-    while (evalCount < maxEvals && (upper - lower) > searchTol) {
-      betterLeft <- if (identical(selectionMetric, "auc")) f1 > f2 else f1 < f2
-      if (betterLeft) {
-        upper <- x2
-        x2 <- x1
-        f2 <- f1
-        x1 <- lower + invPhi2 * (upper - lower)
-        f1 <- objective(x1)
-      } else {
-        lower <- x1
-        x1 <- x2
-        f1 <- f2
-        x2 <- lower + invPhi * (upper - lower)
-        f2 <- objective(x2)
+
+  evaluatedRows <- function() {
+    evaluated <- as.list(evalCache)
+    if (length(evaluated) == 0L) {
+      return(data.frame(lambda = numeric(), score = numeric(), valid = logical()))
+    }
+    data.frame(
+      lambda = unname(vapply(evaluated, `[[`, numeric(1), "lambda")),
+      score = unname(vapply(evaluated, `[[`, numeric(1), "score")),
+      valid = unname(vapply(evaluated, function(x) isTRUE(x$valid), logical(1))),
+      stringsAsFactors = FALSE
+    )
+  }
+  evaluatedCount <- function() nrow(evaluatedRows())
+  addLogLambda <- function(logLambda) {
+    logLambda <- min(max(logLambda, lower), upper)
+    rows <- evaluatedRows()
+    if (nrow(rows) > 0L && any(abs(log(rows$lambda) - logLambda) <= 1e-8)) {
+      return(FALSE)
+    }
+    evaluateLambda(exp(logLambda))
+    TRUE
+  }
+  scoreForSearch <- function(scores) {
+    if (identical(selectionMetric, "auc")) -scores else scores
+  }
+
+  searchFactor <- 10
+  addLogLambda(upper)
+  lastLogLambda <- upper
+  repeat {
+    if (evaluatedCount() >= maxEvals) {
+      break
+    }
+    nextLogLambda <- max(lower, lastLogLambda - log(searchFactor))
+    if (!addLogLambda(nextLogLambda)) {
+      break
+    }
+    rows <- evaluatedRows()
+    current <- rows[abs(log(rows$lambda) - nextLogLambda) <= 1e-8, , drop = FALSE]
+    previous <- rows[abs(log(rows$lambda) - lastLogLambda) <= 1e-8, , drop = FALSE]
+    if (nrow(current) == 0L || !isTRUE(current$valid[[1]]) || !is.finite(current$score[[1]])) {
+      break
+    }
+    if (nrow(previous) > 0L && isTRUE(previous$valid[[1]]) && is.finite(previous$score[[1]])) {
+      currentScore <- scoreForSearch(current$score[[1]])
+      previousScore <- scoreForSearch(previous$score[[1]])
+      if (currentScore > previousScore) {
+        break
       }
-      evalCount <- evalCount + 1L
+    }
+    if (nextLogLambda <= lower) {
+      break
+    }
+    lastLogLambda <- nextLogLambda
+  }
+
+  repeat {
+    if (evaluatedCount() >= maxEvals) {
+      break
+    }
+    rows <- evaluatedRows()
+    validRows <- rows[rows$valid & is.finite(rows$score) & rows$lambda > 0, , drop = FALSE]
+    if (nrow(validRows) < 3L) {
+      break
+    }
+    validRows <- validRows[order(validRows$lambda, decreasing = TRUE), , drop = FALSE]
+    x <- log(validRows$lambda)
+    searchScores <- scoreForSearch(validRows$score)
+    bestPos <- which.min(searchScores)
+    idx <- sort(unique(pmax(1L, pmin(nrow(validRows), c(bestPos - 1L, bestPos, bestPos + 1L)))))
+    if (length(idx) < 3L) {
+      idx <- sort(order(abs(x - x[[bestPos]]))[seq_len(min(3L, length(x)))])
+    }
+    if (length(idx) < 3L) {
+      break
+    }
+    fit <- tryCatch(
+      stats::lm(searchScores[idx] ~ x[idx] + I(x[idx]^2)),
+      error = function(e) NULL
+    )
+    if (is.null(fit)) {
+      break
+    }
+    coefs <- stats::coef(fit)
+    if (length(coefs) < 3L || !all(is.finite(coefs)) || coefs[[3L]] <= 0) {
+      break
+    }
+    proposed <- -coefs[[2L]] / (2 * coefs[[3L]])
+    if (!is.finite(proposed) || proposed <= min(x) || proposed >= max(x)) {
+      break
+    }
+    if (min(abs(x - proposed)) <= searchTol) {
+      intervals <- list()
+      if (bestPos > 1L) {
+        intervals[[length(intervals) + 1L]] <- c(x[[bestPos - 1L]], x[[bestPos]])
+      }
+      if (bestPos < length(x)) {
+        intervals[[length(intervals) + 1L]] <- c(x[[bestPos]], x[[bestPos + 1L]])
+      }
+      if (length(intervals) == 0L) {
+        break
+      }
+      gaps <- vapply(intervals, function(z) abs(diff(z)), numeric(1))
+      if (max(gaps) <= searchTol) {
+        break
+      }
+      proposed <- mean(intervals[[which.max(gaps)]])
+    }
+    if (!addLogLambda(proposed)) {
+      break
     }
   }
   evaluated <- as.list(evalCache)
-  lambdaVals <- vapply(evaluated, `[[`, numeric(1), "lambda")
-  scores <- vapply(evaluated, `[[`, numeric(1), "score")
+  lambdaVals <- unname(vapply(evaluated, `[[`, numeric(1), "lambda"))
+  scores <- unname(vapply(evaluated, `[[`, numeric(1), "score"))
   keep <- order(lambdaVals, decreasing = TRUE)
   lambdaVals <- lambdaVals[keep]
   scores <- scores[keep]

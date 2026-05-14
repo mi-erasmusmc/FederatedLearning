@@ -725,6 +725,105 @@ test_that("ADAP1 and ADAPDiag lead CV support bounded log-lambda search", {
   expect_true(diagCv$lambda <= max(diagLambdaSeq))
 })
 
+test_that("ADAP lead CV evaluates lambda paths from strongest regularization", {
+  x <- Matrix::Matrix(cbind(1, seq(-1, 1, length.out = 12)), sparse = TRUE)
+  y <- rep(c(0, 1), 6)
+  lambdaSeq <- c(0.01, 0.1, 0.001)
+  calls <- numeric()
+
+  cv <- FederatedLearning:::.pdaAdapSurrogateLeadCv(
+    xDesign = x,
+    y = y,
+    betaInit = c(0, 0),
+    lambdaSeq = lambdaSeq,
+    foldsK = 1L,
+    seed = 1L,
+    search = "grid",
+    selectionMetric = "deviance",
+    makeFoldInfo = function(info) list(),
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE, collectTrace = FALSE) {
+      calls <<- c(calls, lambda)
+      list(beta = c(0, 0), converged = TRUE, failureReason = "")
+    }
+  )
+
+  expect_equal(calls, sort(lambdaSeq, decreasing = TRUE))
+  expect_equal(cv$lambdaSeq, sort(lambdaSeq, decreasing = TRUE))
+})
+
+test_that("ADAP auto search does not warm-start from failed weaker fits", {
+  x <- Matrix::Matrix(cbind(1, seq(-1, 1, length.out = 12)), sparse = TRUE)
+  y <- rep(c(0, 1), 6)
+  lambdaSeq <- c(0.1, 1e-6)
+  calls <- list()
+
+  cv <- FederatedLearning:::.pdaAdapSurrogateLeadCv(
+    xDesign = x,
+    y = y,
+    betaInit = c(0, 0),
+    lambdaSeq = lambdaSeq,
+    foldsK = 1L,
+    seed = 2L,
+    search = "optimize",
+    searchTol = log(1.01),
+    maxEvals = 4L,
+    selectionMetric = "deviance",
+    makeFoldInfo = function(info) list(),
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE, collectTrace = FALSE) {
+      calls[[length(calls) + 1L]] <<- list(lambda = lambda, warmStart = warmStart)
+      if (lambda < 1e-5) {
+        return(list(beta = c(999, 999), converged = FALSE, failureReason = "beta_abs_too_large"))
+      }
+      list(beta = c(lambda, -lambda), converged = TRUE, failureReason = "")
+    }
+  )
+
+  tried <- vapply(calls, `[[`, numeric(1), "lambda")
+  starts <- lapply(calls, `[[`, "warmStart")
+  expect_equal(tried[1], max(lambdaSeq), tolerance = 1e-12)
+  expect_equal(starts[[1]], c(0, 0))
+  expect_true(any(tried < 1e-5))
+  for (i in seq_along(calls)[tried > 1e-5 & seq_along(calls) > 1L]) {
+    expect_false(any(starts[[i]] == 999))
+  }
+  expect_true(all(cv$valid[cv$lambdaSeq > 1e-5]))
+})
+
+test_that("ADAP auto search uses strong-to-weak quadratic proposals", {
+  x <- Matrix::Matrix(matrix(1, nrow = 12, ncol = 1), sparse = TRUE)
+  y <- rep(c(0, 1), 6)
+  lambdaSeq <- c(0.1, 0.01, 0.001, 1e-6)
+  calls <- numeric()
+  target <- log(0.004)
+
+  cv <- FederatedLearning:::.pdaAdapSurrogateLeadCv(
+    xDesign = x,
+    y = y,
+    betaInit = 0,
+    lambdaSeq = lambdaSeq,
+    foldsK = 1L,
+    seed = 3L,
+    search = "optimize",
+    searchTol = log(1.01),
+    maxEvals = 4L,
+    selectionMetric = "deviance",
+    makeFoldInfo = function(info) list(),
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE, collectTrace = FALSE) {
+      calls <<- c(calls, lambda)
+      score <- 1e-4 + (log(lambda) - target)^2
+      beta <- 2 * acosh(exp(score))
+      list(beta = beta, converged = TRUE, failureReason = "")
+    }
+  )
+
+  expect_equal(calls[1], 0.1, tolerance = 1e-12)
+  expect_equal(calls[2], 0.01, tolerance = 1e-12)
+  expect_equal(calls[3], 0.001, tolerance = 1e-12)
+  expect_false(any(calls[seq_len(min(3L, length(calls)))] == min(lambdaSeq)))
+  expect_equal(unname(calls[4]), 0.004, tolerance = 1e-8)
+  expect_equal(unname(cv$lambda), 0.004, tolerance = 1e-8)
+})
+
 test_that("ADAP lead CV can select lambda by AUC", {
   set.seed(21)
   n <- 120L
