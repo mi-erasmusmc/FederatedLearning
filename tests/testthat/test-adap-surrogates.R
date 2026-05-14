@@ -824,6 +824,30 @@ test_that("ADAP auto search uses strong-to-weak quadratic proposals", {
   expect_equal(unname(cv$lambda), 0.004, tolerance = 1e-8)
 })
 
+test_that("ADAP auto search records successful scalar lambdas as valid", {
+  x <- Matrix::Matrix(cbind(1, seq(-1, 1, length.out = 20)), sparse = TRUE)
+  y <- rep(c(0, 1), 10)
+
+  cv <- FederatedLearning:::.pdaAdapSurrogateLeadCv(
+    xDesign = x,
+    y = y,
+    betaInit = c(0, 0),
+    lambdaSeq = c(0.02, 0.002, 0.0002),
+    foldsK = 5L,
+    seed = 1L,
+    search = "optimize",
+    maxEvals = 3L,
+    selectionMetric = "deviance",
+    collectDiagnostics = TRUE,
+    makeFoldInfo = function(info) list(),
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE, collectTrace = FALSE) {
+      list(beta = c(0, 0), converged = TRUE, failureReason = "")
+    }
+  )
+
+  expect_equal(cv$valid, rep(TRUE, length(cv$valid)))
+})
+
 test_that("ADAP lead CV can select lambda by AUC", {
   set.seed(21)
   n <- 120L

@@ -2141,7 +2141,7 @@
   for (fold in seq_len(foldsK)) {
     lambdaFits[[fold]] <- list()
   }
-  lambdaKey <- function(lambda) format(lambda, digits = 17, scientific = TRUE)
+  lambdaKey <- function(lambda) sprintf("%.17e", unname(as.numeric(lambda)))
   closestWarmStart <- function(fold, lambda) {
     lambda <- unname(as.numeric(lambda))[1]
     fits <- lambdaFits[[fold]]
