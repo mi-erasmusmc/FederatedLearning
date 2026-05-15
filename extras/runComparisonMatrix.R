@@ -944,7 +944,7 @@ baselinePreprocessSettings <- function(args) {
     ),
     normalize = logicalArg(
       argValue(args, "baseline-preprocess-normalize") %||% argValue(args, "preprocess-normalize"),
-      TRUE
+      FALSE
     ),
     removeRedundancy = logicalArg(
       argValue(args, "baseline-preprocess-remove-redundancy") %||% argValue(args, "preprocess-remove-redundancy"),

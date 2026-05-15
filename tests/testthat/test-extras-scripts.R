@@ -841,10 +841,20 @@ test_that("comparison runner preprocesses Cyclops baseline matrices", {
   )
 
   expect_equal(ncol(out$trainData[[1]]$xMatrix), 3L)
-  expect_equal(as.numeric(out$trainData[[1]]$xMatrix[, 2]), c(0.25, 0.5, 0.75, 1))
-  expect_equal(as.numeric(out$testData[[1]]$xMatrix[, 2]), c(0.125, 1))
+  expect_equal(as.numeric(out$trainData[[1]]$xMatrix[, 2]), c(0.2, 0.4, 0.6, 0.8))
+  expect_equal(as.numeric(out$testData[[1]]$xMatrix[, 2]), c(0.1, 0.8))
   expect_equal(as.numeric(out$trainData[[1]]$xMatrix[, 3]), c(1, 0, 0, 0))
   expect_equal(out$preprocessor$removed, 1L)
+
+  normalized <- runnerEnv$preprocessBaselineData(
+    trainData = trainData,
+    testData = testData,
+    config = list(intercept = TRUE),
+    args = runnerEnv$parseArgs("--baseline-preprocess-normalize=true")
+  )
+
+  expect_equal(as.numeric(normalized$trainData[[1]]$xMatrix[, 2]), c(0.25, 0.5, 0.75, 1))
+  expect_equal(as.numeric(normalized$testData[[1]]$xMatrix[, 2]), c(0.125, 1))
 })
 
 test_that("comparison runner does not partial-match lambda-grid-len as fixed lambda", {
