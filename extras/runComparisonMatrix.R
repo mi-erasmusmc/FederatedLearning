@@ -134,7 +134,14 @@ methodRounds <- function(method, args) {
   )
 }
 
-baselineMethods <- c("PooledLasso", "LocalAvgLasso", "BiggestSiteLasso")
+baselineMethods <- c(
+  "PooledLasso",
+  "LocalAvgLasso",
+  "BiggestSiteLasso",
+  "LocalEnsembleLasso",
+  "LocalBestLasso",
+  "LocalSiteLasso"
+)
 dualAvgMethods <- c("DualAvg", "DualAvgCpp", "DualAvgR")
 
 readCsvIfExists <- function(path) {
@@ -773,7 +780,20 @@ evaluateWeights <- function(clientData, w, clientId, clientIndex) {
     context = "baseline evaluation"
   )
   preds <- stats::plogis(as.numeric(clientData$xMatrix %*% w))
+  evaluatePredictions(
+    clientData = clientData,
+    preds = preds,
+    density = mean(abs(w) > 1e-4),
+    clientId = clientId,
+    clientIndex = clientIndex
+  )
+}
+
+evaluatePredictions <- function(clientData, preds, density, clientId, clientIndex) {
   y <- clientData$yLabels
+  if (length(preds) != length(y)) {
+    stop("Prediction length mismatch: got ", length(preds), " predictions for ", length(y), " labels")
+  }
   auc <- if (length(unique(y)) == 2) {
     as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
   } else {
@@ -795,12 +815,61 @@ evaluateWeights <- function(clientData, w, clientId, clientIndex) {
     logLoss = FederatedLearning:::logLoss(y, preds),
     calibrationIntercept = if (!is.null(calFit)) unname(stats::coef(calFit)[[1]]) else NA_real_,
     calibrationSlope = if (!is.null(calFit)) unname(stats::coef(calFit)[[2]]) else NA_real_,
-    density = mean(abs(w) > 1e-4),
+    density = density,
     n = length(y),
     outcomes = sum(y),
     clientId = clientId,
     stringsAsFactors = FALSE
   )
+}
+
+predictWithWeights <- function(clientData, w) {
+  FederatedLearning:::assertConformableWeights(
+    w,
+    clientData$xMatrix,
+    context = "baseline prediction"
+  )
+  stats::plogis(as.numeric(clientData$xMatrix %*% w))
+}
+
+localModelWeights <- function(trainN, args) {
+  weighting <- argValue(args, "local-ensemble-weighting") %||% "sampleSize"
+  if (identical(weighting, "sampleSize")) {
+    return(trainN / sum(trainN))
+  }
+  if (identical(weighting, "equalClient")) {
+    return(rep(1 / length(trainN), length(trainN)))
+  }
+  stop("--local-ensemble-weighting must be one of: sampleSize, equalClient")
+}
+
+evaluateLocalEnsemble <- function(clientData, localFits, modelWeights,
+                                  clientId, clientIndex) {
+  predMat <- do.call(cbind, lapply(localFits, function(fit) {
+    predictWithWeights(clientData, fit$w)
+  }))
+  preds <- as.numeric(predMat %*% modelWeights)
+  density <- sum(vapply(localFits, function(fit) mean(abs(fit$w) > 1e-4), numeric(1)) * modelWeights)
+  evaluatePredictions(
+    clientData = clientData,
+    preds = preds,
+    density = density,
+    clientId = clientId,
+    clientIndex = clientIndex
+  )
+}
+
+scoreLocalModelOnTrainingSites <- function(fit, trainData, validationIndexes) {
+  scores <- vapply(validationIndexes, function(i) {
+    ev <- evaluateWeights(
+      clientData = trainData[[i]],
+      w = fit$w,
+      clientId = as.character(i),
+      clientIndex = i
+    )
+    ev$auc[[1]]
+  }, numeric(1))
+  FederatedLearning:::.innerCvScoreMean(scores)
 }
 
 pooledFitDiagnostics <- function(clientDataList, w, lambda = NA_real_,
@@ -951,11 +1020,13 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   trainData <- lapply(trainPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
 
   if (identical(method, "PooledLasso")) {
-    fit <- fitBaselineWeights(
+    fits <- list(fitBaselineWeights(
       trainData,
       args = args,
       seed = intArg(args[["baseline-seed"]], 42L) + fold
-    )
+    ))
+    fits[[1]]$leadIndex <- NA_integer_
+    fits[[1]]$innerCvScore <- NA_real_
   } else {
     eligible <- vapply(trainData, function(x) length(unique(x$yLabels)) == 2, logical(1))
     if (!any(eligible)) {
@@ -971,96 +1042,150 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     })
     trainN <- vapply(trainData[localIndexes], `[[`, numeric(1), "n")
     if (identical(method, "BiggestSiteLasso")) {
-      fit <- localFits[[which.max(trainN)]]
-      fit$leadIndex <- localIndexes[[which.max(trainN)]]
-    } else {
+      fits <- list(localFits[[which.max(trainN)]])
+      fits[[1]]$leadIndex <- localIndexes[[which.max(trainN)]]
+      fits[[1]]$innerCvScore <- NA_real_
+      fits[[1]]$configLabel <- paste0("source=", trainClientIds[[fits[[1]]$leadIndex]])
+    } else if (identical(method, "LocalAvgLasso")) {
       weights <- trainN / sum(trainN)
-      fit <- list(
+      fits <- list(list(
         w = Reduce("+", Map(function(localFit, wi) localFit$w * wi, localFits, weights)),
         selectedLambda = NA_real_,
         elapsedSeconds = sum(vapply(localFits, `[[`, numeric(1), "elapsedSeconds")),
-        leadIndex = NA_integer_
-      )
+        leadIndex = NA_integer_,
+        innerCvScore = NA_real_,
+        configLabel = "coefficientAverage=sampleSize"
+      ))
+    } else if (identical(method, "LocalEnsembleLasso")) {
+      weighting <- argValue(args, "local-ensemble-weighting") %||% "sampleSize"
+      weights <- localModelWeights(trainN, args)
+      fits <- list(list(
+        localFits = localFits,
+        localWeights = weights,
+        w = Reduce("+", Map(function(localFit, wi) localFit$w * wi, localFits, weights)),
+        selectedLambda = NA_real_,
+        elapsedSeconds = sum(vapply(localFits, `[[`, numeric(1), "elapsedSeconds")),
+        leadIndex = NA_integer_,
+        innerCvScore = NA_real_,
+        configLabel = paste0("predictionAverage=", weighting)
+      ))
+    } else if (identical(method, "LocalBestLasso")) {
+      scores <- vapply(seq_along(localFits), function(j) {
+        scoreLocalModelOnTrainingSites(
+          fit = localFits[[j]],
+          trainData = trainData,
+          validationIndexes = setdiff(seq_along(trainData), localIndexes[[j]])
+        )
+      }, numeric(1))
+      best <- if (all(!is.finite(scores))) which.max(trainN) else which.max(scores)
+      fits <- list(localFits[[best]])
+      fits[[1]]$leadIndex <- localIndexes[[best]]
+      fits[[1]]$innerCvScore <- scores[[best]]
+      fits[[1]]$configLabel <- paste0("selectedBy=innerCv;source=", trainClientIds[[fits[[1]]$leadIndex]])
+    } else if (identical(method, "LocalSiteLasso")) {
+      fits <- Map(function(localFit, localIndex) {
+        localFit$leadIndex <- localIndex
+        localFit$innerCvScore <- NA_real_
+        localFit$configLabel <- paste0("source=", trainClientIds[[localIndex]])
+        localFit
+      }, localFits, localIndexes)
+    } else {
+      stop("Unknown baseline method: ", method)
     }
-  }
-  pooledDiag <- if (isTRUE(config$pooledDiagnostics %||% TRUE)) {
-    pooledFitDiagnostics(
-      trainData,
-      fit$w,
-      lambda = NA_real_,
-      intercept = config$intercept,
-      tolerance = config$pooledKktTolerance %||% 1e-4
-    )
-  } else {
-    list()
   }
 
   testPlp <- lapply(testPaths, FederatedLearning::loadClientData, popSettings = popSettings)
   testData <- lapply(testPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
-  evalRows <- do.call(rbind, Map(
-    evaluateWeights,
-    clientData = testData,
-    clientId = testClientIds,
-    clientIndex = testClientIndexes,
-    MoreArgs = list(w = fit$w)
-  ))
 
-  cbind(
-    data.frame(
-      method = method,
-      featureSet = featureSet,
-      fold = fold,
-      p = length(fit$w),
-      selectedLambda = fit$selectedLambda %||% NA_real_,
-      lambdaPathFile = NA_character_,
-      leadIndex = fit$leadIndex %||% NA_integer_,
-      leadWeight = NA_real_,
-      leadWeightMin = NA_real_,
-      trainObjective = NA_real_,
-      hessianDim = NA_character_,
-      hessianDiagMin = NA_real_,
-      hessianDiagMax = NA_real_,
-      hessianCondition = NA_real_,
-      odalVariant = NA_character_,
-      curvatureStatus = NA_character_,
-      correctionEigenMin = NA_real_,
-      correctionEigenMax = NA_real_,
-      correctionEigenNegative = NA_real_,
-      correctionDiagMin = NA_real_,
-      correctionDiagMax = NA_real_,
-      correctionDiagNegative = NA_real_,
-      globalHessianEigenMin = NA_real_,
-      leadHessianEigenMin = NA_real_,
-      siteHessianEigenMin = NA_real_,
-      siteHessianNegative = NA_real_,
-      maxConvAlpha = NA_real_,
-      maxConvAlphaStatus = NA_character_,
-      optimConvergence = NA_integer_,
-      adapFinalRho = NA_real_,
-      adapFinalRhoOverGlobalEigenMax = NA_real_,
-      adapFinalLeadWeight = NA_real_,
-      adapFinalProxAnchorsIntercept = NA,
-      pooledNegLogLik = pooledDiag$pooledNegLogLik %||% NA_real_,
-      pooledMeanLogLoss = pooledDiag$pooledMeanLogLoss %||% NA_real_,
-      pooledGradientMaxAbs = pooledDiag$pooledGradientMaxAbs %||% NA_real_,
-      pooledKktMaxAbs = pooledDiag$pooledKktMaxAbs %||% NA_real_,
-      pooledKktViolating = pooledDiag$pooledKktViolating %||% NA_real_,
-      pooledKktMaxCoordinate = pooledDiag$pooledKktMaxCoordinate %||% NA_real_,
-      pooledObjectiveGap = NA_real_,
-      fitElapsedSeconds = fit$elapsedSeconds,
-      elapsedSeconds = fit$elapsedSeconds,
-      configLabel = config$configLabel %||% "default",
-      stringsAsFactors = FALSE
-    ),
-    evalRows,
-    data.frame(
-      messages = 0,
-      numbers = 0,
-      task = task,
-      error = NA_character_,
-      stringsAsFactors = FALSE
+  baselineRows <- lapply(fits, function(fit) {
+    pooledDiag <- if (isTRUE(config$pooledDiagnostics %||% TRUE) && is.null(fit$localFits)) {
+      pooledFitDiagnostics(
+        trainData,
+        fit$w,
+        lambda = NA_real_,
+        intercept = config$intercept,
+        tolerance = config$pooledKktTolerance %||% 1e-4
+      )
+    } else {
+      list()
+    }
+
+    evalRows <- if (!is.null(fit$localFits)) {
+      do.call(rbind, Map(
+        evaluateLocalEnsemble,
+        clientData = testData,
+        clientId = testClientIds,
+        clientIndex = testClientIndexes,
+        MoreArgs = list(localFits = fit$localFits, modelWeights = fit$localWeights)
+      ))
+    } else {
+      do.call(rbind, Map(
+        evaluateWeights,
+        clientData = testData,
+        clientId = testClientIds,
+        clientIndex = testClientIndexes,
+        MoreArgs = list(w = fit$w)
+      ))
+    }
+
+    cbind(
+      data.frame(
+        method = method,
+        featureSet = featureSet,
+        fold = fold,
+        p = length(fit$w),
+        selectedLambda = fit$selectedLambda %||% NA_real_,
+        lambdaPathFile = NA_character_,
+        leadIndex = fit$leadIndex %||% NA_integer_,
+        leadWeight = NA_real_,
+        leadWeightMin = NA_real_,
+        trainObjective = fit$innerCvScore %||% NA_real_,
+        hessianDim = NA_character_,
+        hessianDiagMin = NA_real_,
+        hessianDiagMax = NA_real_,
+        hessianCondition = NA_real_,
+        odalVariant = NA_character_,
+        curvatureStatus = NA_character_,
+        correctionEigenMin = NA_real_,
+        correctionEigenMax = NA_real_,
+        correctionEigenNegative = NA_real_,
+        correctionDiagMin = NA_real_,
+        correctionDiagMax = NA_real_,
+        correctionDiagNegative = NA_real_,
+        globalHessianEigenMin = NA_real_,
+        leadHessianEigenMin = NA_real_,
+        siteHessianEigenMin = NA_real_,
+        siteHessianNegative = NA_real_,
+        maxConvAlpha = NA_real_,
+        maxConvAlphaStatus = NA_character_,
+        optimConvergence = NA_integer_,
+        adapFinalRho = NA_real_,
+        adapFinalRhoOverGlobalEigenMax = NA_real_,
+        adapFinalLeadWeight = NA_real_,
+        adapFinalProxAnchorsIntercept = NA,
+        pooledNegLogLik = pooledDiag$pooledNegLogLik %||% NA_real_,
+        pooledMeanLogLoss = pooledDiag$pooledMeanLogLoss %||% NA_real_,
+        pooledGradientMaxAbs = pooledDiag$pooledGradientMaxAbs %||% NA_real_,
+        pooledKktMaxAbs = pooledDiag$pooledKktMaxAbs %||% NA_real_,
+        pooledKktViolating = pooledDiag$pooledKktViolating %||% NA_real_,
+        pooledKktMaxCoordinate = pooledDiag$pooledKktMaxCoordinate %||% NA_real_,
+        pooledObjectiveGap = NA_real_,
+        fitElapsedSeconds = fit$elapsedSeconds,
+        elapsedSeconds = fit$elapsedSeconds,
+        configLabel = fit$configLabel %||% config$configLabel %||% "default",
+        stringsAsFactors = FALSE
+      ),
+      evalRows,
+      data.frame(
+        messages = 0,
+        numbers = 0,
+        task = task,
+        error = NA_character_,
+        stringsAsFactors = FALSE
+      )
     )
-  )
+  })
+  do.call(rbind, baselineRows)
 }
 
 summarizeResults <- function(rows) {

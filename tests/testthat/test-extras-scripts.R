@@ -635,6 +635,25 @@ test_that("comparison runner helpers parse external comparison settings", {
   )
   expect_equal(sort(unique(vapply(grid, `[[`, integer(1), "k"))), c(2L, 4L))
   expect_match(grid[[1]]$configLabel, "etaClient=")
+  expect_true(all(c(
+    "PooledLasso",
+    "BiggestSiteLasso",
+    "LocalAvgLasso",
+    "LocalEnsembleLasso",
+    "LocalBestLasso",
+    "LocalSiteLasso"
+  ) %in% runnerEnv$baselineMethods))
+  expect_equal(
+    runnerEnv$localModelWeights(c(10, 30), runnerEnv$parseArgs(character())),
+    c(0.25, 0.75)
+  )
+  expect_equal(
+    runnerEnv$localModelWeights(
+      c(10, 30),
+      runnerEnv$parseArgs(c("--local-ensemble-weighting=equalClient"))
+    ),
+    c(0.5, 0.5)
+  )
 
   adapGridArgs <- runnerEnv$parseArgs(c(
     "--methods=ADAP",
@@ -721,6 +740,38 @@ test_that("comparison runner helpers parse external comparison settings", {
   ))
   expect_true(runnerEnv$shouldTuneDualAvg(forcedTuneArgs))
   expect_equal(runnerEnv$dualAvgStartingVariance(forcedTuneArgs), 0.02)
+})
+
+test_that("comparison runner evaluates prediction ensembles", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+
+  clientData <- list(
+    xMatrix = cbind(1, c(-2, -1, 1, 2)),
+    yLabels = c(0, 0, 1, 1)
+  )
+  localFits <- list(
+    list(w = c(0, 1)),
+    list(w = c(0.5, 0.5))
+  )
+  modelWeights <- c(0.25, 0.75)
+
+  ev <- runnerEnv$evaluateLocalEnsemble(
+    clientData = clientData,
+    localFits = localFits,
+    modelWeights = modelWeights,
+    clientId = "siteA",
+    clientIndex = 1L
+  )
+
+  expectedPreds <- as.numeric(cbind(
+    stats::plogis(clientData$xMatrix %*% localFits[[1]]$w),
+    stats::plogis(clientData$xMatrix %*% localFits[[2]]$w)
+  ) %*% modelWeights)
+  expect_equal(ev$logLoss, FederatedLearning:::logLoss(clientData$yLabels, expectedPreds))
+  expect_equal(ev$density, 0.875)
+  expect_equal(ev$clientId, "siteA")
+  expect_equal(ev$client, 1L)
 })
 
 test_that("comparison runner does not partial-match lambda-grid-len as fixed lambda", {
