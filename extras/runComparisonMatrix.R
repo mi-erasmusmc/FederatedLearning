@@ -177,7 +177,7 @@ successfulRows <- function(rows) {
 }
 
 isCompletedCombination <- function(rows, task, fold, featureSet, method,
-                                   rerunErrors = TRUE) {
+                                   rerunErrors = FALSE) {
   idx <- matchingCombination(rows, task, fold, featureSet, method)
   if (!any(idx)) {
     return(FALSE)
@@ -186,6 +186,23 @@ isCompletedCombination <- function(rows, task, fold, featureSet, method,
     return(any(successfulRows(rows)[idx]))
   }
   TRUE
+}
+
+binaryAuc <- function(y, preds) {
+  if (length(unique(y)) != 2L) {
+    return(NA_real_)
+  }
+  if (length(preds) != length(y) || any(!is.finite(preds))) {
+    return(NA_real_)
+  }
+  y01 <- as.integer(y == max(y))
+  nCase <- sum(y01 == 1L)
+  nControl <- sum(y01 == 0L)
+  if (nCase == 0L || nControl == 0L) {
+    return(NA_real_)
+  }
+  ranks <- rank(preds, ties.method = "average")
+  (sum(ranks[y01 == 1L]) - nCase * (nCase + 1) / 2) / (nCase * nControl)
 }
 
 dropCombinationRows <- function(rows, task, fold, featureSet, method) {
@@ -794,11 +811,7 @@ evaluatePredictions <- function(clientData, preds, density, clientId, clientInde
   if (length(preds) != length(y)) {
     stop("Prediction length mismatch: got ", length(preds), " predictions for ", length(y), " labels")
   }
-  auc <- if (length(unique(y)) == 2) {
-    as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
-  } else {
-    NA_real_
-  }
+  auc <- binaryAuc(y, preds)
   eps <- 1e-15
   pClip <- pmin(pmax(preds, eps), 1 - eps)
   calFit <- if (length(unique(y)) == 2) {
@@ -1632,7 +1645,7 @@ runComparison <- function(args) {
   mirai <- logicalArg(args[["mirai"]], FALSE)
   verbose <- logicalArg(args[["verbose"]], TRUE)
   resume <- logicalArg(args[["resume"]], TRUE)
-  rerunErrors <- logicalArg(args[["rerun-errors"]], TRUE)
+  rerunErrors <- logicalArg(args[["rerun-errors"]], FALSE)
   debugDirectory <- if (logicalArg(args[["debug-diagnostics"]], FALSE)) {
     file.path(resultDirectory, "debug")
   } else {

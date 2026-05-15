@@ -768,6 +768,7 @@ test_that("comparison runner evaluates prediction ensembles", {
     stats::plogis(clientData$xMatrix %*% localFits[[1]]$w),
     stats::plogis(clientData$xMatrix %*% localFits[[2]]$w)
   ) %*% modelWeights)
+  expect_equal(ev$auc, runnerEnv$binaryAuc(clientData$yLabels, expectedPreds))
   expect_equal(ev$logLoss, FederatedLearning:::logLoss(clientData$yLabels, expectedPreds))
   expect_equal(ev$density, 0.875)
   expect_equal(ev$clientId, "siteA")
@@ -846,7 +847,15 @@ test_that("comparison runner resumes successful combinations and reruns errors",
     stringsAsFactors = FALSE
   )
   expect_true(runnerEnv$isCompletedCombination(rows, "taskA", 1L, "ageSex", "DualAvg"))
-  expect_false(runnerEnv$isCompletedCombination(rows, "taskA", 1L, "ageSex", "ADAP"))
+  expect_true(runnerEnv$isCompletedCombination(rows, "taskA", 1L, "ageSex", "ADAP"))
+  expect_false(runnerEnv$isCompletedCombination(
+    rows,
+    "taskA",
+    1L,
+    "ageSex",
+    "ADAP",
+    rerunErrors = TRUE
+  ))
   expect_true(runnerEnv$isCompletedCombination(
     rows,
     "taskA",
