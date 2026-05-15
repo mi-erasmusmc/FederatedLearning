@@ -984,6 +984,34 @@ fitBaselineWeights <- function(clientDataList, args, seed) {
   )
 }
 
+fitLocalBaselineSafely <- function(trainData, localIndex, trainClientId, args, seed) {
+  start <- Sys.time()
+  tryCatch({
+    fit <- fitBaselineWeights(
+      list(trainData[[localIndex]]),
+      args = args,
+      seed = seed
+    )
+    list(
+      ok = TRUE,
+      fit = fit,
+      localIndex = localIndex,
+      trainClientId = trainClientId,
+      elapsedSeconds = fit$elapsedSeconds %||% as.numeric(difftime(Sys.time(), start, units = "secs")),
+      error = NA_character_
+    )
+  }, error = function(e) {
+    list(
+      ok = FALSE,
+      fit = NULL,
+      localIndex = localIndex,
+      trainClientId = trainClientId,
+      elapsedSeconds = as.numeric(difftime(Sys.time(), start, units = "secs")),
+      error = conditionMessage(e)
+    )
+  })
+}
+
 assertCyclopsMethod <- function(method) {
   if (!method %in% baselineMethods) {
     return(invisible(NULL))
@@ -1033,19 +1061,34 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       stop("Cannot fit local Cyclops baseline: no training client has both outcome classes")
     }
     localIndexes <- which(eligible)
-    localFits <- lapply(localIndexes, function(i) {
-      fitBaselineWeights(
-        list(trainData[[i]]),
+    localAttempts <- lapply(localIndexes, function(i) {
+      fitLocalBaselineSafely(
+        trainData = trainData,
+        localIndex = i,
+        trainClientId = trainClientIds[[i]],
         args = args,
         seed = intArg(args[["baseline-seed"]], 42L) + fold + i
       )
     })
-    trainN <- vapply(trainData[localIndexes], `[[`, numeric(1), "n")
+    localOk <- vapply(localAttempts, `[[`, logical(1), "ok")
+    localFailures <- localAttempts[!localOk]
+    if (!any(localOk)) {
+      failureSummary <- paste(
+        vapply(localFailures, function(x) paste0(x$trainClientId, ": ", x$error), character(1)),
+        collapse = "; "
+      )
+      stop("Cannot fit local Cyclops baseline: no eligible training client converged. ", failureSummary)
+    }
+    localFits <- lapply(localAttempts[localOk], `[[`, "fit")
+    localIndexesOk <- vapply(localAttempts[localOk], `[[`, integer(1), "localIndex")
+    localFailuresForRows <- if (identical(method, "LocalSiteLasso")) localFailures else list()
+    trainN <- vapply(trainData[localIndexesOk], `[[`, numeric(1), "n")
+    failureLabel <- if (length(localFailures)) paste0(";failedLocalFits=", length(localFailures)) else ""
     if (identical(method, "BiggestSiteLasso")) {
       fits <- list(localFits[[which.max(trainN)]])
-      fits[[1]]$leadIndex <- localIndexes[[which.max(trainN)]]
+      fits[[1]]$leadIndex <- localIndexesOk[[which.max(trainN)]]
       fits[[1]]$innerCvScore <- NA_real_
-      fits[[1]]$configLabel <- paste0("source=", trainClientIds[[fits[[1]]$leadIndex]])
+      fits[[1]]$configLabel <- paste0("source=", trainClientIds[[fits[[1]]$leadIndex]], failureLabel)
     } else if (identical(method, "LocalAvgLasso")) {
       weights <- trainN / sum(trainN)
       fits <- list(list(
@@ -1054,7 +1097,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         elapsedSeconds = sum(vapply(localFits, `[[`, numeric(1), "elapsedSeconds")),
         leadIndex = NA_integer_,
         innerCvScore = NA_real_,
-        configLabel = "coefficientAverage=sampleSize"
+        configLabel = paste0("coefficientAverage=sampleSize", failureLabel)
       ))
     } else if (identical(method, "LocalEnsembleLasso")) {
       weighting <- argValue(args, "local-ensemble-weighting") %||% "sampleSize"
@@ -1067,28 +1110,28 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         elapsedSeconds = sum(vapply(localFits, `[[`, numeric(1), "elapsedSeconds")),
         leadIndex = NA_integer_,
         innerCvScore = NA_real_,
-        configLabel = paste0("predictionAverage=", weighting)
+        configLabel = paste0("predictionAverage=", weighting, failureLabel)
       ))
     } else if (identical(method, "LocalBestLasso")) {
       scores <- vapply(seq_along(localFits), function(j) {
         scoreLocalModelOnTrainingSites(
           fit = localFits[[j]],
           trainData = trainData,
-          validationIndexes = setdiff(seq_along(trainData), localIndexes[[j]])
+          validationIndexes = setdiff(seq_along(trainData), localIndexesOk[[j]])
         )
       }, numeric(1))
       best <- if (all(!is.finite(scores))) which.max(trainN) else which.max(scores)
       fits <- list(localFits[[best]])
-      fits[[1]]$leadIndex <- localIndexes[[best]]
+      fits[[1]]$leadIndex <- localIndexesOk[[best]]
       fits[[1]]$innerCvScore <- scores[[best]]
-      fits[[1]]$configLabel <- paste0("selectedBy=innerCv;source=", trainClientIds[[fits[[1]]$leadIndex]])
+      fits[[1]]$configLabel <- paste0("selectedBy=innerCv;source=", trainClientIds[[fits[[1]]$leadIndex]], failureLabel)
     } else if (identical(method, "LocalSiteLasso")) {
       fits <- Map(function(localFit, localIndex) {
         localFit$leadIndex <- localIndex
         localFit$innerCvScore <- NA_real_
         localFit$configLabel <- paste0("source=", trainClientIds[[localIndex]])
         localFit
-      }, localFits, localIndexes)
+      }, localFits, localIndexesOk)
     } else {
       stop("Unknown baseline method: ", method)
     }
@@ -1185,7 +1228,87 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       )
     )
   })
-  do.call(rbind, baselineRows)
+  baselineRows <- do.call(rbind, baselineRows)
+
+  if (exists("localFailuresForRows", inherits = FALSE) && length(localFailuresForRows)) {
+    failedRows <- do.call(rbind, lapply(localFailuresForRows, function(failure) {
+      evalRows <- do.call(rbind, Map(function(clientData, clientId, clientIndex) {
+        y <- clientData$yLabels
+        data.frame(
+          client = clientIndex,
+          auc = NA_real_,
+          logLoss = NA_real_,
+          calibrationIntercept = NA_real_,
+          calibrationSlope = NA_real_,
+          density = NA_real_,
+          n = length(y),
+          outcomes = sum(y),
+          clientId = clientId,
+          stringsAsFactors = FALSE
+        )
+      }, clientData = testData, clientId = testClientIds, clientIndex = testClientIndexes))
+
+      cbind(
+        data.frame(
+          method = method,
+          featureSet = featureSet,
+          fold = fold,
+          p = ncol(testData[[1]]$xMatrix),
+          selectedLambda = NA_real_,
+          lambdaPathFile = NA_character_,
+          leadIndex = failure$localIndex,
+          leadWeight = NA_real_,
+          leadWeightMin = NA_real_,
+          trainObjective = NA_real_,
+          hessianDim = NA_character_,
+          hessianDiagMin = NA_real_,
+          hessianDiagMax = NA_real_,
+          hessianCondition = NA_real_,
+          odalVariant = NA_character_,
+          curvatureStatus = NA_character_,
+          correctionEigenMin = NA_real_,
+          correctionEigenMax = NA_real_,
+          correctionEigenNegative = NA_real_,
+          correctionDiagMin = NA_real_,
+          correctionDiagMax = NA_real_,
+          correctionDiagNegative = NA_real_,
+          globalHessianEigenMin = NA_real_,
+          leadHessianEigenMin = NA_real_,
+          siteHessianEigenMin = NA_real_,
+          siteHessianNegative = NA_real_,
+          maxConvAlpha = NA_real_,
+          maxConvAlphaStatus = NA_character_,
+          optimConvergence = NA_integer_,
+          adapFinalRho = NA_real_,
+          adapFinalRhoOverGlobalEigenMax = NA_real_,
+          adapFinalLeadWeight = NA_real_,
+          adapFinalProxAnchorsIntercept = NA,
+          pooledNegLogLik = NA_real_,
+          pooledMeanLogLoss = NA_real_,
+          pooledGradientMaxAbs = NA_real_,
+          pooledKktMaxAbs = NA_real_,
+          pooledKktViolating = NA_real_,
+          pooledKktMaxCoordinate = NA_real_,
+          pooledObjectiveGap = NA_real_,
+          fitElapsedSeconds = failure$elapsedSeconds,
+          elapsedSeconds = failure$elapsedSeconds,
+          configLabel = paste0("source=", failure$trainClientId),
+          stringsAsFactors = FALSE
+        ),
+        evalRows,
+        data.frame(
+          messages = 0,
+          numbers = 0,
+          task = task,
+          error = paste0("local baseline fit failed for ", failure$trainClientId, ": ", failure$error),
+          stringsAsFactors = FALSE
+        )
+      )
+    }))
+    baselineRows <- dplyr::bind_rows(baselineRows, failedRows)
+  }
+
+  baselineRows
 }
 
 summarizeResults <- function(rows) {

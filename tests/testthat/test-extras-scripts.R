@@ -774,6 +774,45 @@ test_that("comparison runner evaluates prediction ensembles", {
   expect_equal(ev$client, 1L)
 })
 
+test_that("comparison runner records local baseline fit failures", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+
+  runnerEnv$fitBaselineWeights <- function(clientDataList, args, seed) {
+    if (identical(seed, 2L)) {
+      stop("local fit did not converge")
+    }
+    list(w = c(0, 1), selectedLambda = 0.01, elapsedSeconds = 0.2)
+  }
+
+  trainData <- list(
+    list(xMatrix = cbind(1, c(0, 1)), yLabels = c(0, 1), n = 2L),
+    list(xMatrix = cbind(1, c(0, 1)), yLabels = c(0, 1), n = 2L)
+  )
+
+  ok <- runnerEnv$fitLocalBaselineSafely(
+    trainData = trainData,
+    localIndex = 1L,
+    trainClientId = "site1",
+    args = list(),
+    seed = 1L
+  )
+  failed <- runnerEnv$fitLocalBaselineSafely(
+    trainData = trainData,
+    localIndex = 2L,
+    trainClientId = "site2",
+    args = list(),
+    seed = 2L
+  )
+
+  expect_true(ok$ok)
+  expect_equal(ok$localIndex, 1L)
+  expect_false(failed$ok)
+  expect_equal(failed$trainClientId, "site2")
+  expect_match(failed$error, "did not converge")
+  expect_true(is.finite(failed$elapsedSeconds))
+})
+
 test_that("comparison runner does not partial-match lambda-grid-len as fixed lambda", {
   runnerEnv <- new.env(parent = globalenv())
   sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
