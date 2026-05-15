@@ -161,12 +161,16 @@
     otherHess <- serverBroadcast$otherHess
     odalVariant <- serverBroadcast$odalVariant %||% .odalVariant(config)
     localGradBar <- .logisticNegGradient(betaBar, xDesign, y)
+    localHessBar <- if (identical(odalVariant, "second")) {
+      .logisticNegHessian(betaBar, xDesign)
+    } else {
+      NULL
+    }
     objective <- function(beta) {
       delta <- beta - betaBar
       val <- .negLogLikMean(beta, xDesign, y) +
         sum((otherGrad - localGradBar) * beta)
       if (identical(odalVariant, "second")) {
-        localHessBar <- .logisticNegHessian(betaBar, xDesign)
         val <- val + as.numeric(t(delta) %*% (otherHess - localHessBar) %*% delta / 2)
       }
       if (is.finite(val)) val else .Machine$double.xmax / 1e100
