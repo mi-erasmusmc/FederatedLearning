@@ -197,6 +197,15 @@ appendCombinationRows <- function(rows, newRows, task, fold, featureSet, method)
   dplyr::bind_rows(rows, newRows)
 }
 
+stampMethodElapsed <- function(rows, startTime) {
+  elapsed <- as.numeric(difftime(Sys.time(), startTime, units = "secs"))
+  if (!"fitElapsedSeconds" %in% names(rows)) {
+    rows$fitElapsedSeconds <- rows$elapsedSeconds %||% NA_real_
+  }
+  rows$elapsedSeconds <- elapsed
+  rows
+}
+
 safeFilePart <- function(x) {
   gsub("[^A-Za-z0-9_.-]+", "-", as.character(x))
 }
@@ -1038,6 +1047,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       pooledKktViolating = pooledDiag$pooledKktViolating %||% NA_real_,
       pooledKktMaxCoordinate = pooledDiag$pooledKktMaxCoordinate %||% NA_real_,
       pooledObjectiveGap = NA_real_,
+      fitElapsedSeconds = fit$elapsedSeconds,
       elapsedSeconds = fit$elapsedSeconds,
       configLabel = config$configLabel %||% "default",
       stringsAsFactors = FALSE
@@ -1314,6 +1324,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       pooledKktViolating = fit$pooledKktViolating %||% NA_real_,
       pooledKktMaxCoordinate = fit$pooledKktMaxCoordinate %||% NA_real_,
       pooledObjectiveGap = NA_real_,
+      fitElapsedSeconds = elapsed,
       elapsedSeconds = elapsed,
       configLabel = config$configLabel %||% "default",
       stringsAsFactors = FALSE
@@ -1517,6 +1528,7 @@ runComparison <- function(args) {
                 "[%s] task=%s fold=%s featureSet=%s method=%s",
                 format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method
               ))
+              methodStart <- Sys.time()
               configs <- methodConfigGrid(method, featureSet, args)
               configs <- lapply(configs, function(config) {
                 config$trainClientPaths <- trainPaths
@@ -1637,6 +1649,7 @@ runComparison <- function(args) {
                     pooledKktViolating = NA_real_,
                     pooledKktMaxCoordinate = NA_real_,
                     pooledObjectiveGap = NA_real_,
+                    fitElapsedSeconds = NA_real_,
                     elapsedSeconds = NA_real_,
                     configLabel = NA_character_,
                     client = testIds,
@@ -1656,6 +1669,7 @@ runComparison <- function(args) {
                   )
                 }
               )
+              res <- stampMethodElapsed(res, methodStart)
               rows <- appendCombinationRows(rows, res, task, fold, featureSet, method)
               utils::write.csv(
                 rows,

@@ -788,6 +788,22 @@ test_that("comparison runner resumes successful combinations and reruns errors",
   expect_false(any(combined$error == "failed fit", na.rm = TRUE))
 })
 
+test_that("comparison runner elapsed time covers outer method work", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+
+  rows <- data.frame(
+    method = c("DualAvg", "DualAvg"),
+    elapsedSeconds = c(0.5, 0.5),
+    stringsAsFactors = FALSE
+  )
+
+  stamped <- runnerEnv$stampMethodElapsed(rows, Sys.time() - 10)
+
+  expect_true(all(stamped$elapsedSeconds >= 9))
+  expect_equal(stamped$fitElapsedSeconds, c(0.5, 0.5))
+})
+
 test_that("comparison runner reads existing result and diagnostic files", {
   runnerEnv <- new.env(parent = globalenv())
   sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
