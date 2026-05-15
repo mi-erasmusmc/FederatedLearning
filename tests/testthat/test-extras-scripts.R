@@ -814,6 +814,39 @@ test_that("comparison runner records local baseline fit failures", {
   expect_true(is.finite(failed$elapsedSeconds))
 })
 
+test_that("comparison runner preprocesses Cyclops baseline matrices", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+
+  trainData <- list(
+    list(
+      xMatrix = Matrix::Matrix(cbind(1, c(0.2, 0.4, 0.6, 0.8), c(1, 0, 0, 0), 1), sparse = TRUE),
+      yLabels = c(0, 1, 0, 1),
+      n = 4L
+    )
+  )
+  testData <- list(
+    list(
+      xMatrix = Matrix::Matrix(cbind(1, c(0.1, 0.8), c(1, 0), 1), sparse = TRUE),
+      yLabels = c(0, 1),
+      n = 2L
+    )
+  )
+
+  out <- runnerEnv$preprocessBaselineData(
+    trainData = trainData,
+    testData = testData,
+    config = list(intercept = TRUE),
+    args = runnerEnv$parseArgs(character())
+  )
+
+  expect_equal(ncol(out$trainData[[1]]$xMatrix), 3L)
+  expect_equal(as.numeric(out$trainData[[1]]$xMatrix[, 2]), c(0.25, 0.5, 0.75, 1))
+  expect_equal(as.numeric(out$testData[[1]]$xMatrix[, 2]), c(0.125, 1))
+  expect_equal(as.numeric(out$trainData[[1]]$xMatrix[, 3]), c(1, 0, 0, 0))
+  expect_equal(out$preprocessor$removed, 1L)
+})
+
 test_that("comparison runner does not partial-match lambda-grid-len as fixed lambda", {
   runnerEnv <- new.env(parent = globalenv())
   sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)

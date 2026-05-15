@@ -205,6 +205,16 @@ binaryAuc <- function(y, preds) {
   (sum(ranks[y01 == 1L]) - nCase * (nCase + 1) / 2) / (nCase * nControl)
 }
 
+matrixMoments <- function(xMatrix, intercept = FALSE) {
+  xMeans <- Matrix::colMeans(xMatrix)
+  x2Means <- Matrix::colMeans(xMatrix^2)
+  if (isTRUE(intercept) && length(xMeans) > 0L) {
+    xMeans[[1]] <- 0
+    x2Means[[1]] <- 0
+  }
+  list(xMeans = xMeans, x2Means = x2Means)
+}
+
 dropCombinationRows <- function(rows, task, fold, featureSet, method) {
   if (!nonEmptyRows(rows)) {
     return(rows)
@@ -924,6 +934,145 @@ pooledFitDiagnostics <- function(clientDataList, w, lambda = NA_real_,
   )
 }
 
+baselinePreprocessSettings <- function(args) {
+  enabled <- logicalArg(argValue(args, "baseline-preprocess"), TRUE)
+  list(
+    enabled = enabled,
+    minFraction = numArg(
+      argValue(args, "baseline-preprocess-min-fraction"),
+      numArg(argValue(args, "preprocess-min-fraction"), 0.001)
+    ),
+    normalize = logicalArg(
+      argValue(args, "baseline-preprocess-normalize") %||% argValue(args, "preprocess-normalize"),
+      TRUE
+    ),
+    removeRedundancy = logicalArg(
+      argValue(args, "baseline-preprocess-remove-redundancy") %||% argValue(args, "preprocess-remove-redundancy"),
+      TRUE
+    )
+  )
+}
+
+sparseColumnMax <- function(x) {
+  if (!inherits(x, "sparseMatrix")) {
+    return(apply(as.matrix(x), 2, max, na.rm = TRUE))
+  }
+  x <- methods::as(x, "dgCMatrix")
+  out <- numeric(ncol(x))
+  for (j in seq_len(ncol(x))) {
+    start <- x@p[[j]] + 1L
+    end <- x@p[[j + 1L]]
+    out[[j]] <- if (start <= end) max(0, x@x[start:end], na.rm = TRUE) else 0
+  }
+  out
+}
+
+fitBaselinePreprocessor <- function(trainData, intercept = TRUE, args) {
+  settings <- baselinePreprocessSettings(args)
+  p <- ncol(trainData[[1]]$xMatrix)
+  featureCols <- if (isTRUE(intercept)) seq.int(2L, p) else seq_len(p)
+  if (!isTRUE(settings$enabled) || length(featureCols) == 0L) {
+    return(list(
+      enabled = FALSE,
+      featureCols = featureCols,
+      keep = rep(TRUE, length(featureCols)),
+      normFactors = rep(1, length(featureCols)),
+      settings = settings
+    ))
+  }
+
+  xTrain <- do.call(rbind, lapply(trainData, `[[`, "xMatrix"))
+  xFeatures <- xTrain[, featureCols, drop = FALSE]
+  nTrain <- nrow(xFeatures)
+  nnz <- Matrix::colSums(xFeatures != 0)
+  keep <- rep(TRUE, length(featureCols))
+
+  if (isTRUE(settings$removeRedundancy)) {
+    xMeans <- Matrix::colMeans(xFeatures)
+    x2Means <- Matrix::colMeans(xFeatures^2)
+    variances <- pmax(x2Means - xMeans^2, 0)
+    keep <- keep & variances > sqrt(.Machine$double.eps)
+  }
+
+  if (is.finite(settings$minFraction) && settings$minFraction > 0) {
+    minCount <- floor(settings$minFraction * nTrain)
+    keep <- keep & nnz >= minCount
+  }
+
+  if (!any(keep)) {
+    stop("Baseline preprocessing removed all non-intercept covariates")
+  }
+
+  normFactors <- rep(1, length(featureCols))
+  if (isTRUE(settings$normalize)) {
+    maxValues <- sparseColumnMax(xFeatures[, keep, drop = FALSE])
+    maxValues[!is.finite(maxValues) | maxValues == 0] <- 1
+    normFactors[keep] <- as.numeric(maxValues)
+  }
+
+  list(
+    enabled = TRUE,
+    featureCols = featureCols,
+    keep = keep,
+    normFactors = normFactors,
+    removedRare = sum(nnz < floor(settings$minFraction * nTrain)),
+    removed = sum(!keep),
+    settings = settings
+  )
+}
+
+applyBaselinePreprocessor <- function(clientData, preprocessor, intercept = TRUE) {
+  if (!isTRUE(preprocessor$enabled)) {
+    return(clientData)
+  }
+  x <- clientData$xMatrix
+  p <- ncol(x)
+  featureCols <- preprocessor$featureCols
+  keep <- preprocessor$keep
+  normFactors <- preprocessor$normFactors[keep]
+  retained <- featureCols[keep]
+
+  if (isTRUE(intercept)) {
+    xOut <- x[, 1L, drop = FALSE]
+    if (length(retained) > 0L) {
+      xFeatures <- x[, retained, drop = FALSE]
+      xFeatures <- xFeatures %*% Matrix::Diagonal(x = 1 / normFactors)
+      xOut <- cbind(xOut, xFeatures)
+    }
+  } else {
+    xOut <- x[, retained, drop = FALSE]
+    if (length(retained) > 0L) {
+      xOut <- xOut %*% Matrix::Diagonal(x = 1 / normFactors)
+    }
+  }
+
+  moments <- matrixMoments(xOut, intercept = intercept)
+  clientData$xMatrix <- xOut
+  clientData$xMeans <- moments$xMeans
+  clientData$x2Means <- moments$x2Means
+  clientData$n <- nrow(xOut)
+  clientData
+}
+
+preprocessBaselineData <- function(trainData, testData = NULL, config, args) {
+  preprocessor <- fitBaselinePreprocessor(
+    trainData = trainData,
+    intercept = isTRUE(config$intercept),
+    args = args
+  )
+  trainData <- lapply(trainData, applyBaselinePreprocessor,
+    preprocessor = preprocessor,
+    intercept = isTRUE(config$intercept)
+  )
+  if (!is.null(testData)) {
+    testData <- lapply(testData, applyBaselinePreprocessor,
+      preprocessor = preprocessor,
+      intercept = isTRUE(config$intercept)
+    )
+  }
+  list(trainData = trainData, testData = testData, preprocessor = preprocessor)
+}
+
 fitCyclopsWeights <- function(clientDataList, args, seed) {
   if (!requireNamespace("Cyclops", quietly = TRUE)) {
     stop("Cyclops is required for pooled/local baseline models")
@@ -1060,6 +1209,18 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   matrixConfig$p <- nrow(trainMap)
   trainData <- lapply(trainPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
 
+  testPlp <- lapply(testPaths, FederatedLearning::loadClientData, popSettings = popSettings)
+  testData <- lapply(testPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
+
+  processed <- preprocessBaselineData(
+    trainData = trainData,
+    testData = testData,
+    config = config,
+    args = args
+  )
+  trainData <- processed$trainData
+  testData <- processed$testData
+
   if (identical(method, "PooledLasso")) {
     fits <- list(fitBaselineWeights(
       trainData,
@@ -1149,9 +1310,6 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       stop("Unknown baseline method: ", method)
     }
   }
-
-  testPlp <- lapply(testPaths, FederatedLearning::loadClientData, popSettings = popSettings)
-  testData <- lapply(testPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
 
   baselineRows <- lapply(fits, function(fit) {
     pooledDiag <- if (isTRUE(config$pooledDiagnostics %||% TRUE) && is.null(fit$localFits)) {
