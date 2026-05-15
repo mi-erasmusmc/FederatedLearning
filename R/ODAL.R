@@ -1,14 +1,81 @@
+.odalVariant <- function(config) {
+  variant <- config$odalVariant %||% "second"
+  if (identical(variant, "ODAL1")) {
+    variant <- "first"
+  }
+  if (identical(variant, "ODAL2")) {
+    variant <- "second"
+  }
+  if (!variant %in% c("first", "second")) {
+    stop("config$odalVariant must be one of: first, second, ODAL1, ODAL2")
+  }
+  variant
+}
+
+.odalCorrectionDiagnostics <- function(globalHess, leadHess, tau = 1e-10) {
+  correction <- globalHess - leadHess
+  eig <- tryCatch(
+    eigen((correction + t(correction)) / 2, symmetric = TRUE, only.values = TRUE)$values,
+    error = function(e) NA_real_
+  )
+  eigFinite <- is.finite(eig)
+  diagVals <- diag(correction)
+  epsilon <- .adapEpsilonEig(globalHess, tau = tau)
+  negative <- if (any(eigFinite)) sum(eig[eigFinite] < -epsilon) else NA_integer_
+  status <- if (is.na(negative)) {
+    "unknown"
+  } else if (negative > 0L) {
+    "indefinite"
+  } else {
+    "psd"
+  }
+  list(
+    correction = correction,
+    curvatureStatus = status,
+    correctionEigenMin = if (any(eigFinite)) min(eig[eigFinite]) else NA_real_,
+    correctionEigenMax = if (any(eigFinite)) max(eig[eigFinite]) else NA_real_,
+    correctionEigenNegative = negative,
+    correctionDiagMin = suppressWarnings(min(diagVals, na.rm = TRUE)),
+    correctionDiagMax = suppressWarnings(max(diagVals, na.rm = TRUE)),
+    correctionDiagNegative = sum(is.finite(diagVals) & diagVals < -epsilon),
+    correctionEpsilon = epsilon
+  )
+}
+
 .serverInitODAL <- function(config) {
   p <- config[["p"]] + 1L
   list(
     phase = 0L,
     p = p,
+    odalVariant = .odalVariant(config),
     betaBar = rep(0, p),
     leadIndex = NA_integer_,
     otherGrad = NULL,
     otherHess = NULL,
+    curvatureStatus = NA_character_,
+    correctionEigenMin = NA_real_,
+    correctionEigenMax = NA_real_,
+    correctionEigenNegative = NA_integer_,
+    correctionDiagMin = NA_real_,
+    correctionDiagMax = NA_real_,
+    correctionDiagNegative = NA_integer_,
+    correctionEpsilon = NA_real_,
+    globalHessianEigenMin = NA_real_,
+    leadHessianEigenMin = NA_real_,
+    siteHessianEigenMin = NA_real_,
+    siteHessianNegative = NA_integer_,
     w = rep(0, p)
   )
+}
+
+.serverInitODAL1 <- function(config) {
+  config$odalVariant <- "first"
+  .serverInitODAL(config)
+}
+
+.serverInitODAL2 <- function(config) {
+  config$odalVariant <- "second"
+  .serverInitODAL(config)
 }
 
 .fitLocalLogistic <- function(xRaw, y) {
@@ -74,11 +141,14 @@
 
   if (phase == 1L) {
     betaBar <- serverBroadcast$betaBar
-    return(list(
+    out <- list(
       grad = .logisticNegGradient(betaBar, xDesign, y),
-      Hess = .logisticNegHessian(betaBar, xDesign),
       n = clientData$n
-    ))
+    )
+    if (identical(serverBroadcast$odalVariant %||% .odalVariant(config), "second")) {
+      out$Hess <- .logisticNegHessian(betaBar, xDesign)
+    }
+    return(out)
   }
 
   if (phase == 2L) {
@@ -89,13 +159,16 @@
     betaBar <- serverBroadcast$betaBar
     otherGrad <- serverBroadcast$otherGrad
     otherHess <- serverBroadcast$otherHess
+    odalVariant <- serverBroadcast$odalVariant %||% .odalVariant(config)
     localGradBar <- .logisticNegGradient(betaBar, xDesign, y)
-    localHessBar <- .logisticNegHessian(betaBar, xDesign)
     objective <- function(beta) {
       delta <- beta - betaBar
       val <- .negLogLikMean(beta, xDesign, y) +
-        sum((otherGrad - localGradBar) * beta) +
-        as.numeric(t(delta) %*% (otherHess - localHessBar) %*% delta / 2)
+        sum((otherGrad - localGradBar) * beta)
+      if (identical(odalVariant, "second")) {
+        localHessBar <- .logisticNegHessian(betaBar, xDesign)
+        val <- val + as.numeric(t(delta) %*% (otherHess - localHessBar) %*% delta / 2)
+      }
       if (is.finite(val)) val else .Machine$double.xmax / 1e100
     }
     fit <- stats::optim(
@@ -104,7 +177,12 @@
       method = config$optimMethod %||% "BFGS",
       control = list(maxit = config$optimMaxit %||% 1000L)
     )
-    return(list(w = fit$par, convergence = fit$convergence, value = fit$value))
+    return(list(
+      w = fit$par,
+      convergence = fit$convergence,
+      value = fit$value,
+      optimMessage = fit$message %||% NA_character_
+    ))
   }
 
   list()
@@ -130,6 +208,7 @@
       report = list(
         w = betaBar,
         leadIndex = leadIndex,
+        odalVariant = state$odalVariant,
         skipConvergence = TRUE,
         communicationNumbers = length(betaBar) * length(clientReports)
       )
@@ -140,31 +219,78 @@
     ns <- vapply(clientReports, `[[`, numeric(1), "n")
     weights <- ns / sum(ns)
     grads <- do.call(cbind, lapply(clientReports, `[[`, "grad"))
-    hessList <- lapply(clientReports, `[[`, "Hess")
     globalGrad <- as.numeric(grads %*% weights)
-    globalHess <- Reduce(`+`, Map(function(H, w) H * w, hessList, weights))
     state <- serverState
     state$phase <- 2L
     state$otherGrad <- globalGrad
-    state$otherHess <- globalHess
-    hDiag <- diag(globalHess)
-    hCond <- tryCatch(kappa(globalHess), error = function(e) NA_real_)
-    state$hessianDim <- paste(dim(globalHess), collapse = "x")
-    state$hessianDiagMin <- min(hDiag, na.rm = TRUE)
-    state$hessianDiagMax <- max(hDiag, na.rm = TRUE)
-    state$hessianCondition <- hCond
+    communicationNumbers <- length(globalGrad) * length(clientReports)
+    if (identical(state$odalVariant, "second")) {
+      hessList <- lapply(clientReports, `[[`, "Hess")
+      globalHess <- Reduce(`+`, Map(function(H, w) H * w, hessList, weights))
+      leadHess <- hessList[[state$leadIndex]]
+      siteEigenMins <- vapply(hessList, function(H) .adapEigenRange(H)$min, numeric(1))
+      globalEig <- .adapEigenRange(globalHess)
+      correctionDiagnostics <- .odalCorrectionDiagnostics(
+        globalHess,
+        leadHess,
+        tau = config$odalCurvatureTau %||% 1e-10
+      )
+      if (identical(config$odalCurvatureAction %||% "report", "fail") &&
+          identical(correctionDiagnostics$curvatureStatus, "indefinite")) {
+        stop("ODAL2 second-order surrogate has indefinite Hessian correction", call. = FALSE)
+      }
+      state$otherHess <- globalHess
+      state$curvatureStatus <- correctionDiagnostics$curvatureStatus
+      state$correctionEigenMin <- correctionDiagnostics$correctionEigenMin
+      state$correctionEigenMax <- correctionDiagnostics$correctionEigenMax
+      state$correctionEigenNegative <- correctionDiagnostics$correctionEigenNegative
+      state$correctionDiagMin <- correctionDiagnostics$correctionDiagMin
+      state$correctionDiagMax <- correctionDiagnostics$correctionDiagMax
+      state$correctionDiagNegative <- correctionDiagnostics$correctionDiagNegative
+      state$correctionEpsilon <- correctionDiagnostics$correctionEpsilon
+      state$globalHessianEigenMin <- globalEig$min
+      state$leadHessianEigenMin <- siteEigenMins[[state$leadIndex]]
+      state$siteHessianEigenMin <- min(siteEigenMins, na.rm = TRUE)
+      state$siteHessianNegative <- sum(is.finite(siteEigenMins) & siteEigenMins < -correctionDiagnostics$correctionEpsilon)
+      hDiag <- diag(globalHess)
+      hCond <- tryCatch(kappa(globalHess), error = function(e) NA_real_)
+      state$hessianDim <- paste(dim(globalHess), collapse = "x")
+      state$hessianDiagMin <- min(hDiag, na.rm = TRUE)
+      state$hessianDiagMax <- max(hDiag, na.rm = TRUE)
+      state$hessianCondition <- hCond
+      communicationNumbers <- communicationNumbers + length(globalHess) * length(clientReports)
+    } else {
+      state$otherHess <- NULL
+      state$curvatureStatus <- "first_order"
+      state$hessianDim <- NA_character_
+      state$hessianDiagMin <- NA_real_
+      state$hessianDiagMax <- NA_real_
+      state$hessianCondition <- NA_real_
+    }
     return(list(
       state = state,
       report = list(
         w = state$w,
         leadIndex = state$leadIndex,
+        odalVariant = state$odalVariant,
         skipConvergence = TRUE,
         hessianDim = state$hessianDim,
         hessianDiagMin = state$hessianDiagMin,
         hessianDiagMax = state$hessianDiagMax,
         hessianCondition = state$hessianCondition,
-        communicationNumbers = length(globalGrad) * length(clientReports) +
-          length(globalHess) * length(clientReports)
+        curvatureStatus = state$curvatureStatus,
+        correctionEigenMin = state$correctionEigenMin,
+        correctionEigenMax = state$correctionEigenMax,
+        correctionEigenNegative = state$correctionEigenNegative,
+        correctionDiagMin = state$correctionDiagMin,
+        correctionDiagMax = state$correctionDiagMax,
+        correctionDiagNegative = state$correctionDiagNegative,
+        correctionEpsilon = state$correctionEpsilon,
+        globalHessianEigenMin = state$globalHessianEigenMin,
+        leadHessianEigenMin = state$leadHessianEigenMin,
+        siteHessianEigenMin = state$siteHessianEigenMin,
+        siteHessianNegative = state$siteHessianNegative,
+        communicationNumbers = communicationNumbers
       )
     ))
   }
@@ -181,12 +307,27 @@
           w = leadReport$w,
           done = TRUE,
           leadIndex = state$leadIndex,
+          odalVariant = state$odalVariant,
           convergence = leadReport$convergence,
+          optimConvergence = leadReport$convergence,
+          optimMessage = leadReport$optimMessage %||% NA_character_,
           objective = leadReport$value,
           hessianDim = state$hessianDim %||% NA_character_,
           hessianDiagMin = state$hessianDiagMin %||% NA_real_,
           hessianDiagMax = state$hessianDiagMax %||% NA_real_,
           hessianCondition = state$hessianCondition %||% NA_real_,
+          curvatureStatus = state$curvatureStatus %||% NA_character_,
+          correctionEigenMin = state$correctionEigenMin %||% NA_real_,
+          correctionEigenMax = state$correctionEigenMax %||% NA_real_,
+          correctionEigenNegative = state$correctionEigenNegative %||% NA_integer_,
+          correctionDiagMin = state$correctionDiagMin %||% NA_real_,
+          correctionDiagMax = state$correctionDiagMax %||% NA_real_,
+          correctionDiagNegative = state$correctionDiagNegative %||% NA_integer_,
+          correctionEpsilon = state$correctionEpsilon %||% NA_real_,
+          globalHessianEigenMin = state$globalHessianEigenMin %||% NA_real_,
+          leadHessianEigenMin = state$leadHessianEigenMin %||% NA_real_,
+          siteHessianEigenMin = state$siteHessianEigenMin %||% NA_real_,
+          siteHessianNegative = state$siteHessianNegative %||% NA_integer_,
           communicationNumbers = length(leadReport$w)
         )
       ))
@@ -206,7 +347,25 @@
 
 .registerAlgorithm(
   "ODAL",
-  serverInit = .serverInitODAL,
+  serverInit = .serverInitODAL2,
+  clientInit = NULL,
+  clientUpdate = .clientUpdateODAL,
+  serverRound = .serverRoundODAL,
+  lambdaStrategy = .lambdaStrategyODAL()
+)
+
+.registerAlgorithm(
+  "ODAL1",
+  serverInit = .serverInitODAL1,
+  clientInit = NULL,
+  clientUpdate = .clientUpdateODAL,
+  serverRound = .serverRoundODAL,
+  lambdaStrategy = .lambdaStrategyODAL()
+)
+
+.registerAlgorithm(
+  "ODAL2",
+  serverInit = .serverInitODAL2,
   clientInit = NULL,
   clientUpdate = .clientUpdateODAL,
   serverRound = .serverRoundODAL,

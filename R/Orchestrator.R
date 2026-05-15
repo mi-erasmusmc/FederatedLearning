@@ -118,6 +118,27 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
       n = n
     )
   }
+  getLocalFitDiagnostics <- function(w) {
+    .assertWorkerState(
+      "clientData",
+      action = "Run clusterCreateMatrices() before fit diagnostics."
+    )
+    n <- nrow(clientData$xMatrix)
+    list(
+      loss = logisticNegLogLik(
+        weights = w,
+        xMatrix = clientData$xMatrix,
+        yLabels = clientData$yLabels,
+        meanLoss = FALSE
+      ),
+      gradient = gradLogistic(
+        weights = w,
+        xMatrix = clientData$xMatrix,
+        yLabels = clientData$yLabels
+      ),
+      n = n
+    )
+  }
   parallel::clusterExport(
     cl,
     c(
@@ -125,7 +146,8 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
       "config",
       ".assertWorkerState",
       "clientUpdate",
-      "getLocalConvergenceObjective"
+      "getLocalConvergenceObjective",
+      "getLocalFitDiagnostics"
     ),
     envir = environment()
   )
@@ -133,6 +155,8 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     "assertConformableWeights",
     "binaryLogLoss",
     "logisticNegLogLik",
+    "gradLogistic",
+    "logisticGradientCpp",
     "cyclopsGradientObjective",
     "cyclopsGradientObjectiveCpp",
     ".asDgCMatrix"
@@ -289,6 +313,42 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   extraNames <- setdiff(names(serverReport), c("w", "done", "cvMetric", "skipConvergence"))
   for (nm in extraNames) {
     result[[nm]] <- serverReport[[nm]]
+  }
+  if (isTRUE(config$pooledDiagnostics %||% FALSE)) {
+    fitDiagnostics <- parallel::clusterEvalQ(
+      cl,
+      getLocalFitDiagnostics(serverReport$w %||% serverState$w)
+    )
+    ns <- vapply(fitDiagnostics, `[[`, numeric(1), "n")
+    totalN <- sum(ns)
+    grads <- do.call(cbind, lapply(fitDiagnostics, `[[`, "gradient"))
+    globalGradient <- as.numeric(grads %*% (ns / totalN))
+    lambda <- config[["lambda", exact = TRUE]]
+    lambda <- if (length(lambda) == 1L && is.finite(lambda) && lambda >= 0) lambda else NA_real_
+    penalize <- rep(TRUE, length(globalGradient))
+    if (length(penalize) > 0L && isTRUE(config$intercept)) {
+      penalize[1] <- FALSE
+    }
+    active <- abs(result$w) > 1e-8
+    kktViolation <- abs(globalGradient)
+    if (is.finite(lambda)) {
+      for (j in seq_along(globalGradient)) {
+        if (isTRUE(penalize[j])) {
+          kktViolation[j] <- if (isTRUE(active[j])) {
+            abs(globalGradient[j] + lambda * sign(result$w[j]))
+          } else {
+            max(abs(globalGradient[j]) - lambda, 0)
+          }
+        }
+      }
+    }
+    finiteKkt <- is.finite(kktViolation)
+    result$pooledNegLogLik <- sum(vapply(fitDiagnostics, `[[`, numeric(1), "loss"))
+    result$pooledMeanLogLoss <- result$pooledNegLogLik / totalN
+    result$pooledGradientMaxAbs <- max(abs(globalGradient), na.rm = TRUE)
+    result$pooledKktMaxAbs <- if (any(finiteKkt)) max(kktViolation[finiteKkt]) else NA_real_
+    result$pooledKktViolating <- if (any(finiteKkt)) sum(kktViolation[finiteKkt] > (config$pooledKktTolerance %||% 1e-4)) else NA_integer_
+    result$pooledKktMaxCoordinate <- if (any(finiteKkt)) which.max(kktViolation) else NA_integer_
   }
   result
 }

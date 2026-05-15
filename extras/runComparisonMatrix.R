@@ -5,7 +5,7 @@
 #   --data-root=data \
 #   --tasks=taskA,taskB \
 #   --feature-sets=ageSex,ageSexPhenotypes \
-#   --methods=DualAvg,ODAL,ADAP,ADAP_PDA,ADAP1,ADAPDiag,PooledLasso \
+#   --methods=DualAvg,ODAL,ODAL1,ADAP,ADAP_PDA,ADAP1,ADAPDiag,PooledLasso \
 #   --result-directory=results/comparisonMatrix \
 #   --clients=5 \
 #   --client-ids=databaseA,databaseB,databaseC,databaseD,databaseE \
@@ -120,6 +120,8 @@ methodRounds <- function(method, args) {
     DualAvgCpp = firstValue(intCsvArg(argValue(args, "dualavg-rounds"), 10000L)),
     DualAvgR = firstValue(intCsvArg(argValue(args, "dualavg-rounds"), 10000L)),
     ODAL = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    ODAL1 = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    ODAL2 = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     ADAP = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     ADAP2 = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     ADAP_PDA = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
@@ -127,6 +129,7 @@ methodRounds <- function(method, args) {
     ADAPDiag = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     `Prox-ADAP` = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     `C-ADAP` = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
+    `MaxConv-ADAP` = firstValue(intCsvArg(argValue(args, "pda-rounds"), 3L)),
     firstValue(intCsvArg(argValue(args, "rounds"), 1000L))
   )
 }
@@ -249,7 +252,7 @@ isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
 }
 
 methodConfig <- function(method, featureSet, args) {
-  adapMethods <- c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP")
+  adapMethods <- c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")
   defaultLambdaSearch <- if (method %in% adapMethods) "optimize" else "grid"
   defaultLambdaMetric <- "deviance"
   cfg <- list(
@@ -293,10 +296,14 @@ methodConfig <- function(method, featureSet, args) {
     adapCvDiagnostics = logicalArg(argValue(args, "adap-cv-diagnostics"), FALSE),
     adapTraceDiagnostics = logicalArg(argValue(args, "adap-trace-diagnostics"), FALSE),
     adapProxTau = firstValue(numCsvArg(argValue(args, "adap-prox-tau"), 1e-8)),
+    adapCurvatureTau = firstValue(numCsvArg(argValue(args, "adap-curvature-tau"), 1e-10)),
+    adapMaxConvTau = firstValue(numCsvArg(argValue(args, "adap-maxconv-tau"), 1e-10)),
     adapFinalMaxOuter = firstValue(intCsvArg(argValue(args, "adap-final-max-outer"), 1000L)),
     adapKktTolerance = firstValue(numCsvArg(argValue(args, "adap-kkt-tolerance"), 1e-4)),
     adapBetaAbsThreshold = firstValue(numCsvArg(argValue(args, "adap-beta-abs-threshold"), 1e4)),
     adapEtaAbsThreshold = firstValue(numCsvArg(argValue(args, "adap-eta-abs-threshold"), 1e4)),
+    pooledDiagnostics = logicalArg(argValue(args, "pooled-diagnostics"), TRUE),
+    pooledKktTolerance = firstValue(numCsvArg(argValue(args, "pooled-kkt-tolerance"), 1e-4)),
     convergenceObjective = firstValue(charCsvArg(argValue(args, "convergence-objective"), "negLogLikelihood"))
   )
 
@@ -315,7 +322,10 @@ methodConfig <- function(method, featureSet, args) {
     cfg$lambda <- if (!is.null(lambdaArg)) firstValue(numCsvArg(lambdaArg, NA_real_)) else NULL
   }
 
-  if (identical(method, "ODAL")) {
+  if (method %in% c("ODAL", "ODAL1", "ODAL2")) {
+    cfg$odalVariant <- if (identical(method, "ODAL1")) "first" else "second"
+    cfg$odalCurvatureAction <- firstValue(charCsvArg(argValue(args, "odal-curvature-action"), "report"))
+    cfg$odalCurvatureTau <- firstValue(numCsvArg(argValue(args, "odal-curvature-tau"), 1e-10))
     cfg$odalInit <- firstValue(charCsvArg(
       argValue(args, "odal-init"),
       if (logicalArg(argValue(args, "odal-ridge-fallback"), FALSE)) "ridgeFallback" else "pda"
@@ -326,6 +336,9 @@ methodConfig <- function(method, featureSet, args) {
   if (identical(method, "ADAPDiag") && !is.null(argValue(args, "adapdiag-style"))) {
     cfg$adapDiagStyle <- firstValue(charCsvArg(argValue(args, "adapdiag-style"), "remote"))
   }
+  if (method %in% c("ODAL", "ODAL1", "ODAL2", adapMethods) && !is.null(argValue(args, "lead-index"))) {
+    cfg$leadIndex <- firstValue(intCsvArg(argValue(args, "lead-index"), NA_integer_))
+  }
   cfg
 }
 
@@ -335,7 +348,7 @@ methodConfigGridValues <- function(method, base, args) {
     epsilon = numCsvArg(argValue(args, "epsilon"), base$epsilon),
     rounds = if (method %in% dualAvgMethods) {
       intCsvArg(argValue(args, "dualavg-rounds"), base$rounds)
-    } else if (method %in% c("ODAL", "ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP")) {
+    } else if (method %in% c("ODAL", "ODAL1", "ODAL2", "ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")) {
       intCsvArg(argValue(args, "pda-rounds"), base$rounds)
     } else {
       intCsvArg(argValue(args, "rounds"), base$rounds)
@@ -372,6 +385,14 @@ methodConfigGridValues <- function(method, base, args) {
       argValue(args, "adap-prox-tau"),
       base$adapProxTau
     ),
+    adapCurvatureTau = numCsvArg(
+      argValue(args, "adap-curvature-tau"),
+      base$adapCurvatureTau
+    ),
+    adapMaxConvTau = numCsvArg(
+      argValue(args, "adap-maxconv-tau"),
+      base$adapMaxConvTau
+    ),
     adapFinalMaxOuter = intCsvArg(
       argValue(args, "adap-final-max-outer"),
       base$adapFinalMaxOuter
@@ -387,11 +408,17 @@ methodConfigGridValues <- function(method, base, args) {
     adapEtaAbsThreshold = numCsvArg(
       argValue(args, "adap-eta-abs-threshold"),
       base$adapEtaAbsThreshold
+    ),
+    pooledKktTolerance = numCsvArg(
+      argValue(args, "pooled-kkt-tolerance"),
+      base$pooledKktTolerance
     )
   )
-  if (identical(method, "ODAL")) {
+  if (method %in% c("ODAL", "ODAL1", "ODAL2")) {
     values$odalInit <- charCsvArg(argValue(args, "odal-init"), base$odalInit)
     values$odalRidgeLambda <- numCsvArg(argValue(args, "odal-ridge-lambda"), base$odalRidgeLambda)
+    values$odalCurvatureAction <- charCsvArg(argValue(args, "odal-curvature-action"), base$odalCurvatureAction)
+    values$odalCurvatureTau <- numCsvArg(argValue(args, "odal-curvature-tau"), base$odalCurvatureTau)
   }
   if (method %in% dualAvgMethods) {
     values$etaClient <- numCsvArg(argValue(args, "eta-client"), base$etaClient)
@@ -408,6 +435,10 @@ methodConfigGridValues <- function(method, base, args) {
   }
   if (identical(method, "ADAPDiag")) {
     values$adapDiagStyle <- charCsvArg(argValue(args, "adapdiag-style"), base$adapDiagStyle %||% "remote")
+  }
+  if (method %in% c("ODAL", "ODAL1", "ODAL2", "ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP") &&
+      !is.null(argValue(args, "lead-index"))) {
+    values$leadIndex <- intCsvArg(argValue(args, "lead-index"), base$leadIndex %||% NA_integer_)
   }
   values
 }
@@ -763,6 +794,45 @@ evaluateWeights <- function(clientData, w, clientId, clientIndex) {
   )
 }
 
+pooledFitDiagnostics <- function(clientDataList, w, lambda = NA_real_,
+                                 intercept = TRUE, tolerance = 1e-4) {
+  ns <- vapply(clientDataList, function(x) nrow(x$xMatrix), numeric(1))
+  totalN <- sum(ns)
+  losses <- vapply(clientDataList, function(x) {
+    FederatedLearning:::logisticNegLogLik(w, x$xMatrix, x$yLabels, meanLoss = FALSE)
+  }, numeric(1))
+  grads <- do.call(cbind, lapply(clientDataList, function(x) {
+    FederatedLearning::gradLogistic(w, x$xMatrix, x$yLabels)
+  }))
+  globalGradient <- as.numeric(grads %*% (ns / totalN))
+  penalize <- rep(TRUE, length(w))
+  if (length(penalize) > 0L && isTRUE(intercept)) {
+    penalize[1] <- FALSE
+  }
+  active <- abs(w) > 1e-8
+  kktViolation <- abs(globalGradient)
+  if (length(lambda) == 1L && is.finite(lambda) && lambda >= 0) {
+    for (j in seq_along(globalGradient)) {
+      if (isTRUE(penalize[j])) {
+        kktViolation[j] <- if (isTRUE(active[j])) {
+          abs(globalGradient[j] + lambda * sign(w[j]))
+        } else {
+          max(abs(globalGradient[j]) - lambda, 0)
+        }
+      }
+    }
+  }
+  finiteKkt <- is.finite(kktViolation)
+  list(
+    pooledNegLogLik = sum(losses),
+    pooledMeanLogLoss = sum(losses) / totalN,
+    pooledGradientMaxAbs = max(abs(globalGradient), na.rm = TRUE),
+    pooledKktMaxAbs = if (any(finiteKkt)) max(kktViolation[finiteKkt]) else NA_real_,
+    pooledKktViolating = if (any(finiteKkt)) sum(kktViolation[finiteKkt] > tolerance) else NA_integer_,
+    pooledKktMaxCoordinate = if (any(finiteKkt)) which.max(kktViolation) else NA_integer_
+  )
+}
+
 fitCyclopsWeights <- function(clientDataList, args, seed) {
   if (!requireNamespace("Cyclops", quietly = TRUE)) {
     stop("Cyclops is required for pooled/local baseline models")
@@ -904,6 +974,17 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       )
     }
   }
+  pooledDiag <- if (isTRUE(config$pooledDiagnostics %||% TRUE)) {
+    pooledFitDiagnostics(
+      trainData,
+      fit$w,
+      lambda = NA_real_,
+      intercept = config$intercept,
+      tolerance = config$pooledKktTolerance %||% 1e-4
+    )
+  } else {
+    list()
+  }
 
   testPlp <- lapply(testPaths, FederatedLearning::loadClientData, popSettings = popSettings)
   testData <- lapply(testPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
@@ -924,11 +1005,39 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       selectedLambda = fit$selectedLambda %||% NA_real_,
       lambdaPathFile = NA_character_,
       leadIndex = fit$leadIndex %||% NA_integer_,
+      leadWeight = NA_real_,
+      leadWeightMin = NA_real_,
       trainObjective = NA_real_,
       hessianDim = NA_character_,
       hessianDiagMin = NA_real_,
       hessianDiagMax = NA_real_,
       hessianCondition = NA_real_,
+      odalVariant = NA_character_,
+      curvatureStatus = NA_character_,
+      correctionEigenMin = NA_real_,
+      correctionEigenMax = NA_real_,
+      correctionEigenNegative = NA_real_,
+      correctionDiagMin = NA_real_,
+      correctionDiagMax = NA_real_,
+      correctionDiagNegative = NA_real_,
+      globalHessianEigenMin = NA_real_,
+      leadHessianEigenMin = NA_real_,
+      siteHessianEigenMin = NA_real_,
+      siteHessianNegative = NA_real_,
+      maxConvAlpha = NA_real_,
+      maxConvAlphaStatus = NA_character_,
+      optimConvergence = NA_integer_,
+      adapFinalRho = NA_real_,
+      adapFinalRhoOverGlobalEigenMax = NA_real_,
+      adapFinalLeadWeight = NA_real_,
+      adapFinalProxAnchorsIntercept = NA,
+      pooledNegLogLik = pooledDiag$pooledNegLogLik %||% NA_real_,
+      pooledMeanLogLoss = pooledDiag$pooledMeanLogLoss %||% NA_real_,
+      pooledGradientMaxAbs = pooledDiag$pooledGradientMaxAbs %||% NA_real_,
+      pooledKktMaxAbs = pooledDiag$pooledKktMaxAbs %||% NA_real_,
+      pooledKktViolating = pooledDiag$pooledKktViolating %||% NA_real_,
+      pooledKktMaxCoordinate = pooledDiag$pooledKktMaxCoordinate %||% NA_real_,
+      pooledObjectiveGap = NA_real_,
       elapsedSeconds = fit$elapsedSeconds,
       configLabel = config$configLabel %||% "default",
       stringsAsFactors = FALSE
@@ -970,6 +1079,22 @@ summarizeResults <- function(rows) {
   do.call(rbind, summaries)
 }
 
+addPooledObjectiveGap <- function(rows) {
+  if (!nonEmptyRows(rows) || !"pooledMeanLogLoss" %in% names(rows)) {
+    return(rows)
+  }
+  rows$pooledObjectiveGap <- NA_real_
+  pooled <- rows[rows$method == "PooledLasso" & is.finite(rows$pooledMeanLogLoss), , drop = FALSE]
+  if (!nrow(pooled)) {
+    return(rows)
+  }
+  keys <- paste(pooled$task, pooled$fold, pooled$featureSet, sep = "\r")
+  reference <- stats::setNames(pooled$pooledMeanLogLoss, keys)
+  rowKeys <- paste(rows$task, rows$fold, rows$featureSet, sep = "\r")
+  rows$pooledObjectiveGap <- rows$pooledMeanLogLoss - as.numeric(reference[rowKeys])
+  rows
+}
+
 communicationMessages <- function(fit, config) {
   roundsCompleted <- fit$roundsCompleted %||% config$rounds
   roundsCompleted * length(config$trainClientPaths)
@@ -991,7 +1116,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
                              task, featureSet, fold, testClientIds, verbose,
                              debugDirectory = NULL) {
   if (isTRUE(config$adapTraceDiagnostics) && !is.null(debugDirectory) &&
-      method %in% c("ADAP", "ADAP2", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP")) {
+      method %in% c("ADAP", "ADAP2", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")) {
     config$adapTraceFile <- debugPath(
       debugDirectory,
       task,
@@ -1039,10 +1164,33 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         lambdaSearchBest = fit$config$lambdaSearchBest %||% NA_real_,
         lambdaSearchInnerAuc = fit$config$lambdaSearchInnerAuc %||% NA_real_,
         leadIndex = fit$leadIndex %||% NA_integer_,
+        leadWeight = fit$leadWeight %||% NA_real_,
+        leadWeightMin = fit$leadWeightMin %||% NA_real_,
         hessianDim = fit$hessianDim %||% NA_character_,
         hessianDiagMin = fit$hessianDiagMin %||% NA_real_,
         hessianDiagMax = fit$hessianDiagMax %||% NA_real_,
         hessianCondition = fit$hessianCondition %||% NA_real_,
+        odalVariant = fit$odalVariant %||% NA_character_,
+        curvatureStatus = fit$curvatureStatus %||% NA_character_,
+        correctionEigenMin = fit$correctionEigenMin %||% NA_real_,
+        correctionEigenMax = fit$correctionEigenMax %||% NA_real_,
+        correctionEigenNegative = fit$correctionEigenNegative %||% NA_real_,
+        correctionDiagMin = fit$correctionDiagMin %||% NA_real_,
+        correctionDiagMax = fit$correctionDiagMax %||% NA_real_,
+        correctionDiagNegative = fit$correctionDiagNegative %||% NA_real_,
+        globalHessianEigenMin = fit$globalHessianEigenMin %||% NA_real_,
+        leadHessianEigenMin = fit$leadHessianEigenMin %||% NA_real_,
+        siteHessianEigenMin = fit$siteHessianEigenMin %||% NA_real_,
+        siteHessianNegative = fit$siteHessianNegative %||% NA_real_,
+        maxConvAlpha = fit$maxConvAlpha %||% NA_real_,
+        maxConvAlphaStatus = fit$maxConvAlphaStatus %||% NA_character_,
+        optimConvergence = fit$optimConvergence %||% NA_integer_,
+        pooledNegLogLik = fit$pooledNegLogLik %||% NA_real_,
+        pooledMeanLogLoss = fit$pooledMeanLogLoss %||% NA_real_,
+        pooledGradientMaxAbs = fit$pooledGradientMaxAbs %||% NA_real_,
+        pooledKktMaxAbs = fit$pooledKktMaxAbs %||% NA_real_,
+        pooledKktViolating = fit$pooledKktViolating %||% NA_real_,
+        pooledKktMaxCoordinate = fit$pooledKktMaxCoordinate %||% NA_real_,
         lambdaSeq = fit$lambdaSeq %||% NULL,
         cvScores = fit$cvScores %||% NULL,
         cvValid = fit$cvValid %||% NULL,
@@ -1124,11 +1272,28 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
       lambdaPathFile = lambdaPathFile,
       leadIndex = fit$leadIndex %||% NA_integer_,
+      leadWeight = fit$leadWeight %||% NA_real_,
+      leadWeightMin = fit$leadWeightMin %||% NA_real_,
       trainObjective = fit$globalObjective %||% NA_real_,
       hessianDim = fit$hessianDim %||% NA_character_,
       hessianDiagMin = fit$hessianDiagMin %||% NA_real_,
       hessianDiagMax = fit$hessianDiagMax %||% NA_real_,
       hessianCondition = fit$hessianCondition %||% NA_real_,
+      odalVariant = fit$odalVariant %||% NA_character_,
+      curvatureStatus = fit$curvatureStatus %||% NA_character_,
+      correctionEigenMin = fit$correctionEigenMin %||% NA_real_,
+      correctionEigenMax = fit$correctionEigenMax %||% NA_real_,
+      correctionEigenNegative = fit$correctionEigenNegative %||% NA_real_,
+      correctionDiagMin = fit$correctionDiagMin %||% NA_real_,
+      correctionDiagMax = fit$correctionDiagMax %||% NA_real_,
+      correctionDiagNegative = fit$correctionDiagNegative %||% NA_real_,
+      globalHessianEigenMin = fit$globalHessianEigenMin %||% NA_real_,
+      leadHessianEigenMin = fit$leadHessianEigenMin %||% NA_real_,
+      siteHessianEigenMin = fit$siteHessianEigenMin %||% NA_real_,
+      siteHessianNegative = fit$siteHessianNegative %||% NA_real_,
+      maxConvAlpha = fit$maxConvAlpha %||% NA_real_,
+      maxConvAlphaStatus = fit$maxConvAlphaStatus %||% NA_character_,
+      optimConvergence = fit$optimConvergence %||% NA_integer_,
       adapCvMaxOuter = config$maxOuter %||% NA_integer_,
       adapFinalMaxOuter = config$adapFinalMaxOuter %||% NA_integer_,
       adapFinalOuterIterations = adapFinalDiagnostic(fit, "outerIterations", NA_real_),
@@ -1137,7 +1302,18 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       adapFinalKktViolating = adapFinalDiagnostic(fit, "kktViolating", NA_real_),
       adapFinalBetaMaxAbs = adapFinalDiagnostic(fit, "betaMaxAbs", NA_real_),
       adapFinalEtaMaxAbs = adapFinalDiagnostic(fit, "etaMaxAbs", NA_real_),
+      adapFinalRho = adapFinalDiagnostic(fit, "rho", NA_real_),
+      adapFinalRhoOverGlobalEigenMax = adapFinalDiagnostic(fit, "rhoOverGlobalEigenMax", NA_real_),
+      adapFinalLeadWeight = adapFinalDiagnostic(fit, "leadWeight", NA_real_),
+      adapFinalProxAnchorsIntercept = adapFinalDiagnostic(fit, "proxAnchorsIntercept", NA),
       adapFinalFailureReason = adapFinalDiagnostic(fit, "failureReason", NA_character_),
+      pooledNegLogLik = fit$pooledNegLogLik %||% NA_real_,
+      pooledMeanLogLoss = fit$pooledMeanLogLoss %||% NA_real_,
+      pooledGradientMaxAbs = fit$pooledGradientMaxAbs %||% NA_real_,
+      pooledKktMaxAbs = fit$pooledKktMaxAbs %||% NA_real_,
+      pooledKktViolating = fit$pooledKktViolating %||% NA_real_,
+      pooledKktMaxCoordinate = fit$pooledKktMaxCoordinate %||% NA_real_,
+      pooledObjectiveGap = NA_real_,
       elapsedSeconds = elapsed,
       configLabel = config$configLabel %||% "default",
       stringsAsFactors = FALSE
@@ -1178,7 +1354,10 @@ runComparison <- function(args) {
 
   tasks <- csvArg(args[["tasks"]], c("dementia", "readmission", "lungCancer"))
   featureSets <- csvArg(args[["feature-sets"]], c("ageSex", "ageSexPhenotypes"))
-  methods <- csvArg(args[["methods"]], c("DualAvg", "ODAL", "ADAP2", "Prox-ADAP", "C-ADAP", "ADAP1", "ADAPDiag"))
+  methods <- csvArg(args[["methods"]], c(
+    "DualAvg", "ODAL", "ODAL1", "ADAP2", "Prox-ADAP", "C-ADAP",
+    "MaxConv-ADAP", "ADAP1", "ADAPDiag"
+  ))
   clientIds <- csvArg(args[["client-ids"]], character())
   nClients <- intArg(args[["clients"]], if (length(clientIds) > 0L) length(clientIds) else 5L)
   if (length(clientIds) == 0L) {
@@ -1341,7 +1520,7 @@ runComparison <- function(args) {
               configs <- methodConfigGrid(method, featureSet, args)
               configs <- lapply(configs, function(config) {
                 config$trainClientPaths <- trainPaths
-                if (!is.null(debugDirectory) && method %in% c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP")) {
+                if (!is.null(debugDirectory) && method %in% c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")) {
                   config$adapCvDiagnostics <- TRUE
                 }
                 config
@@ -1425,11 +1604,39 @@ runComparison <- function(args) {
                     selectedLambda = NA_real_,
                     lambdaPathFile = NA_character_,
                     leadIndex = NA_integer_,
+                    leadWeight = NA_real_,
+                    leadWeightMin = NA_real_,
                     trainObjective = NA_real_,
                     hessianDim = NA_character_,
                     hessianDiagMin = NA_real_,
                     hessianDiagMax = NA_real_,
                     hessianCondition = NA_real_,
+                    odalVariant = NA_character_,
+                    curvatureStatus = NA_character_,
+                    correctionEigenMin = NA_real_,
+                    correctionEigenMax = NA_real_,
+                    correctionEigenNegative = NA_real_,
+                    correctionDiagMin = NA_real_,
+                    correctionDiagMax = NA_real_,
+                    correctionDiagNegative = NA_real_,
+                    globalHessianEigenMin = NA_real_,
+                    leadHessianEigenMin = NA_real_,
+                    siteHessianEigenMin = NA_real_,
+                    siteHessianNegative = NA_real_,
+                    maxConvAlpha = NA_real_,
+                    maxConvAlphaStatus = NA_character_,
+                    optimConvergence = NA_integer_,
+                    adapFinalRho = NA_real_,
+                    adapFinalRhoOverGlobalEigenMax = NA_real_,
+                    adapFinalLeadWeight = NA_real_,
+                    adapFinalProxAnchorsIntercept = NA,
+                    pooledNegLogLik = NA_real_,
+                    pooledMeanLogLoss = NA_real_,
+                    pooledGradientMaxAbs = NA_real_,
+                    pooledKktMaxAbs = NA_real_,
+                    pooledKktViolating = NA_real_,
+                    pooledKktMaxCoordinate = NA_real_,
+                    pooledObjectiveGap = NA_real_,
                     elapsedSeconds = NA_real_,
                     configLabel = NA_character_,
                     client = testIds,
@@ -1494,7 +1701,7 @@ runComparison <- function(args) {
     }
   }
 
-  allRows <- if (nonEmptyRows(rows)) rows else data.frame()
+  allRows <- if (nonEmptyRows(rows)) addPooledObjectiveGap(rows) else data.frame()
   summaryRows <- summarizeResults(allRows)
   utils::write.csv(allRows, resultFile, row.names = FALSE)
   utils::write.csv(summaryRows, summaryFile, row.names = FALSE)

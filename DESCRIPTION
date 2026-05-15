@@ -25,6 +25,7 @@ Imports:
     pROC
 Suggests:
     Cyclops,
+    pda,
     testthat (>= 3.0.0),
     yaml
 LinkingTo:

@@ -5,13 +5,17 @@ test_that("ADAP reduced variants are registered", {
   expect_type(FederatedLearning:::.getAlgorithm("ADAP2"), "list")
   expect_type(FederatedLearning:::.getAlgorithm("Prox-ADAP"), "list")
   expect_type(FederatedLearning:::.getAlgorithm("C-ADAP"), "list")
+  expect_type(FederatedLearning:::.getAlgorithm("MaxConv-ADAP"), "list")
   expect_type(FederatedLearning:::.getAlgorithm("ADAP_PDA"), "list")
   expect_type(FederatedLearning:::.getAlgorithm("ODAL"), "list")
+  expect_type(FederatedLearning:::.getAlgorithm("ODAL1"), "list")
+  expect_type(FederatedLearning:::.getAlgorithm("ODAL2"), "list")
 })
 
 test_that("ADAP_PDA uses the public PDA full-quadratic coordinate descent solver", {
   state <- FederatedLearning:::.serverInitPdaAdapPda(list(p = 3L))
-  expect_equal(state$adapSolveStyle, "fullQuadratic")
+  expect_equal(state$adapSolveStyle, "pda")
+  expect_equal(state$adapMethodName, "ADAP_PDA")
 })
 
 expect_lasso_kkt <- function(beta, grad, lambda, penalize = NULL, tol = 1e-4) {
@@ -341,6 +345,25 @@ test_that("C-ADAP surrogate matches global derivatives and has PSD remote curvat
   expect_gte(FederatedLearning:::.adapEigenRange(currentB)$min, -1e-10)
 })
 
+test_that("MaxConv-ADAP chooses the largest PSD lead weight between C-ADAP and ADAP2", {
+  leadHess <- diag(c(2, 1))
+  remoteHess <- diag(c(0.1, 0.1))
+  piLead <- 0.25
+  globalHess <- piLead * leadHess + (1 - piLead) * remoteHess
+
+  exactCorrection <- globalHess - leadHess
+  convexCorrection <- globalHess - piLead * leadHess
+  alpha <- FederatedLearning:::.adapMaxConvAlpha(globalHess, leadHess, piLead)
+  maxConvCorrection <- globalHess - alpha$alpha * leadHess
+
+  expect_lt(FederatedLearning:::.adapEigenRange(exactCorrection)$min, 0)
+  expect_gte(FederatedLearning:::.adapEigenRange(convexCorrection)$min, -1e-10)
+  expect_gte(alpha$alpha, piLead)
+  expect_lt(alpha$alpha, 1)
+  expect_equal(alpha$alphaStatus, "maximal_convex")
+  expect_gte(FederatedLearning:::.adapEigenRange(maxConvCorrection)$min, -1e-8)
+})
+
 test_that("Prox-ADAP spectral shift makes exact ADAP correction PSD", {
   C <- diag(c(-0.2, 0.05, 0.3))
   H <- diag(c(0.4, 0.2, 0.1))
@@ -481,6 +504,77 @@ test_that("ADAP and ODAL phase aggregation uses sample-size weights and configur
   expect_equal(adapRound1$state$globalHess, expectedHess)
   expect_equal(odalRound1$state$otherGrad, expectedGrad)
   expect_equal(odalRound1$state$otherHess, expectedHess)
+})
+
+test_that("ADAP full variants use variant-specific lead weights", {
+  phase0Reports <- list(
+    list(bhat = c(0, 0), n = 25),
+    list(bhat = c(0, 0), n = 75)
+  )
+  phase1Reports <- list(
+    list(grad = c(0, 0), Hess = diag(c(2, 1)), n = 25),
+    list(grad = c(0, 0), Hess = diag(c(0.1, 0.1)), n = 75)
+  )
+
+  runServer <- function(init) {
+    state <- init(list(p = 1, lambda = 0.1, leadIndex = 1))
+    round0 <- FederatedLearning:::.serverRoundPdaAdap(state, phase0Reports, list(leadIndex = 1))
+    FederatedLearning:::.serverRoundPdaAdap(round0$state, phase1Reports, list(leadIndex = 1))
+  }
+
+  exact <- runServer(FederatedLearning:::.serverInitPdaAdap2)
+  convex <- runServer(FederatedLearning:::.serverInitCAdap)
+  maxconv <- runServer(FederatedLearning:::.serverInitMaxConvAdap)
+
+  expect_equal(exact$state$leadWeight, 1)
+  expect_equal(convex$state$leadWeight, 0.25)
+  expect_gte(maxconv$state$leadWeight, 0.25)
+  expect_lt(maxconv$state$leadWeight, 1)
+  expect_equal(maxconv$state$maxConvAlphaStatus, "maximal_convex")
+  expect_equal(convex$state$curvatureStatus, "psd")
+  expect_equal(exact$state$curvatureStatus, "indefinite")
+  expect_gte(exact$state$globalHessianEigenMin, -1e-10)
+  expect_gte(exact$state$siteHessianEigenMin, -1e-10)
+  expect_equal(exact$state$siteHessianNegative, 0)
+})
+
+test_that("ODAL1 avoids Hessian communication and ODAL2 reports indefinite correction", {
+  state1 <- FederatedLearning:::.serverInitODAL1(list(p = 1))
+  state1$phase <- 1L
+  state1$leadIndex <- 1L
+  first <- FederatedLearning:::.serverRoundODAL(
+    state1,
+    list(
+      list(grad = c(0, 0), n = 25),
+      list(grad = c(0, 0), n = 75)
+    ),
+    list()
+  )
+
+  expect_equal(first$state$odalVariant, "first")
+  expect_equal(first$state$curvatureStatus, "first_order")
+  expect_equal(first$report$communicationNumbers, 4)
+  expect_null(first$state$otherHess)
+
+  state2 <- FederatedLearning:::.serverInitODAL2(list(p = 1))
+  state2$phase <- 1L
+  state2$leadIndex <- 1L
+  reports <- list(
+    list(grad = c(0, 0), Hess = diag(c(2, 1)), n = 25),
+    list(grad = c(0, 0), Hess = diag(c(0.1, 0.1)), n = 75)
+  )
+  second <- FederatedLearning:::.serverRoundODAL(state2, reports, list())
+
+  expect_equal(second$state$odalVariant, "second")
+  expect_equal(second$state$curvatureStatus, "indefinite")
+  expect_gt(second$state$correctionEigenNegative, 0)
+  expect_gte(second$state$globalHessianEigenMin, -1e-10)
+  expect_gte(second$state$siteHessianEigenMin, -1e-10)
+  expect_equal(second$state$siteHessianNegative, 0)
+  expect_error(
+    FederatedLearning:::.serverRoundODAL(state2, reports, list(odalCurvatureAction = "fail")),
+    "indefinite Hessian correction"
+  )
 })
 
 test_that("ODAL local initialization uses explicit ridge fallback for singular coefficients", {
@@ -1549,7 +1643,7 @@ test_that("PDA-style ADAP methods complete simulated multi-site workflows", {
     list(state = state, report = serverReport)
   }
 
-  for (method in c("ADAP_PDA", "ADAP", "ADAP1", "Prox-ADAP", "C-ADAP")) {
+  for (method in c("ADAP_PDA", "ADAP1", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")) {
     out <- runMethod(method)
     expect_true(isTRUE(out$report$done))
     expect_length(out$report$w, 5L)

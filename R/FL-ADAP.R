@@ -162,6 +162,59 @@
   )
 }
 
+.adapMaxConvAlpha <- function(globalHess, leadHess, leadWeightMin,
+                              tau = 1e-10, maxIter = 60L) {
+  lower <- min(max(as.numeric(leadWeightMin)[[1]], 0), 1)
+  upper <- 1
+  epsilon <- .adapEpsilonEig(globalHess, tau = tau)
+  minEigAt <- function(alpha) .adapEigenRange(globalHess - alpha * leadHess)$min
+  upperEig <- minEigAt(upper)
+  lowerEig <- minEigAt(lower)
+  if (is.finite(upperEig) && upperEig >= -epsilon) {
+    return(list(
+      alpha = upper,
+      alphaMin = lower,
+      alphaMax = upper,
+      alphaStatus = "exact",
+      alphaEigenMin = upperEig,
+      alphaLowerEigenMin = lowerEig,
+      alphaEpsilon = epsilon
+    ))
+  }
+  if (!is.finite(lowerEig) || lowerEig < -epsilon) {
+    return(list(
+      alpha = lower,
+      alphaMin = lower,
+      alphaMax = upper,
+      alphaStatus = "lower_not_psd",
+      alphaEigenMin = lowerEig,
+      alphaLowerEigenMin = lowerEig,
+      alphaEpsilon = epsilon
+    ))
+  }
+  lo <- lower
+  hi <- upper
+  eigMid <- lowerEig
+  for (i in seq_len(maxIter)) {
+    mid <- (lo + hi) / 2
+    eigMid <- minEigAt(mid)
+    if (is.finite(eigMid) && eigMid >= -epsilon) {
+      lo <- mid
+    } else {
+      hi <- mid
+    }
+  }
+  list(
+    alpha = lo,
+    alphaMin = lower,
+    alphaMax = upper,
+    alphaStatus = "maximal_convex",
+    alphaEigenMin = minEigAt(lo),
+    alphaLowerEigenMin = lowerEig,
+    alphaEpsilon = epsilon
+  )
+}
+
 .adapEpsilonEig <- function(referenceHess, tau = 1e-10) {
   tau * .adapHessianScale(referenceHess)
 }
@@ -195,10 +248,16 @@
 
 .adapProxShift <- function(globalHess, correction, tau = 1e-8) {
   eig <- .adapEigenRange(correction)
+  globalEig <- .adapEigenRange(globalHess)
   epsilonFloor <- .adapEpsilonFloor(globalHess, tau = tau)
   rho <- if (is.finite(eig$min)) max(0, epsilonFloor - eig$min) else NA_real_
   list(
     rho = rho,
+    rhoOverGlobalEigenMax = if (is.finite(rho) && is.finite(globalEig$max) && globalEig$max > 0) {
+      rho / globalEig$max
+    } else {
+      NA_real_
+    },
     epsilonFloor = epsilonFloor,
     C_eigen_min = eig$min,
     C_eigen_max = eig$max,
@@ -572,7 +631,8 @@
 
 .adapSurrogateStats <- function(kind, xTrain, yTrain, betaLead, betaBar,
                                 globalGrad, globalHess = NULL,
-                                globalHessDiag = NULL) {
+                                globalHessDiag = NULL,
+                                leadWeight = 1) {
   tryCatch({
     comp <- switch(kind,
       full = .adapSurrogateComponents(
@@ -581,7 +641,8 @@
         xDesign = xTrain,
         y = yTrain,
         globalGrad = globalGrad,
-        globalHess = globalHess
+        globalHess = globalHess,
+        leadWeight = leadWeight
       ),
       first = .adapFirstOrderSurrogateComponents(
         betaEval = betaLead,
@@ -1193,7 +1254,7 @@
                                  traceContext = list(),
                                  leadWeight = 1,
                                  proxRho = 0,
-                                 strictCorrection = c("exact", "prox", "convex"),
+                                 strictCorrection = c("exact", "prox", "convex", "maxconv"),
                                  eigToleranceTau = 1e-10,
                                  proxTau = 1e-8,
                                  kktTolerance = 1e-4,
@@ -1207,6 +1268,7 @@
   eig <- .adapEigenRange(baseCorrection)
   epsilonEig <- .adapEpsilonEig(globalHess, tau = eigToleranceTau)
   epsilonFloor <- NA_real_
+  rhoOverGlobalEigenMax <- NA_real_
   C_eigen_min_after_shift <- NA_real_
   if (identical(strictCorrection, "exact") && is.finite(eig$min) && eig$min < -epsilonEig) {
     fail <- .adapFailureResult(
@@ -1216,6 +1278,7 @@
         C_eigen_min = eig$min,
         C_eigen_max = eig$max,
         epsilonEig = epsilonEig,
+        leadWeight = leadWeight,
         correction_diag_min = min(diag(baseCorrection), na.rm = TRUE),
         correction_diag_max = max(diag(baseCorrection), na.rm = TRUE)
       )
@@ -1225,14 +1288,20 @@
     }
     stop("negative_C_eigenvalue", call. = FALSE)
   }
-  if (identical(strictCorrection, "convex") && is.finite(eig$min) && eig$min < -epsilonEig) {
+  if (strictCorrection %in% c("convex", "maxconv") && is.finite(eig$min) && eig$min < -epsilonEig) {
+    reason <- if (identical(strictCorrection, "maxconv")) {
+      "maxconv_correction_not_psd"
+    } else {
+      "remote_hessian_not_psd"
+    }
     fail <- .adapFailureResult(
       beta,
-      "remote_hessian_not_psd",
+      reason,
       list(
         R_eigen_min = eig$min,
         R_eigen_max = eig$max,
         epsilonEig = epsilonEig,
+        leadWeight = leadWeight,
         R_diag_min = min(diag(baseCorrection), na.rm = TRUE),
         R_diag_max = max(diag(baseCorrection), na.rm = TRUE)
       )
@@ -1240,11 +1309,12 @@
     if (isTRUE(returnDetails)) {
       return(fail)
     }
-    stop("remote_hessian_not_psd", call. = FALSE)
+    stop(reason, call. = FALSE)
   }
   if (identical(strictCorrection, "prox")) {
     shift <- .adapProxShift(globalHess, baseCorrection, tau = proxTau)
     proxRho <- shift$rho
+    rhoOverGlobalEigenMax <- shift$rhoOverGlobalEigenMax
     epsilonFloor <- shift$epsilonFloor
     C_eigen_min_after_shift <- shift$C_eigen_min_after_shift
     if (!is.finite(proxRho)) {
@@ -1277,7 +1347,10 @@
     )
     out$C_eigen_min <- eig$min
     out$C_eigen_max <- eig$max
+    out$leadWeight <- leadWeight
     out$rho <- proxRho
+    out$rhoOverGlobalEigenMax <- rhoOverGlobalEigenMax
+    out$proxAnchorsIntercept <- is.finite(proxRho) && proxRho > 0
     out$epsilonFloor <- epsilonFloor
     out$C_eigen_min_after_shift <- C_eigen_min_after_shift
     finalComp <- .adapSurrogateComponents(
@@ -1352,7 +1425,10 @@
     )
     out$C_eigen_min <- eig$min
     out$C_eigen_max <- eig$max
+    out$leadWeight <- leadWeight
     out$rho <- proxRho
+    out$rhoOverGlobalEigenMax <- rhoOverGlobalEigenMax
+    out$proxAnchorsIntercept <- is.finite(proxRho) && proxRho > 0
     out$epsilonFloor <- epsilonFloor
     out$C_eigen_min_after_shift <- C_eigen_min_after_shift
     out$correction_diag_min <- min(diag(baseCorrection), na.rm = TRUE)
@@ -1448,7 +1524,10 @@
       failureDiagNonPositive = cd$failureDiagNonPositive %||% NA_real_,
       C_eigen_min = eig$min,
       C_eigen_max = eig$max,
+      leadWeight = leadWeight,
       rho = proxRho,
+      rhoOverGlobalEigenMax = rhoOverGlobalEigenMax,
+      proxAnchorsIntercept = is.finite(proxRho) && proxRho > 0,
       epsilonFloor = epsilonFloor,
       C_eigen_min_after_shift = C_eigen_min_after_shift,
       correction_diag_min = min(diag(baseCorrection), na.rm = TRUE),
@@ -2219,6 +2298,8 @@
           validationOutcomes = sum(y[info$idxVal] == 1),
           validationOutcomeRate = mean(y[info$idxVal] == 1),
           surrogateKind = surrogateKind,
+          leadWeight = info$leadWeightTrain %||% NA_real_,
+          proxRho = info$proxRhoTrain %||% NA_real_,
           failureReason = .adapFitFailureReason(fitObj),
           t(c(
             .adapFitDiagnostics(fitObj),
@@ -2454,15 +2535,22 @@
                            cdStepBound = 1,
                            cdMinStep = 1e-8,
                            cdMaxBacktracks = 25L,
-                           surrogateVariant = c("exact", "prox", "convex"),
+                           surrogateVariant = c("exact", "prox", "convex", "maxconv"),
                            leadWeight = 1,
+                           leadWeightMin = leadWeight,
                            proxTau = 1e-8,
+                           maxConvTau = 1e-10,
                            kktTolerance = 1e-4,
                            betaAbsThreshold = 1e4,
                            etaAbsThreshold = 1e4) {
   globalAdjustment <- match.arg(globalAdjustment)
   surrogateVariant <- match.arg(surrogateVariant)
-  surrogateLabel <- switch(surrogateVariant, exact = "full", prox = "prox", convex = "convex")
+  surrogateLabel <- switch(surrogateVariant,
+    exact = "full",
+    prox = "prox",
+    convex = "convex",
+    maxconv = "maxconv"
+  )
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
   yCv <- y[cvIdx]
@@ -2485,13 +2573,24 @@
         denom <- max(totalN - info$nVal, 1L)
         gradTrainGlobal <- (globalGrad * totalN - gradVal * info$nVal) / denom
         hessTrainGlobal <- (globalHess * totalN - hessVal * info$nVal) / denom
-        leadWeightTrain <- if (identical(surrogateVariant, "convex")) length(info$idxTr) / denom else leadWeight
+        leadWeightMinTrain <- length(info$idxTr) / denom
       } else {
         gradTrainGlobal <- globalGrad
         hessTrainGlobal <- globalHess
-        leadWeightTrain <- leadWeight
+        leadWeightMinTrain <- leadWeightMin
       }
       hBarTrain <- .logisticNegHessian(betaBar, xCv[info$idxTr, , drop = FALSE])
+      leadWeightTrain <- switch(surrogateVariant,
+        exact = 1,
+        prox = 1,
+        convex = leadWeightMinTrain,
+        maxconv = .adapMaxConvAlpha(
+          hessTrainGlobal,
+          hBarTrain,
+          leadWeightMin = leadWeightMinTrain,
+          tau = maxConvTau
+        )$alpha
+      )
       baseCorrection <- hessTrainGlobal - leadWeightTrain * hBarTrain
       proxRhoTrain <- if (identical(surrogateVariant, "prox")) {
         .adapProxShift(hessTrainGlobal, baseCorrection, tau = proxTau)$rho
@@ -2511,7 +2610,8 @@
             betaLead = betaLead,
             betaBar = betaBar,
             globalGrad = gradTrainGlobal,
-            globalHess = hessTrainGlobal
+            globalHess = hessTrainGlobal,
+            leadWeight = leadWeightTrain
           )
         } else {
           NULL
@@ -2793,9 +2893,15 @@
     phase = 0L,
     p = p,
     adapSolveStyle = "fullQuadratic",
+    adapSurrogateVariant = "exact",
+    adapMethodName = "ADAP",
     betaBar = rep(0, p),
     betaLead = rep(0, p),
     leadIndex = NA_integer_,
+    leadWeight = 1,
+    leadWeightMin = NA_real_,
+    maxConvAlpha = NA_real_,
+    maxConvAlphaStatus = NA_character_,
     globalGrad = NULL,
     globalHess = NULL,
     lambdaSeq = NULL,
@@ -2806,7 +2912,8 @@
 
 .serverInitPdaAdapPda <- function(config) {
   state <- .serverInitPdaAdap(config)
-  state$adapSolveStyle <- "fullQuadratic"
+  state$adapSolveStyle <- "pda"
+  state$adapMethodName <- "ADAP_PDA"
   state
 }
 
@@ -2828,6 +2935,13 @@
   state <- .serverInitPdaAdap(config)
   state$adapMethodName <- "C-ADAP"
   state$adapSurrogateVariant <- "convex"
+  state
+}
+
+.serverInitMaxConvAdap <- function(config) {
+  state <- .serverInitPdaAdap(config)
+  state$adapMethodName <- "MaxConv-ADAP"
+  state$adapSurrogateVariant <- "maxconv"
   state
 }
 
@@ -2865,11 +2979,17 @@
     solveStyle <- serverBroadcast$adapSolveStyle %||% config$adapSolveStyle %||% "fullQuadratic"
     surrogateVariant <- match.arg(
       serverBroadcast$adapSurrogateVariant %||% config$adapSurrogateVariant %||% "exact",
-      c("exact", "prox", "convex")
+      c("exact", "prox", "convex", "maxconv")
     )
     methodName <- serverBroadcast$adapMethodName %||% config$adapMethodName %||%
-      switch(surrogateVariant, exact = "ADAP", prox = "Prox-ADAP", convex = "C-ADAP")
+      switch(surrogateVariant,
+        exact = "ADAP",
+        prox = "Prox-ADAP",
+        convex = "C-ADAP",
+        maxconv = "MaxConv-ADAP"
+      )
     leadWeight <- serverBroadcast$leadWeight %||% 1
+    leadWeightMin <- serverBroadcast$leadWeightMin %||% leadWeight
     cvDiagnostics <- NULL
     cvValid <- NULL
     cvTrace <- NULL
@@ -2966,17 +3086,17 @@
             proxRho = proxInit$rho
           )
         } else {
-        lambdaSeq <- .pdaAdapLambdaSeq(
-          xDesign,
-          y,
-          betaLead,
-          betaBar,
-          globalGrad,
-          globalHess,
-          gridLen = config$lambdaGridLen %||% 100L,
-          leadWeight = leadWeight
-        )
-      }
+          lambdaSeq <- .pdaAdapLambdaSeq(
+            xDesign,
+            y,
+            betaLead,
+            betaBar,
+            globalGrad,
+            globalHess,
+            gridLen = config$lambdaGridLen %||% 100L,
+            leadWeight = leadWeight
+          )
+        }
       }
       cv <- .pdaAdapLeadCv(
         xDesign = xDesign,
@@ -3008,7 +3128,9 @@
         cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
         surrogateVariant = surrogateVariant,
         leadWeight = leadWeight,
+        leadWeightMin = leadWeightMin,
         proxTau = config$adapProxTau %||% 1e-8,
+        maxConvTau = config$adapMaxConvTau %||% config$adapCurvatureTau %||% 1e-10,
         kktTolerance = config$adapKktTolerance %||% 1e-4,
         betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
         etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
@@ -3081,7 +3203,8 @@
     state$betaBar <- betaBar
     state$betaLead <- betaLead
     state$leadIndex <- leadIndex
-    state$leadWeight <- weights[[leadIndex]]
+    state$leadWeightMin <- weights[[leadIndex]]
+    state$leadWeight <- 1
     state$totalN <- sum(ns)
     state$w <- betaBar
     return(list(
@@ -3090,6 +3213,7 @@
         w = betaBar,
         leadIndex = leadIndex,
         leadWeight = state$leadWeight,
+        leadWeightMin = state$leadWeightMin,
         skipConvergence = TRUE,
         communicationNumbers = length(betaBar) * length(clientReports)
       )
@@ -3108,7 +3232,54 @@
     state$globalGrad <- globalGrad
     state$globalHess <- globalHess
     state$lambdaSeq <- config$lambdaSeq
-    state$leadWeight <- weights[[state$leadIndex]]
+    state$leadWeightMin <- weights[[state$leadIndex]]
+    surrogateVariant <- state$adapSurrogateVariant %||% config$adapSurrogateVariant %||% "exact"
+    leadHess <- hessList[[state$leadIndex]]
+    siteEigenMins <- vapply(hessList, function(H) .adapEigenRange(H)$min, numeric(1))
+    globalEig <- .adapEigenRange(globalHess)
+    if (identical(surrogateVariant, "convex")) {
+      state$leadWeight <- state$leadWeightMin
+    } else if (identical(surrogateVariant, "maxconv")) {
+      alpha <- .adapMaxConvAlpha(
+        globalHess,
+        leadHess,
+        leadWeightMin = state$leadWeightMin,
+        tau = config$adapMaxConvTau %||% config$adapCurvatureTau %||% 1e-10
+      )
+      state$leadWeight <- alpha$alpha
+      state$maxConvAlpha <- alpha$alpha
+      state$maxConvAlphaStatus <- alpha$alphaStatus
+      state$maxConvAlphaEigenMin <- alpha$alphaEigenMin
+      state$maxConvAlphaLowerEigenMin <- alpha$alphaLowerEigenMin
+      state$maxConvAlphaEpsilon <- alpha$alphaEpsilon
+    } else {
+      state$leadWeight <- 1
+    }
+    correction <- globalHess - state$leadWeight * leadHess
+    correctionEigVals <- tryCatch(
+      eigen((correction + t(correction)) / 2, symmetric = TRUE, only.values = TRUE)$values,
+      error = function(e) NA_real_
+    )
+    correctionEigFinite <- is.finite(correctionEigVals)
+    correctionEpsilon <- .adapEpsilonEig(globalHess, tau = config$adapCurvatureTau %||% 1e-10)
+    correctionDiag <- diag(correction)
+    state$globalHessianEigenMin <- globalEig$min
+    state$leadHessianEigenMin <- siteEigenMins[[state$leadIndex]]
+    state$siteHessianEigenMin <- min(siteEigenMins, na.rm = TRUE)
+    state$siteHessianNegative <- sum(is.finite(siteEigenMins) & siteEigenMins < -correctionEpsilon)
+    state$correctionEigenMin <- if (any(correctionEigFinite)) min(correctionEigVals[correctionEigFinite]) else NA_real_
+    state$correctionEigenMax <- if (any(correctionEigFinite)) max(correctionEigVals[correctionEigFinite]) else NA_real_
+    state$correctionEigenNegative <- if (any(correctionEigFinite)) sum(correctionEigVals[correctionEigFinite] < -correctionEpsilon) else NA_integer_
+    state$curvatureStatus <- if (is.na(state$correctionEigenNegative)) {
+      "unknown"
+    } else if (state$correctionEigenNegative > 0L) {
+      "indefinite"
+    } else {
+      "psd"
+    }
+    state$correctionDiagMin <- min(correctionDiag, na.rm = TRUE)
+    state$correctionDiagMax <- max(correctionDiag, na.rm = TRUE)
+    state$correctionDiagNegative <- sum(is.finite(correctionDiag) & correctionDiag < -correctionEpsilon)
     hDiag <- diag(globalHess)
     hCond <- tryCatch(kappa(globalHess), error = function(e) NA_real_)
     state$hessianDim <- paste(dim(globalHess), collapse = "x")
@@ -3121,11 +3292,27 @@
         w = state$w,
         leadIndex = state$leadIndex,
         leadWeight = state$leadWeight,
+        leadWeightMin = state$leadWeightMin,
         skipConvergence = TRUE,
         hessianDim = state$hessianDim,
         hessianDiagMin = state$hessianDiagMin,
         hessianDiagMax = state$hessianDiagMax,
         hessianCondition = state$hessianCondition,
+        curvatureStatus = state$curvatureStatus,
+        correctionEigenMin = state$correctionEigenMin,
+        correctionEigenMax = state$correctionEigenMax,
+        correctionEigenNegative = state$correctionEigenNegative,
+        correctionDiagMin = state$correctionDiagMin,
+        correctionDiagMax = state$correctionDiagMax,
+        correctionDiagNegative = state$correctionDiagNegative,
+        globalHessianEigenMin = state$globalHessianEigenMin,
+        leadHessianEigenMin = state$leadHessianEigenMin,
+        siteHessianEigenMin = state$siteHessianEigenMin,
+        siteHessianNegative = state$siteHessianNegative,
+        maxConvAlpha = state$maxConvAlpha %||% NA_real_,
+        maxConvAlphaStatus = state$maxConvAlphaStatus %||% NA_character_,
+        maxConvAlphaEigenMin = state$maxConvAlphaEigenMin %||% NA_real_,
+        maxConvAlphaLowerEigenMin = state$maxConvAlphaLowerEigenMin %||% NA_real_,
         communicationNumbers = length(globalGrad) * length(clientReports) +
           length(globalHess) * length(clientReports)
       )
@@ -3146,6 +3333,8 @@
           w = leadReport$w,
           done = TRUE,
           leadIndex = state$leadIndex,
+          leadWeight = state$leadWeight,
+          leadWeightMin = state$leadWeightMin,
           selectedLambda = leadReport$selectedLambda,
           lambdaSeq = leadReport$lambdaSeq,
           cvScores = leadReport$cvScores,
@@ -3159,6 +3348,21 @@
           hessianDiagMin = state$hessianDiagMin %||% NA_real_,
           hessianDiagMax = state$hessianDiagMax %||% NA_real_,
           hessianCondition = state$hessianCondition %||% NA_real_,
+          curvatureStatus = state$curvatureStatus %||% NA_character_,
+          correctionEigenMin = state$correctionEigenMin %||% NA_real_,
+          correctionEigenMax = state$correctionEigenMax %||% NA_real_,
+          correctionEigenNegative = state$correctionEigenNegative %||% NA_real_,
+          correctionDiagMin = state$correctionDiagMin %||% NA_real_,
+          correctionDiagMax = state$correctionDiagMax %||% NA_real_,
+          correctionDiagNegative = state$correctionDiagNegative %||% NA_real_,
+          globalHessianEigenMin = state$globalHessianEigenMin %||% NA_real_,
+          leadHessianEigenMin = state$leadHessianEigenMin %||% NA_real_,
+          siteHessianEigenMin = state$siteHessianEigenMin %||% NA_real_,
+          siteHessianNegative = state$siteHessianNegative %||% NA_real_,
+          maxConvAlpha = state$maxConvAlpha %||% NA_real_,
+          maxConvAlphaStatus = state$maxConvAlphaStatus %||% NA_character_,
+          maxConvAlphaEigenMin = state$maxConvAlphaEigenMin %||% NA_real_,
+          maxConvAlphaLowerEigenMin = state$maxConvAlphaLowerEigenMin %||% NA_real_,
           communicationNumbers = length(leadReport$w)
         )
       ))
@@ -3215,6 +3419,15 @@
 .registerAlgorithm(
   "C-ADAP",
   serverInit = .serverInitCAdap,
+  clientInit = NULL,
+  clientUpdate = .clientUpdatePdaAdap,
+  serverRound = .serverRoundPdaAdap,
+  lambdaStrategy = .lambdaStrategyPdaAdap()
+)
+
+.registerAlgorithm(
+  "MaxConv-ADAP",
+  serverInit = .serverInitMaxConvAdap,
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdap,
   serverRound = .serverRoundPdaAdap,

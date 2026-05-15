@@ -202,7 +202,7 @@ test_that("fitFederated sends client updates only to selected active workers", {
     supportsClientSampling = TRUE
   )
 
-  cl <- parallel::makeCluster(4)
+  cl <- parallel::makeCluster(2)
   on.exit(parallel::stopCluster(cl), add = TRUE)
   parallel::clusterApply(
     cl,
@@ -230,7 +230,7 @@ test_that("fitFederated sends client updates only to selected active workers", {
   )
 
   expect_equal(sort(fit$ids), sort(expectedActive))
-  expect_equal(length(fit$ids), 2L)
+  expect_equal(length(fit$ids), 1L)
 })
 
 test_that("fitFederated can monitor Cyclops-style gradient objective", {
@@ -294,12 +294,18 @@ test_that("fitFederated can monitor Cyclops-style gradient objective", {
       mapping = data.frame(covariateId = 1:2, columnId = 1:2),
       rounds = 1L,
       clientFrac = 1,
-      convergenceObjective = "cyclopsGradient"
+      convergenceObjective = "cyclopsGradient",
+      pooledDiagnostics = TRUE,
+      lambda = 0.1
     ),
     verbose = FALSE
   )
 
   expect_equal(fit$globalObjective, 3.0, tolerance = 1e-12)
+  expect_true(is.finite(fit$pooledMeanLogLoss))
+  expect_true(is.finite(fit$pooledGradientMaxAbs))
+  expect_true(is.finite(fit$pooledKktMaxAbs))
+  expect_true(fit$pooledKktViolating >= 0)
 })
 
 test_that("phase-based algorithms reject partial client participation", {

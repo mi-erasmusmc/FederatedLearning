@@ -589,6 +589,7 @@ test_that("comparison runner helpers parse external comparison settings", {
     "--lambda-search-max-evals=12",
     "--diagnostic-controls-per-case=2",
     "--odal-init=ridgeFallback",
+    "--lead-index=2,3",
     "--dualavg-convergence-objective=cyclopsGradient"
   ))
 
@@ -616,6 +617,10 @@ test_that("comparison runner helpers parse external comparison settings", {
   odalCfg <- runnerEnv$methodConfig("ODAL", "ageSexPhenotypes", args)
   expect_equal(odalCfg$odalInit, "ridgeFallback")
   expect_equal(odalCfg$odalRidgeLambda, 1e-8)
+  expect_equal(odalCfg$odalVariant, "second")
+  expect_equal(odalCfg$leadIndex, 2L)
+  expect_equal(runnerEnv$methodConfig("ODAL1", "ageSexPhenotypes", args)$odalVariant, "first")
+  expect_equal(length(runnerEnv$methodConfigGrid("ODAL", "ageSex", args)), 2L)
 
   gridArgs <- runnerEnv$parseArgs(c(
     "--eta-client=0.5,1",
@@ -683,16 +688,28 @@ test_that("comparison runner helpers parse external comparison settings", {
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSearch, "optimize")
   expect_equal(runnerEnv$methodConfig("ADAP1", "ageSex", defaultArgs)$lambdaSearch, "optimize")
   expect_equal(runnerEnv$methodConfig("ADAPDiag", "ageSex", defaultArgs)$lambdaSearch, "optimize")
+  expect_equal(runnerEnv$methodConfig("MaxConv-ADAP", "ageSex", defaultArgs)$lambdaSearch, "optimize")
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
   expect_equal(runnerEnv$methodConfig("ADAP1", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
   expect_equal(runnerEnv$methodConfig("ADAPDiag", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
   expect_equal(runnerEnv$methodConfig("ADAP_PDA", "ageSex", defaultArgs)$lambdaSelectionMetric, "deviance")
   expect_equal(runnerEnv$methodConfig("ODAL", "ageSex", defaultArgs)$odalInit, "pda")
+  expect_equal(runnerEnv$methodConfig("ODAL", "ageSex", defaultArgs)$odalCurvatureAction, "report")
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaCvMaxRows, Inf)
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$maxOuter, 500L)
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$adapFinalMaxOuter, 1000L)
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaCvGlobalAdjustment, "leaveValOut")
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$diagnosticControlsPerCase, Inf)
+  expect_true(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$pooledDiagnostics)
+
+  gapRows <- data.frame(
+    task = "taskA",
+    fold = 1L,
+    featureSet = "ageSex",
+    method = c("PooledLasso", "ADAP1"),
+    pooledMeanLogLoss = c(0.20, 0.25)
+  )
+  expect_equal(runnerEnv$addPooledObjectiveGap(gapRows)$pooledObjectiveGap, c(0, 0.05))
 
   fixedDualAvgArgs <- runnerEnv$parseArgs(c("--dualavg-lambda=1e-05"))
   expect_false(runnerEnv$shouldTuneDualAvg(fixedDualAvgArgs))
