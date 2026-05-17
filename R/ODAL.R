@@ -49,7 +49,10 @@
     p = p,
     odalVariant = .odalVariant(config),
     betaBar = rep(0, p),
+    betaBarMaxAbs = NA_real_,
+    betaBarL2 = NA_real_,
     leadIndex = NA_integer_,
+    odalInitDiagnostics = NULL,
     otherGrad = NULL,
     otherHess = NULL,
     curvatureStatus = NA_character_,
@@ -110,6 +113,66 @@
   beta
 }
 
+.captureWarnings <- function(expr) {
+  warnings <- character()
+  value <- withCallingHandlers(
+    expr,
+    warning = function(w) {
+      warnings <<- c(warnings, conditionMessage(w))
+    }
+  )
+  list(value = value, warnings = unique(warnings))
+}
+
+.fitLocalLogisticDiagnosed <- function(xRaw, xDesign, y, config, allowRidgeFallback) {
+  glmWarnings <- character()
+  glmError <- NULL
+  beta <- tryCatch(
+    {
+      out <- .captureWarnings(.fitLocalLogistic(xDesign, y))
+      glmWarnings <- out$warnings
+      out$value
+    },
+    error = function(e) {
+      glmError <<- e
+      NULL
+    }
+  )
+
+  initMethod <- "glm"
+  ridgeWarnings <- character()
+  fallbackReason <- NA_character_
+  if (is.null(beta)) {
+    if (!isTRUE(allowRidgeFallback)) {
+      stop(glmError)
+    }
+    initMethod <- "ridgeFallback"
+    fallbackReason <- conditionMessage(glmError)
+    out <- .captureWarnings(.fitLocalLogisticRidge(xRaw, xDesign, y, config, glmError))
+    beta <- out$value
+    ridgeWarnings <- out$warnings
+  }
+
+  list(
+    beta = beta,
+    diagnostics = list(
+      localId = getOption("FederatedLearning.localId", NA_integer_),
+      initMethod = initMethod,
+      usedRidgeFallback = identical(initMethod, "ridgeFallback"),
+      fallbackReason = fallbackReason,
+      glmWarnings = paste(glmWarnings, collapse = " | "),
+      ridgeWarnings = paste(ridgeWarnings, collapse = " | "),
+      n = length(y),
+      outcomes = sum(y),
+      p = length(beta),
+      betaMaxAbs = max(abs(beta), na.rm = TRUE),
+      betaL2 = sqrt(sum(beta^2)),
+      betaNonFinite = sum(!is.finite(beta)),
+      betaNonZero = sum(abs(beta) > 1e-8, na.rm = TRUE)
+    )
+  )
+}
+
 .odalInitMode <- function(config) {
   if (isTRUE(config$odalRidgeFallback)) {
     return("ridgeFallback")
@@ -128,15 +191,14 @@
   y <- clientData$yLabels
 
   if (phase == 0L) {
-    beta <- if (identical(.odalInitMode(config), "ridgeFallback")) {
-      tryCatch(
-        .fitLocalLogistic(xDesign, y),
-        error = function(e) .fitLocalLogisticRidge(xRaw, xDesign, y, config, e)
-      )
-    } else {
-      .fitLocalLogistic(xDesign, y)
-    }
-    return(list(bhat = beta, n = clientData$n))
+    init <- .fitLocalLogisticDiagnosed(
+      xRaw = xRaw,
+      xDesign = xDesign,
+      y = y,
+      config = config,
+      allowRidgeFallback = identical(.odalInitMode(config), "ridgeFallback")
+    )
+    return(list(bhat = init$beta, n = clientData$n, odalInit = init$diagnostics))
   }
 
   if (phase == 1L) {
@@ -200,10 +262,33 @@
     bmat <- do.call(cbind, bhats)
     weights <- ns / sum(ns)
     betaBar <- as.numeric(bmat %*% weights)
+    initDiagnostics <- do.call(rbind, lapply(seq_along(clientReports), function(i) {
+      d <- clientReports[[i]]$odalInit %||% list()
+      data.frame(
+        client = i,
+        localId = d$localId %||% i,
+        n = d$n %||% ns[[i]],
+        outcomes = d$outcomes %||% NA_real_,
+        p = d$p %||% length(bhats[[i]]),
+        initMethod = d$initMethod %||% NA_character_,
+        usedRidgeFallback = d$usedRidgeFallback %||% NA,
+        fallbackReason = d$fallbackReason %||% NA_character_,
+        glmWarnings = d$glmWarnings %||% NA_character_,
+        ridgeWarnings = d$ridgeWarnings %||% NA_character_,
+        betaMaxAbs = d$betaMaxAbs %||% max(abs(bhats[[i]]), na.rm = TRUE),
+        betaL2 = d$betaL2 %||% sqrt(sum(bhats[[i]]^2)),
+        betaNonFinite = d$betaNonFinite %||% sum(!is.finite(bhats[[i]])),
+        betaNonZero = d$betaNonZero %||% sum(abs(bhats[[i]]) > 1e-8, na.rm = TRUE),
+        stringsAsFactors = FALSE
+      )
+    }))
     leadIndex <- config$leadIndex %||% which.max(ns)
     state <- serverState
     state$phase <- 1L
     state$betaBar <- betaBar
+    state$betaBarMaxAbs <- max(abs(betaBar), na.rm = TRUE)
+    state$betaBarL2 <- sqrt(sum(betaBar^2))
+    state$odalInitDiagnostics <- initDiagnostics
     state$leadIndex <- leadIndex
     state$w <- betaBar
     state$totalN <- sum(ns)
@@ -213,6 +298,9 @@
         w = betaBar,
         leadIndex = leadIndex,
         odalVariant = state$odalVariant,
+        betaBarMaxAbs = state$betaBarMaxAbs,
+        betaBarL2 = state$betaBarL2,
+        odalInitDiagnostics = initDiagnostics,
         skipConvergence = TRUE,
         communicationNumbers = length(betaBar) * length(clientReports)
       )
@@ -312,6 +400,9 @@
           done = TRUE,
           leadIndex = state$leadIndex,
           odalVariant = state$odalVariant,
+          betaBarMaxAbs = state$betaBarMaxAbs %||% NA_real_,
+          betaBarL2 = state$betaBarL2 %||% NA_real_,
+          odalInitDiagnostics = state$odalInitDiagnostics,
           convergence = leadReport$convergence,
           optimConvergence = leadReport$convergence,
           optimMessage = leadReport$optimMessage %||% NA_character_,

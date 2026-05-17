@@ -610,6 +610,23 @@ test_that("ODAL local initialization uses explicit ridge fallback for singular c
   expect_length(report$bhat, ncol(x))
   expect_true(all(is.finite(report$bhat)))
   expect_equal(report$n, length(y))
+  expect_equal(report$odalInit$initMethod, "ridgeFallback")
+  expect_true(report$odalInit$usedRidgeFallback)
+  expect_match(report$odalInit$fallbackReason, "glm returned non-finite")
+  expect_true(is.finite(report$odalInit$betaMaxAbs))
+  expect_equal(report$odalInit$outcomes, sum(y))
+
+  state <- FederatedLearning:::.serverInitODAL2(list(p = ncol(x) - 1L))
+  round0 <- FederatedLearning:::.serverRoundODAL(
+    state,
+    list(report, report),
+    list(leadIndex = 1L)
+  )
+  expect_true(is.data.frame(round0$state$odalInitDiagnostics))
+  expect_equal(nrow(round0$state$odalInitDiagnostics), 2L)
+  expect_equal(round0$report$odalInitDiagnostics$initMethod, c("ridgeFallback", "ridgeFallback"))
+  expect_true(is.finite(round0$report$betaBarMaxAbs))
+  expect_true(is.finite(round0$report$betaBarL2))
 })
 
 test_that("AUC lambda tie-break prefers stronger regularization", {
