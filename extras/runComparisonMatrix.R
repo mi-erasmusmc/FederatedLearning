@@ -196,8 +196,8 @@ binaryAuc <- function(y, preds) {
     return(NA_real_)
   }
   y01 <- as.integer(y == max(y))
-  nCase <- sum(y01 == 1L)
-  nControl <- sum(y01 == 0L)
+  nCase <- as.numeric(sum(y01 == 1L))
+  nControl <- as.numeric(sum(y01 == 0L))
   if (nCase == 0L || nControl == 0L) {
     return(NA_real_)
   }

@@ -857,6 +857,16 @@ test_that("comparison runner preprocesses Cyclops baseline matrices", {
   expect_equal(as.numeric(normalized$testData[[1]]$xMatrix[, 2]), c(0.125, 1))
 })
 
+test_that("comparison runner AUC handles large held-out sites", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+
+  y <- c(rep(0L, 50000L), rep(1L, 50000L))
+  preds <- seq_along(y)
+
+  expect_equal(runnerEnv$binaryAuc(y, preds), 1)
+})
+
 test_that("comparison runner does not partial-match lambda-grid-len as fixed lambda", {
   runnerEnv <- new.env(parent = globalenv())
   sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
