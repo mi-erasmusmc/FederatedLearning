@@ -469,25 +469,30 @@ prepareCohorts <- function(row, connectionDetails, execution) {
 
 getCovariateSettings <- function(row) {
   profile <- row$covariateProfileDef %||% list(demographicsAge = TRUE, demographicsGender = TRUE)
-  baseSettings <- NULL
-  if (isTRUE(profile$demographicsAge) || isTRUE(profile$demographicsGender) ||
-      isTRUE(profile$conditionsLongTerm)) {
-    baseSettings <- FeatureExtraction::createCovariateSettings(
+  settings <- list()
+  if (isTRUE(profile$defaultCovariates)) {
+    settings[[length(settings) + 1L]] <- FeatureExtraction::createDefaultCovariateSettings()
+  }
+  if (!isTRUE(profile$defaultCovariates) &&
+      (isTRUE(profile$demographicsAge) || isTRUE(profile$demographicsGender) ||
+      isTRUE(profile$conditionsLongTerm))) {
+    settings[[length(settings) + 1L]] <- FeatureExtraction::createCovariateSettings(
       useDemographicsGender = isTRUE(profile$demographicsGender),
       useDemographicsAge = isTRUE(profile$demographicsAge),
       useConditionOccurrenceLongTerm = isTRUE(profile$conditionsLongTerm)
     )
   }
   hasCohorts <- length(cohortVector(row$covariateCohortIds)) > 0L
-  if (!hasCohorts) {
-    return(baseSettings)
+  if (hasCohorts) {
+    settings[[length(settings) + 1L]] <- getCohortCovariateSettings(row)
   }
-  cohortSettings <- getCohortCovariateSettings(row)
-  if (is.null(baseSettings)) {
-    cohortSettings
-  } else {
-    list(baseSettings, cohortSettings)
+  if (length(settings) == 0L) {
+    return(NULL)
   }
+  if (length(settings) == 1L) {
+    return(settings[[1L]])
+  }
+  settings
 }
 
 normalizeExecutionSettings <- function(execution) {

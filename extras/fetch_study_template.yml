@@ -35,3 +35,13 @@ covariateProfiles:
     demographicsAge: true
     demographicsGender: true
     conditionsLongTerm: true
+  defaultCovariates:
+    # Uses FeatureExtraction::createDefaultCovariateSettings().
+    defaultCovariates: true
+  defaultCovariatesPhenotypes:
+    # OHDSI default covariates plus cohort-based phenotype covariates.
+    defaultCovariates: true
+    cohortCovariates:
+      analysisId: 49
+      # Defaults to PhenotypeLibrary IDs 1152:1215 when omitted.
+      # phenotypeLibraryIds: 1152:1215

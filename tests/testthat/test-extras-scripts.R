@@ -195,6 +195,19 @@ test_that("keyring resolvers can be used inside connection profiles", {
     },
     .package = "keyring"
   )
+  testthat::local_mocked_bindings(
+    createConnectionDetails = function(...) {
+      args <- list(...)
+      server <- args$server
+      user <- args$user
+      password <- args$password
+      args$server <- function() server
+      args$user <- function() user
+      args$password <- function() password
+      args
+    },
+    .package = "DatabaseConnector"
+  )
 
   details <- fetchEnv$makeConnectionDetails(
     dataSource = list(connectionProfile = "custom"),
@@ -481,6 +494,40 @@ test_that("fetch rows preserve PLP database and population settings", {
   expect_equal(row$covariateCohortIds, c(30L, 31L))
   expect_equal(row$covariateAnalysisId, 49L)
   expect_equal(row$covariateCohortDatabaseSchema, "cov_scratch")
+})
+
+test_that("covariate profiles support OHDSI default covariates", {
+  skip_if_not_installed("FeatureExtraction")
+  fetchEnv <- loadFetchEnv()
+
+  defaultSettings <- fetchEnv$getCovariateSettings(list(
+    covariateProfileDef = list(defaultCovariates = TRUE)
+  ))
+  expect_s3_class(defaultSettings, "covariateSettings")
+  expect_true(isTRUE(defaultSettings$DemographicsGender))
+  expect_true(isTRUE(defaultSettings$ConditionGroupEraLongTerm))
+  expect_equal(attr(defaultSettings, "fun"), "getDbDefaultCovariateData")
+
+  combinedSettings <- fetchEnv$getCovariateSettings(list(
+    covariateProfileDef = list(
+      defaultCovariates = TRUE,
+      demographicsAge = TRUE,
+      demographicsGender = TRUE,
+      cohortCovariates = list(analysisId = 49L)
+    ),
+    covariateCohortIds = c(30L, 31L),
+    covariateAnalysisId = 49L,
+    covariateCohortDatabaseSchema = "scratch",
+    covariateCohortTable = "covariate_cohort",
+    cohortDatabaseSchema = "scratch",
+    cohortTable = "cohort"
+  ))
+  expect_type(combinedSettings, "list")
+  expect_length(combinedSettings, 2L)
+  expect_s3_class(combinedSettings[[1]], "covariateSettings")
+  expect_s3_class(combinedSettings[[2]], "covariateSettings")
+  expect_equal(attr(combinedSettings[[1]], "fun"), "getDbDefaultCovariateData")
+  expect_equal(attr(combinedSettings[[2]], "fun"), "getDbCohortBasedCovariatesData")
 })
 
 test_that("fetchOne passes expected database and population settings to PLP", {
