@@ -189,7 +189,28 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
                         stopByY = 1e-2,
                         stopByX = log(1.5),
                         firstCut = 1.0,
-                        verbose = TRUE) {
+                        verbose = TRUE,
+                        trainPopSizes = NULL) {
+  usesFitScale <- is.function(lambdaStrategy$fit)
+  if (usesFitScale && (length(trainIds) < 2L || anyDuplicated(trainIds) ||
+      any(!is.finite(trainIds)) || any(trainIds < 1 | trainIds != floor(trainIds)) ||
+      !is.numeric(trainPopSizes) || length(trainPopSizes) < max(trainIds) ||
+      any(!is.finite(trainPopSizes[trainIds])) || any(trainPopSizes[trainIds] <= 0) ||
+      !isTRUE(all.equal(sum(trainPopSizes[trainIds]), totalPopSize)))) {
+    stop("Variance tuning requires positive training row counts indexed by client ID and summing to totalPopSize")
+  }
+  fitLambda <- function(value, valId) {
+    if (!usesFitScale) return(value)
+    lambdaStrategy$fit(value, sum(trainPopSizes[setdiff(trainIds, valId)]), context)
+  }
+  maxEvals <- configBase$lambdaSearchMaxEvals %||% 25L
+  if (!is.numeric(maxEvals) || length(maxEvals) != 1L || !is.finite(maxEvals) ||
+      maxEvals < 1 || maxEvals != floor(maxEvals)) {
+    stop("lambdaSearchMaxEvals must be a positive finite integer")
+  }
+  trace <- list()
+  searchScale <- lambdaStrategy$scale %||% "lambda"
+  stopReason <- "searchConverged"
   context <- list(
     cl = cl,
     configBase = configBase,
@@ -238,7 +259,7 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     cfg <- c(
       configBase,
       list(
-        lambda = lambda,
+        lambda = fitLambda(lambda, valId),
         rounds = rounds,
         epsilon = epsilon,
         clientFrac = clientFrac,
@@ -272,7 +293,14 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     }
     clusterCreateMatrices(valCluster, res$config)
     ev <- clusterEvaluateModel(valCluster, res$w)
-    .innerCvScoreFromEvaluation(ev)
+    score <- .innerCvScoreFromEvaluation(ev)
+    trace[[length(trace) + 1L]] <<- data.frame(
+      iteration = iterLabel, validationClient = valId,
+      searchScale = searchScale, searchValue = lambda, fitLambda = cfg$lambda,
+      trainingRows = if (usesFitScale) sum(trainPopSizes[train2]) else NA_real_,
+      auc = score
+    )
+    score
   }
 
   aucs0 <- sapply(trainIds, function(valId) {
@@ -286,8 +314,8 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
   }
 
   if (verbose) {
-    message(sprintf("[iter %2d] initial lambda = %.5g  (inner-CV AUC = %.5g)",
-           0, initLambda, m)) 
+    message(sprintf("[iter %2d] initial %s = %.5g  (inner-CV AUC = %.5g)",
+           0, searchScale, initLambda, m))
   }
   search$try(initLambda, m, s)
 
@@ -297,15 +325,23 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     s <- search$step()
     if (!s$continue) {
       if (verbose) {
-       message(sprintf("stopping search after %d iterations. best lambda = %g",
-             iter - 1, search$bestX()))
+       message(sprintf("stopping search after %d iterations. best %s = %g",
+             iter - 1, searchScale, search$bestX()))
       }
       break
     }
+    if (iter >= maxEvals) {
+      stopReason <- "maxEvaluations"
+      warning("Lambda auto-search reached lambdaSearchMaxEvals; using the best evaluated candidate", call. = FALSE)
+      break
+    }
     lambdaTry <- s$nextX
+    if (!is.finite(lambdaTry) || lambdaTry <= 0) {
+      stop("Lambda auto-search proposed a non-positive or non-finite candidate")
+    }
     if (verbose) {
-      message(sprintf("[iter %2d] proposing lambda = %.5g  (predicted auc = %.5g)",
-             iter, lambdaTry, s$expected))
+      message(sprintf("[iter %2d] proposing %s = %.5g  (predicted auc = %.5g)",
+             iter, searchScale, lambdaTry, s$expected))
     }
     # your inner CV over trainIds
     aucs <- sapply(trainIds, function(valId) {
@@ -334,9 +370,15 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
   if (is.null(bestPerf)) {
     bestPerf <- m
   }
+  bestFitLambdas <- vapply(trainIds, function(valId) fitLambda(bestLambda, valId), numeric(1))
   list(
     bestLambda = lambdaStrategy$final(bestLambda, totalPopSize, context),
-    bestLambdaTrain = bestLambda,
+    bestLambdaTrain = if (length(unique(bestFitLambdas)) == 1L) bestFitLambdas[[1]] else NA_real_,
+    bestFitLambdas = stats::setNames(bestFitLambdas, trainIds),
+    bestSearchValue = bestLambda,
+    searchScale = searchScale,
+    trace = do.call(rbind, trace),
+    stopReason = stopReason,
     perf = bestPerf
   )
 }

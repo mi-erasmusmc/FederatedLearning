@@ -797,29 +797,26 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
     lambdaDefault = lambdaDefault,
     totalPopSize = totalPopSize,
     globalMap = globalMap,
+    trainPopSizes = trainPopSizes,
     verbose = verbose
   )
 
-  contextFinal <- list(
-    cl = clTrain,
-    configBase = configBase,
-    rounds = config$rounds,
-    clientFrac = config$clientFrac,
-    epsilon = config$epsilon,
-    totalPopSize = totalPopSize,
-    globalMap = globalMap
-  )
   config$mapping <- globalMap
   config$p <- nrow(globalMap)
-  config$lambda <- lambdaStrategy$initial(tuned$bestLambda, totalPopSize, contextFinal)
+  config$lambda <- tuned$bestLambda
   config$lambdaSearchDefault <- lambdaDefault
-  config$lambdaSearchBest <- tuned$bestLambda
+  config$lambdaSearchBest <- tuned$bestSearchValue
+  config$lambdaSearchScale <- tuned$searchScale
+  config$lambdaSearchSelectedVariance <- tuned$bestSearchValue
   config$lambdaSearchBestTrain <- tuned$bestLambdaTrain %||% NA_real_
+  config$lambdaSearchInnerFitLambdas <- tuned$bestFitLambdas
+  config$lambdaSearchTrace <- tuned$trace
+  config$lambdaSearchStopReason <- tuned$stopReason
   config$lambdaSearchInnerAuc <- tuned$perf %||% NA_real_
   config$innerCvScore <- tuned$perf %||% NA_real_
   if (isTRUE(verbose)) {
     message(sprintf(
-      "Selected %s lambda: search scale = %.5g, fit scale = %.5g, inner-CV AUC = %.5g",
+      "Selected %s penalty: prior variance = %.5g, mean-loss lambda = %.5g, inner-CV AUC = %.5g",
       method,
       config$lambdaSearchBest,
       config$lambda,
@@ -1196,7 +1193,7 @@ preprocessBaselineData <- function(trainData, testData = NULL, config, args) {
   list(trainData = trainData, testData = testData, preprocessor = preprocessor)
 }
 
-fitCyclopsWeights <- function(clientDataList, args, seed) {
+fitCyclopsWeights <- function(clientDataList, args, seed, intercept = TRUE) {
   if (!requireNamespace("Cyclops", quietly = TRUE)) {
     stop("Cyclops is required for pooled/local baseline models")
   }
@@ -1205,10 +1202,15 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
   if (length(unique(y)) < 2) {
     stop("Cannot fit Cyclops logistic model: training data has only one outcome class")
   }
+  if (isTRUE(intercept) && (ncol(x) < 1L || anyNA(x[, 1L]) || any(x[, 1L] != 1))) {
+    stop("Configured intercept must be the first matrix column, containing only ones")
+  }
 
   start <- Sys.time()
 
   cyclopsData <- Cyclops::createCyclopsData(y = y, sx = x, modelType = "lr")
+  # A constant sparse column is not automatically recognized as an intercept.
+  excluded <- if (isTRUE(intercept)) as.numeric(Cyclops::getCovariateIds(cyclopsData)[1L]) else NULL
   useCv <- logicalArg(argValue(args, "cyclops-cv"), TRUE)
   variance <- numArg(argValue(args, "cyclops-variance"), numArg(argValue(args, "baseline-variance"), 0.01))
   startingVariance <- numArg(
@@ -1218,6 +1220,7 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
   prior <- Cyclops::createPrior(
     "laplace",
     variance = variance,
+    exclude = excluded,
     useCrossValidation = useCv
   )
   control <- Cyclops::createControl(
@@ -1259,6 +1262,8 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
     selectedLambda = selectedVariance,
     fittingSettings = list(
       penaltyScale = "Cyclops Laplace prior variance",
+      intercept = isTRUE(intercept),
+      unpenalizedCovariates = excluded,
       useCrossValidation = useCv,
       requestedControl = control,
       seed = seed,
@@ -1272,21 +1277,23 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
   )
 }
 
-fitBaselineWeights <- function(clientDataList, args, seed) {
+fitBaselineWeights <- function(clientDataList, args, seed, intercept = TRUE) {
   fitCyclopsWeights(
     clientDataList = clientDataList,
     args = args,
-    seed = seed
+    seed = seed,
+    intercept = intercept
   )
 }
 
-fitLocalBaselineSafely <- function(trainData, localIndex, trainClientId, args, seed) {
+fitLocalBaselineSafely <- function(trainData, localIndex, trainClientId, args, seed, intercept = TRUE) {
   start <- Sys.time()
   tryCatch({
     fit <- fitBaselineWeights(
       list(trainData[[localIndex]]),
       args = args,
-      seed = seed
+      seed = seed,
+      intercept = intercept
     )
     list(
       ok = TRUE,
@@ -1363,7 +1370,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     fits <- list(fitBaselineWeights(
       trainData,
       args = args,
-      seed = intArg(args[["baseline-seed"]], 42L) + fold
+      seed = intArg(args[["baseline-seed"]], 42L) + fold,
+      intercept = isTRUE(config$intercept)
     ))
     fits[[1]]$leadIndex <- NA_integer_
     fits[[1]]$innerCvScore <- NA_real_
@@ -1379,7 +1387,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         localIndex = i,
         trainClientId = trainClientIds[[i]],
         args = args,
-        seed = intArg(args[["baseline-seed"]], 42L) + fold + i
+        seed = intArg(args[["baseline-seed"]], 42L) + fold + i,
+        intercept = isTRUE(config$intercept)
       )
     })
     localOk <- vapply(localAttempts, `[[`, logical(1), "ok")

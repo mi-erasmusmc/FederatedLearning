@@ -13,10 +13,10 @@ static inline double soft(double v, double a) {
 }
 
 // Apply soft‐threshold to an Eigen vector
-static Eigen::VectorXd proxL1_E(const Eigen::VectorXd &z, double alpha) {
+static Eigen::VectorXd proxL1_E(const Eigen::VectorXd &z, double alpha, bool intercept) {
   Eigen::VectorXd w(z.size());
-  w[0] = z[0]; 
-  for (int j = 1; j < z.size(); ++j) {
+  if (intercept && z.size() > 0) w[0] = z[0];
+  for (int j = intercept ? 1 : 0; j < z.size(); ++j) {
     w[j] = soft(z[j], alpha);
   }
   return w;
@@ -80,6 +80,7 @@ List clientUpdateDualAveragingCpp(List &clientData,
   double etaC = config["etaClient"];
   double etaS = config["etaServer"];
   double lambda = config["lambda"];
+  bool intercept = config["intercept"];
 
   Eigen::VectorXd z0 = z;
   int n = yLabels.size();
@@ -91,7 +92,7 @@ List clientUpdateDualAveragingCpp(List &clientData,
     // composite penalty weight ˜η_{r,k}
     double alpha = etaS * etaC * (double)r * (double)k + etaC * (double)i;
     // 1) mirror‐prox (primal retrieval via soft‐threshold)
-    Eigen::VectorXd w = proxL1_E(z, alpha * lambda);
+    Eigen::VectorXd w = proxL1_E(z, alpha * lambda, intercept);
 
     // 2) compute logistic gradient: g = (Xᵀ(σ(Xw) – y))/n
     Eigen::VectorXd lin = xMatrix * w; // size‐n
@@ -118,6 +119,7 @@ List serverRoundDualAveragingCpp(List &serverState,
   double etaC = config["etaClient"];
   int k = config["k"];
   double lambda = config["lambda"];
+  bool intercept = config["intercept"];
   std::string aggregation = "sampleSize";
   if (config.containsElementNamed("aggregation") &&
       !Rf_isNull(config["aggregation"])) {
@@ -162,7 +164,7 @@ List serverRoundDualAveragingCpp(List &serverState,
 
   // 3) optional primal retrieval
   double alpha = etaS * etaC * (double)(r + 1) * k;
-  Eigen::VectorXd wNew = proxL1_E(zNew, alpha * lambda);
+  Eigen::VectorXd wNew = proxL1_E(zNew, alpha * lambda, intercept);
 
   List state = List::create(_["z"] = zNew);
   List report = List::create(_["w"] = wNew,

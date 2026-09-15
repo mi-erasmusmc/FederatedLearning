@@ -95,7 +95,7 @@ test_that("baseline artifacts save pooled coefficients and actual local averagin
     .package = "FederatedLearning"
   )
   env$assertCyclopsMethod <- function(method) invisible(NULL)
-  env$fitBaselineWeights <- function(clientDataList, args, seed) {
+  env$fitBaselineWeights <- function(clientDataList, args, seed, intercept = TRUE) {
     n <- sum(vapply(clientDataList, `[[`, numeric(1), "n"))
     if (n == 6) stop("synthetic local failure")
     list(w = if (n == 4) c(-1, 2, 1e-12) else if (n == 8) c(-2, -1, 0) else c(-0.5, 0, 2),
