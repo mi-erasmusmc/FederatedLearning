@@ -879,34 +879,18 @@
   maxDenseCells <- config$maxDenseInitCells %||% 5e7
   useDensePdaPath <- isTRUE((nrow(xDesign) * ncol(xDesign)) <= maxDenseCells)
 
-  if (useDensePdaPath) {
-    xFit <- as.matrix(xDesign)
-    penaltyFactor <- rep(1, ncol(xFit))
-    penaltyFactor[1] <- 0
-    fit <- glmnet::cv.glmnet(
-      x = xFit,
-      y = y,
-      family = "binomial",
-      alpha = 1,
-      intercept = FALSE,
-      standardize = config$standardize %||% FALSE,
-      penalty.factor = penaltyFactor
-    )
-    beta <- as.numeric(stats::coef(fit, s = "lambda.min"))
-    if (length(beta) == ncol(xFit) + 1L) {
-      beta <- beta[-1]
-    }
-  } else {
-    fit <- glmnet::cv.glmnet(
-      x = xRaw,
-      y = y,
-      family = "binomial",
-      alpha = 1,
-      intercept = TRUE,
-      standardize = config$standardize %||% FALSE
-    )
-    beta <- as.numeric(stats::coef(fit, s = "lambda.min"))
-  }
+  xFit <- if (useDensePdaPath) as.matrix(xRaw) else xRaw
+  # glmnet requires two predictor columns; a zero column does not affect the fit.
+  if (ncol(xFit) == 1L) xFit <- cbind(xFit, 0)
+  fit <- glmnet::cv.glmnet(
+    x = xFit,
+    y = y,
+    family = "binomial",
+    alpha = 1,
+    intercept = TRUE,
+    standardize = config$standardize %||% FALSE
+  )
+  beta <- as.numeric(stats::coef(fit, s = "lambda.min"))[seq_len(ncol(xRaw) + 1L)]
   list(beta = beta, lambda = fit$lambda.min, usedDensePdaPath = useDensePdaPath)
 }
 
