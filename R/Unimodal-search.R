@@ -370,11 +370,8 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
   if (is.null(bestPerf)) {
     bestPerf <- m
   }
-  bestFitLambdas <- vapply(trainIds, function(valId) fitLambda(bestLambda, valId), numeric(1))
   list(
     bestLambda = lambdaStrategy$final(bestLambda, totalPopSize, context),
-    bestLambdaTrain = if (length(unique(bestFitLambdas)) == 1L) bestFitLambdas[[1]] else NA_real_,
-    bestFitLambdas = stats::setNames(bestFitLambdas, trainIds),
     bestSearchValue = bestLambda,
     searchScale = searchScale,
     trace = do.call(rbind, trace),

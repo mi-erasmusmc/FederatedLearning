@@ -159,26 +159,8 @@ nonEmptyRows <- function(rows) {
   !is.null(rows) && nrow(rows) > 0L
 }
 
-matchingCombination <- function(rows, task, fold, featureSet, method) {
-  if (!nonEmptyRows(rows)) {
-    return(logical())
-  }
-  required <- c("task", "fold", "featureSet", "method")
-  if (!all(required %in% names(rows))) {
-    return(rep(FALSE, nrow(rows)))
-  }
-  rows$task == task &
-    rows$fold == fold &
-    rows$featureSet == featureSet &
-    rows$method == method
-}
-
-successfulRows <- function(rows) {
-  if (!"error" %in% names(rows)) {
-    return(rep(TRUE, nrow(rows)))
-  }
-  is.na(rows$error) | !nzchar(rows$error)
-}
+matchingCombination <- FederatedLearning:::matchingCombination
+successfulRows <- FederatedLearning:::successfulRows
 
 isCompletedCombination <- function(rows, task, fold, featureSet, method,
                                    rerunErrors = FALSE, rerunMissingModels = FALSE,
@@ -192,8 +174,7 @@ isCompletedCombination <- function(rows, task, fold, featureSet, method,
     return(FALSE)
   }
   if (isTRUE(rerunMissingModels) && nrow(successful) > 0L) {
-    return(hasSavedModel(successful, resultDirectory, task, fold, featureSet, method) ||
-      !is.null(readMatchingDebugFit(successful, resultDirectory, task, fold, featureSet, method)))
+    return(!is.null(readModelArtifact(successful, resultDirectory, task, fold, featureSet, method)))
   }
   TRUE
 }
@@ -250,122 +231,11 @@ stampMethodElapsed <- function(rows, startTime) {
   rows
 }
 
-safeFilePart <- function(x) {
-  gsub("[^A-Za-z0-9_.-]+", "-", as.character(x))
-}
-
-coefficientTable <- function(w, mapping, intercept, preprocessor = NULL) {
-  if (!is.numeric(w) || any(!is.finite(w))) {
-    stop("Cannot save non-finite or non-numeric coefficients")
-  }
-  w <- as.numeric(w)
-  if (!all(c("covariateId", "columnId") %in% names(mapping)) ||
-      anyNA(mapping$covariateId) || anyDuplicated(mapping$covariateId) ||
-      !identical(sort(as.integer(mapping$columnId)), seq_len(nrow(mapping)))) {
-    stop("Invalid coefficient feature mapping")
-  }
-  mapping <- mapping[order(mapping$columnId), , drop = FALSE]
-  factors <- rep(1, nrow(mapping))
-  if (isTRUE(preprocessor$enabled)) {
-    if (length(preprocessor$keep) != nrow(mapping) || anyNA(preprocessor$keep) ||
-        length(preprocessor$normFactors) != nrow(mapping)) {
-      stop("Preprocessing mask does not match the coefficient feature mapping")
-    }
-    factors <- preprocessor$normFactors[preprocessor$keep]
-    mapping <- mapping[preprocessor$keep, , drop = FALSE]
-  }
-  if (length(w) != nrow(mapping) + as.integer(intercept) ||
-      any(!is.finite(factors) | factors == 0)) {
-    stop("Coefficient dimensions or normalization factors do not match the feature mapping")
-  }
-  factors <- c(if (intercept) 1, factors)
-  data.frame(
-    matrixColumn = seq_along(w),
-    covariateId = c(if (intercept) NA_real_, mapping$covariateId),
-    isIntercept = c(if (intercept) TRUE, rep(FALSE, nrow(mapping))),
-    coefficient = as.numeric(w),
-    normalizationFactor = factors,
-    # Shared matrix scale, including the loader's age/100 transformation.
-    coefficientSharedScale = as.numeric(w) / factors,
-    selected = w != 0,
-    stringsAsFactors = FALSE
-  )
-}
-
-exactNonzero <- function(w, intercept) {
-  if (any(!is.finite(w))) return(NA_integer_)
-  if (isTRUE(intercept)) w <- w[-1L]
-  sum(w != 0)
-}
-
-saveModelArtifact <- function(artifact, rows, modelDirectory) {
-  if (is.null(modelDirectory)) return(rows)
-  dir.create(modelDirectory, recursive = TRUE, showWarnings = FALSE)
-  prefix <- paste(vapply(list(artifact$task, paste0("fold", artifact$fold),
-    artifact$featureSet, artifact$method), safeFilePart, character(1)), collapse = "_")
-  target <- tempfile(paste0(prefix, "_"), tmpdir = modelDirectory, fileext = ".rds")
-  artifact$schemaVersion <- 1L
-  artifact$modelId <- basename(target)
-  artifact$createdAt <- format(Sys.time(), tz = "UTC", usetz = TRUE)
-  rows$modelFile <- file.path("models", basename(target))
-  rows$modelId <- artifact$modelId
-  # End-to-end elapsedSeconds is stamped by the runner after this write.
-  artifact$results <- rows[, setdiff(names(rows), "elapsedSeconds"), drop = FALSE]
-  artifact$sessionInfo <- utils::sessionInfo()
-  temporary <- tempfile(tmpdir = modelDirectory)
-  on.exit(unlink(temporary), add = TRUE)
-  saveRDS(artifact, temporary)
-  if (!file.rename(temporary, target)) stop("Could not save model artifact: ", target)
-  rows
-}
-
-hasSavedModel <- function(rows, resultDirectory, task, fold, featureSet, method) {
-  if (is.null(resultDirectory) ||
-      !all(c("modelFile", "modelId") %in% names(rows))) return(FALSE)
-  refs <- unique(rows[, c("modelFile", "modelId"), drop = FALSE])
-  if (nrow(refs) != 1L || anyNA(refs) || any(!nzchar(unlist(refs)))) return(FALSE)
-  path <- file.path(resultDirectory, refs$modelFile)
-  if (!file.exists(path)) return(FALSE)
-  artifact <- tryCatch(readRDS(path), error = function(e) NULL)
-  if (!is.list(artifact)) return(FALSE)
-  identical(artifact$schemaVersion, 1L) &&
-    identical(artifact$modelId, refs$modelId[[1]]) &&
-    identical(as.character(artifact$task), as.character(task)) &&
-    identical(as.integer(artifact$fold), as.integer(fold)) &&
-    identical(as.character(artifact$featureSet), as.character(featureSet)) &&
-    identical(as.character(artifact$method), as.character(method)) &&
-    length(artifact$models) > 0L &&
-    all(vapply(artifact$models, function(model) {
-      if (!is.list(model)) return(FALSE)
-      tab <- model$coefficients
-      is.data.frame(tab) && all(c("coefficient", "covariateId", "isIntercept") %in% names(tab)) &&
-        nrow(tab) > 0L && is.numeric(tab$coefficient) && all(is.finite(tab$coefficient))
-    }, logical(1)))
-}
-
-readMatchingDebugFit <- function(rows, resultDirectory, task, fold, featureSet, method) {
-  if (is.null(resultDirectory) || nrow(rows) != 1L || method %in% baselineMethods) return(NULL)
-  path <- debugPath(file.path(resultDirectory, "debug"), task, fold, featureSet, method, "fit")
-  if (!file.exists(path)) return(NULL)
-  tryCatch({
-    fit <- readRDS(path)
-    keys <- list(task = task, fold = fold, featureSet = featureSet, method = method)
-    metrics <- c("auc", "n", "outcomes", "clientId")
-    if (!is.list(fit) || !is.data.frame(fit$evaluation) || nrow(fit$evaluation) != 1L ||
-        !all(metrics %in% names(rows)) || !all(metrics %in% names(fit$evaluation)) ||
-        !all(vapply(names(keys), function(k) identical(as.character(fit[[k]]), as.character(keys[[k]])), logical(1))) ||
-        !all(vapply(metrics, function(k) isTRUE(all.equal(fit$evaluation[[k]], rows[[k]],
-          tolerance = 1e-12, check.attributes = FALSE)), logical(1))) ||
-        length(fit$coefficients) != rows$p) return(NULL)
-    lambda <- fit$selectedLambda %||% fit$config[["lambda", exact = TRUE]]
-    expected <- rows$selectedLambda
-    if (length(lambda) != 1L || length(expected) != 1L ||
-        !(is.na(lambda) && is.na(expected) || is.finite(lambda) && is.finite(expected) &&
-          abs(lambda - expected) <= 1e-12 * max(abs(lambda), abs(expected), .Machine$double.xmin))) return(NULL)
-    coefficientTable(fit$coefficients, fit$config$mapping, fit$config$intercept)
-    fit
-  }, error = function(e) NULL)
-}
+safeFilePart <- FederatedLearning:::safeFilePart
+coefficientTable <- FederatedLearning:::coefficientTable
+exactNonzero <- FederatedLearning:::exactNonzero
+saveModelArtifact <- FederatedLearning:::saveModelArtifact
+readModelArtifact <- FederatedLearning:::readModelArtifact
 
 debugPath <- function(debugDirectory, task, fold, featureSet, method = NULL,
                       suffix = "debug", extension = "rds") {
@@ -804,21 +674,15 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
   config$mapping <- globalMap
   config$p <- nrow(globalMap)
   config$lambda <- tuned$bestLambda
-  config$lambdaSearchDefault <- lambdaDefault
-  config$lambdaSearchBest <- tuned$bestSearchValue
-  config$lambdaSearchScale <- tuned$searchScale
-  config$lambdaSearchSelectedVariance <- tuned$bestSearchValue
-  config$lambdaSearchBestTrain <- tuned$bestLambdaTrain %||% NA_real_
-  config$lambdaSearchInnerFitLambdas <- tuned$bestFitLambdas
+  config$selectedVariance <- tuned$bestSearchValue
   config$lambdaSearchTrace <- tuned$trace
   config$lambdaSearchStopReason <- tuned$stopReason
-  config$lambdaSearchInnerAuc <- tuned$perf %||% NA_real_
   config$innerCvScore <- tuned$perf %||% NA_real_
   if (isTRUE(verbose)) {
     message(sprintf(
       "Selected %s penalty: prior variance = %.5g, mean-loss lambda = %.5g, inner-CV AUC = %.5g",
       method,
-      config$lambdaSearchBest,
+      config$selectedVariance,
       config$lambda,
       config$innerCvScore
     ))
@@ -902,7 +766,7 @@ selectMethodConfigForFold <- function(method, clTrain, configs, trainPopSizes, a
     config
   })
   scores <- vapply(tunedConfigs, function(config) {
-    config$innerCvScore %||% config$lambdaSearchInnerAuc %||% NA_real_
+    config$innerCvScore %||% NA_real_
   }, numeric(1))
   if (all(!is.finite(scores))) {
     best <- 1L
@@ -1778,8 +1642,6 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         config = fit$config,
         roundsCompleted = fit$roundsCompleted %||% NA_integer_,
         selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
-        lambdaSearchBest = fit$config$lambdaSearchBest %||% NA_real_,
-        lambdaSearchInnerAuc = fit$config$lambdaSearchInnerAuc %||% NA_real_,
         leadIndex = fit$leadIndex %||% NA_integer_,
         leadWeight = fit$leadWeight %||% NA_real_,
         leadWeightMin = fit$leadWeightMin %||% NA_real_,

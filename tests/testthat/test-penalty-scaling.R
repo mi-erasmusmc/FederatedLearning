@@ -58,14 +58,15 @@ test_that("variance CV uses each training split's row count and preserves fold-l
       globalMap = data.frame(covariateId = 1, columnId = 1), verbose = FALSE)
     expect_equal(result$bestSearchValue, 0.01)
     expect_equal(result$bestLambda, sqrt(200) / sum(sizes))
-    expect_equal(unname(result$bestFitLambdas), sqrt(200) / (sum(sizes) - sizes))
+    chosen <- result$trace[result$trace$searchValue == result$bestSearchValue, ]
+    expect_equal(chosen$fitLambda, sqrt(200) / (sum(sizes) - sizes))
     expect_equal(result$searchScale, "priorVariance")
     expect_equal(result$stopReason, "searchConverged")
     expect_equal(nrow(result$trace), length(calls))
     expect_equal(result$trace$fitLambda * result$trace$trainingRows,
       sqrt(2 / result$trace$searchValue))
     expect_true(all(is.finite(result$trace$auc)))
-    if (length(unique(sizes)) > 1L) expect_true(is.na(result$bestLambdaTrain))
+    expect_false(any(c("bestLambdaTrain", "bestFitLambdas") %in% names(result)))
     for (i in seq_along(calls)) {
       cfg <- calls[[i]]$config
       if (i <= length(sizes)) {
@@ -93,16 +94,16 @@ test_that("runner passes the selected final lambda through without another conve
       expect_equal(lambdaDefault, 0.01)
       expect_null(configBase$lambda)
       list(bestLambda = 0.003, bestSearchValue = 2 / (100 * 0.003)^2,
-        bestFitLambdas = c(0.003 * 100 / 90, 0.003 * 100 / 80, 0.003 * 100 / 30),
-        bestLambdaTrain = NA_real_, searchScale = "priorVariance", perf = 0.75,
+        searchScale = "priorVariance", perf = 0.75,
         trace = data.frame(iteration = 0), stopReason = "searchConverged")
     }, .package = "FederatedLearning"
   )
   out <- env$tuneDualAvgForFold("DualAvg", NULL, cfg, c(10, 20, 70), list(), FALSE)
   expect_equal(out$lambda, 0.003)
-  expect_equal(out$lambdaSearchSelectedVariance, 2 / (100 * 0.003)^2)
-  expect_equal(out$lambdaSearchScale, "priorVariance")
-  expect_equal(out$lambdaSearchInnerFitLambdas * c(90, 80, 30), rep(0.3, 3))
+  expect_equal(out$selectedVariance, 2 / (100 * 0.003)^2)
+  expect_equal(out$innerCvScore, 0.75)
+  expect_false(any(c("lambdaSearchBest", "lambdaSearchBestTrain", "lambdaSearchInnerAuc",
+    "lambdaSearchInnerFitLambdas", "lambdaSearchSelectedVariance") %in% names(out)))
   expect_equal(out$lambdaSearchTrace, data.frame(iteration = 0))
   expect_identical(env$tuneDualAvgForFold("DualAvg", NULL, cfg, c(10, 20, 70),
     list("dualavg-lambda" = "99"), FALSE), cfg)

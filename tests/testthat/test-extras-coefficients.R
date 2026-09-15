@@ -32,7 +32,7 @@ test_that("saved coefficients align with retained columns and normalization", {
   mapping <- data.frame(covariateId = c(30, 10, 20), columnId = c(3L, 1L, 2L))
   preprocessor <- list(enabled = TRUE, keep = c(TRUE, FALSE, TRUE), normFactors = c(2, 1, 4))
   tab <- env$coefficientTable(c(-2, 0.3, 1e-15), mapping, TRUE, preprocessor)
-  expect_equal(tab$covariateId, c(NA, 10, 30))
+  expect_identical(tab$covariateId, c(NA_character_, "10", "30"))
   expect_equal(tab$coefficientSharedScale, c(-2, 0.15, 1e-15 / 4), tolerance = 0)
   expect_identical(tab$selected, c(TRUE, TRUE, TRUE))
   x <- cbind(1, c(2, 4, 1), c(3, 8, 2))
@@ -111,7 +111,7 @@ test_that("baseline artifacts save pooled coefficients and actual local averagin
   pooled <- run("PooledLasso")
   saved <- readRDS(file.path(directory, pooled$modelFile))
   expect_equal(pooled$nonzeroPredictors, 1L)
-  expect_equal(saved$models[[1]]$coefficients$covariateId, c(NA, 10, 20))
+  expect_identical(saved$models[[1]]$coefficients$covariateId, c(NA_character_, "10", "20"))
   expect_equal(saved$models[[1]]$coefficients$coefficient, c(-0.5, 0, 2))
   expect_identical(saved$preprocessing$keep, c(TRUE, TRUE, FALSE))
   expect_equal(length(saved$components), 0L)
@@ -152,7 +152,17 @@ test_that("coefficient export reads model files and marks unavailable models exp
   absent$modelFile <- NA_character_
   absent$modelId <- NA_character_
   write.csv(rbind(rows, absent), file.path(directory, "comparison_results.csv"), row.names = FALSE)
-  result <- script$summarizeCoefficients(directory, runnerPath = coefficientExtrasPath("runComparisonMatrix.R"))
+  reads <- 0L
+  reader <- FederatedLearning:::readModelArtifact
+  readerEnv <- new.env(parent = environment(reader))
+  readerEnv$readRDS <- function(path) {
+    reads <<- reads + 1L
+    base::readRDS(path)
+  }
+  environment(reader) <- readerEnv
+  local_mocked_bindings(readModelArtifact = reader, .package = "FederatedLearning")
+  result <- script$summarizeCoefficients(directory)
+  expect_equal(reads, 1L)
   expect_equal(result$summary$status, c("saved_model", "missing_model"))
   expect_equal(result$summary$nonzeroPredictors, c(1L, NA_integer_))
   expect_identical(result$coefficients$coefficient, c(-2, 0, 1e-20))
@@ -186,6 +196,14 @@ test_that("federated artifacts contain exact support and task-specific lambda pa
   expect_equal(saved$roundsCompleted, 3L)
   expect_equal(saved$provenance$populationSettings$riskWindowEnd, 365L)
   expect_equal(saved$lambdaSeq, c(0.01, 0.1))
+  blocked <- file.path(directory, "blocked")
+  file.create(blocked)
+  failedSave <- env$fitFederatedFold("DualAvg", NULL, NULL, config, directory,
+    "taskA", "all", 1L, "test", FALSE, modelDirectory = file.path(blocked, "models"))
+  expect_equal(failedSave$auc, 0.7)
+  expect_equal(failedSave$nonzeroPredictors, 1L)
+  expect_true(is.na(failedSave$error))
+  expect_match(failedSave$modelSaveError, "Could not create model directory")
 })
 
 test_that("runner reruns only successful combinations with missing artifacts", {
@@ -222,14 +240,25 @@ test_that("runner reruns only successful combinations with missing artifacts", {
     .package = "FederatedLearning"
   )
   skip_if_not_installed("PatientLevelPrediction")
+  # A failed artifact write must not turn the completed fit into an NA result.
+  file.create(file.path(resultDir, "models"))
   env$runComparison(args)
   expect_equal(calls, c("PooledLasso", "LocalAvgLasso"))
+  failedSave <- read.csv(file.path(resultDir, "comparison_results.csv"))
+  expect_equal(failedSave$auc, c(0.7, 0.7))
+  expect_true(all(is.na(failedSave$error)))
+  expect_true(all(!is.na(failedSave$modelSaveError)))
+  expect_true(all(is.na(failedSave$modelFile)))
+  unlink(file.path(resultDir, "models"))
   env$runComparison(args)
-  expect_equal(length(calls), 2L)
+  expect_equal(calls, rep(c("PooledLasso", "LocalAvgLasso"), 2))
+  env$runComparison(args)
+  expect_equal(length(calls), 4L)
   current <- read.csv(file.path(resultDir, "comparison_results.csv"))
+  expect_true(all(is.na(current$modelSaveError)))
   unlink(file.path(resultDir, current$modelFile[current$method == "LocalAvgLasso"]))
   env$runComparison(args)
-  expect_equal(calls, c("PooledLasso", "LocalAvgLasso", "LocalAvgLasso"))
+  expect_equal(calls, c(rep(c("PooledLasso", "LocalAvgLasso"), 2), "LocalAvgLasso"))
   args[["save-models"]] <- "false"
   expect_error(env$runComparison(args), "requires --save-models")
 })
@@ -268,13 +297,18 @@ test_that("legacy debug exports reject stale evaluations", {
   path <- env$debugPath(file.path(directory, "debug"), "taskA", 1L, "ageSex", "DualAvg", "fit")
   saveRDS(legacy, path)
   write.csv(row, file.path(directory, "comparison_results.csv"), row.names = FALSE)
-  run <- function() script$summarizeCoefficients(directory, runnerPath = coefficientExtrasPath("runComparisonMatrix.R"))
+  run <- function() script$summarizeCoefficients(directory)
   result <- run()
   expect_equal(result$summary$status, "saved_debug")
   expect_equal(result$summary$nonzeroPredictors, 1L)
-  expect_equal(result$summary$finalToInnerCvLambdaRatio, 1e-5)
-  expect_true(env$isCompletedCombination(row, "taskA", 1L, "ageSex", "DualAvg",
+  expect_true(is.na(result$summary$selectedVariance))
+  expect_false(env$isCompletedCombination(row, "taskA", 1L, "ageSex", "DualAvg",
     rerunMissingModels = TRUE, resultDirectory = directory))
+  legacy$config$lambdaSearchTrace <- data.frame(searchValue = 0.01, fitLambda = 1e-7)
+  saveRDS(legacy, path)
+  result <- run()
+  expect_true(is.na(result$cvFolds$selected))
+  expect_equal(result$cvFolds$finalLambda, row$selectedLambda)
   legacy$evaluation$auc <- 0.6
   saveRDS(legacy, path)
   result <- run()
@@ -283,4 +317,43 @@ test_that("legacy debug exports reject stale evaluations", {
   expect_equal(nrow(result$coefficients), 0L)
   expect_false(env$isCompletedCombination(row, "taskA", 1L, "ageSex", "DualAvg",
     rerunMissingModels = TRUE, resultDirectory = directory))
+})
+
+test_that("coefficient export retains the selected variance and unequal-fold lambda trace", {
+  script <- new.env(parent = globalenv())
+  path <- coefficientExtrasPath("summarizeCoefficients.R")
+  sys.source(path, script)
+  directory <- tempfile()
+  on.exit(unlink(directory, recursive = TRUE), add = TRUE)
+  rows <- data.frame(task = "taskA", fold = 4L, featureSet = "ageSex", method = "DualAvg",
+    error = NA_character_, auc = 0.7, selectedLambda = sqrt(200) / 100)
+  trace <- data.frame(iteration = rep(0:1, each = 3), validationClient = rep(1:3, 2),
+    searchScale = "priorVariance", searchValue = rep(c(0.01, 0.02), each = 3),
+    trainingRows = rep(c(90, 80, 30), 2), auc = rep(c(0.7, 0.6), each = 3))
+  trace$fitLambda <- sqrt(2 / trace$searchValue) / trace$trainingRows
+  artifact <- c(as.list(rows[c("task", "fold", "featureSet", "method")]), list(
+    config = list(lambda = rows$selectedLambda, selectedVariance = 0.01, lambdaSearchTrace = trace),
+    models = list(list(coefficients = FederatedLearning:::coefficientTable(c(-1, 0.1),
+      data.frame(covariateId = 1002, columnId = 1L), TRUE)))))
+  rows <- FederatedLearning:::saveModelArtifact(artifact, rows, file.path(directory, "models"))
+  write.csv(rows, file.path(directory, "comparison_results.csv"), row.names = FALSE)
+  result <- script$summarizeCoefficients(directory)
+  expect_equal(result$summary$selectedVariance, 0.01)
+  expect_equal(result$summary$selectedLambda, sqrt(200) / 100)
+  expect_false(any(c("innerCvFitLambda", "finalToInnerCvLambdaRatio") %in% names(result$summary)))
+  expect_equal(result$cvFolds$selected, rep(c(TRUE, FALSE), each = 3))
+  chosen <- result$cvFolds[result$cvFolds$selected, ]
+  expect_equal(chosen$fitLambda, sqrt(200) / c(90, 80, 30))
+  expect_equal(chosen$finalLambda / chosen$fitLambda, c(0.9, 0.8, 0.3))
+  expect_equal(nrow(read.csv(file.path(directory, "coefficient_summary", "lambda_search_folds.csv"))), 6L)
+
+  # Running the standalone CLI from outside the repository must not source the runner.
+  old <- setwd(directory)
+  on.exit(setwd(old), add = TRUE)
+  output <- system2(file.path(R.home("bin"), "Rscript"),
+    c("--vanilla", shQuote(path), shQuote(paste0("--result-directory=", directory)),
+      "--methods=DualAvg", shQuote(paste0("--output-directory=", file.path(directory, "cli=output")))),
+    stdout = TRUE, stderr = TRUE)
+  expect_null(attr(output, "status"), info = paste(output, collapse = "\n"))
+  expect_true(file.exists(file.path(directory, "cli=output", "lambda_search_folds.csv")))
 })

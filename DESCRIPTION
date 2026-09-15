@@ -24,6 +24,7 @@ Imports:
     RcppEigen,
     pROC
 Suggests:
+    bit64,
     Cyclops,
     pda,
     testthat (>= 3.0.0),

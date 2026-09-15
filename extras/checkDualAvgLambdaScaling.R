@@ -106,7 +106,7 @@ runLambdaScalingCheck <- function(output = "results/dualavgLambdaScaling", seed 
       args = list(), verbose = TRUE),
     clusterCreateMatrices = function(cl, config) invisible(NULL), .package = "FederatedLearning"
   )
-  stopifnot(abs(runnerConfig$lambda * n - sqrt(2 / runnerConfig$lambdaSearchSelectedVariance)) < 1e-12)
+  stopifnot(abs(runnerConfig$lambda * n - sqrt(2 / runnerConfig$selectedVariance)) < 1e-12)
   autoFit <- testthat::with_mocked_bindings(
     FederatedLearning::fitFederated(cl, "DualAvg", runnerConfig, verbose = FALSE),
     clusterCreateMatrices = function(cl, config) invisible(NULL), .package = "FederatedLearning"
@@ -181,7 +181,7 @@ runLambdaScalingCheck <- function(output = "results/dualavgLambdaScaling", seed 
   utils::write.csv(pooledSummary, file.path(output, "pooled_auto_cv.csv"), row.names = FALSE)
   autoCheck <- diagnostics(autoFit$w, sites, runnerConfig$lambda)
   autoSummary <- data.frame(lambda = runnerConfig$lambda,
-    priorVariance = runnerConfig$lambdaSearchSelectedVariance,
+    priorVariance = runnerConfig$selectedVariance,
     innerAuc = runnerConfig$innerCvScore,
     stopReason = runnerConfig$lambdaSearchStopReason,
     rounds = autoFit$roundsCompleted,
