@@ -12,6 +12,10 @@
 #   --folds=1:5 \
 #   --taskA-risk-window-end=365 \
 #   --taskB-risk-window-end=30
+#
+# Model artifacts are saved by default under <result-directory>/models.
+# To backfill missing artifacts, repeat the original command with
+# --resume=true --rerun-missing-models=true (and restrict --methods as needed).
 
 parseArgs <- function(args = commandArgs(trailingOnly = TRUE)) {
   out <- list()
@@ -177,13 +181,19 @@ successfulRows <- function(rows) {
 }
 
 isCompletedCombination <- function(rows, task, fold, featureSet, method,
-                                   rerunErrors = FALSE) {
+                                   rerunErrors = FALSE, rerunMissingModels = FALSE,
+                                   resultDirectory = NULL) {
   idx <- matchingCombination(rows, task, fold, featureSet, method)
   if (!any(idx)) {
     return(FALSE)
   }
-  if (isTRUE(rerunErrors)) {
-    return(any(successfulRows(rows)[idx]))
+  successful <- rows[idx & successfulRows(rows), , drop = FALSE]
+  if (isTRUE(rerunErrors) && nrow(successful) == 0L) {
+    return(FALSE)
+  }
+  if (isTRUE(rerunMissingModels) && nrow(successful) > 0L) {
+    return(hasSavedModel(successful, resultDirectory, task, fold, featureSet, method) ||
+      !is.null(readMatchingDebugFit(successful, resultDirectory, task, fold, featureSet, method)))
   }
   TRUE
 }
@@ -242,6 +252,119 @@ stampMethodElapsed <- function(rows, startTime) {
 
 safeFilePart <- function(x) {
   gsub("[^A-Za-z0-9_.-]+", "-", as.character(x))
+}
+
+coefficientTable <- function(w, mapping, intercept, preprocessor = NULL) {
+  if (!is.numeric(w) || any(!is.finite(w))) {
+    stop("Cannot save non-finite or non-numeric coefficients")
+  }
+  w <- as.numeric(w)
+  if (!all(c("covariateId", "columnId") %in% names(mapping)) ||
+      anyNA(mapping$covariateId) || anyDuplicated(mapping$covariateId) ||
+      !identical(sort(as.integer(mapping$columnId)), seq_len(nrow(mapping)))) {
+    stop("Invalid coefficient feature mapping")
+  }
+  mapping <- mapping[order(mapping$columnId), , drop = FALSE]
+  factors <- rep(1, nrow(mapping))
+  if (isTRUE(preprocessor$enabled)) {
+    if (length(preprocessor$keep) != nrow(mapping) || anyNA(preprocessor$keep) ||
+        length(preprocessor$normFactors) != nrow(mapping)) {
+      stop("Preprocessing mask does not match the coefficient feature mapping")
+    }
+    factors <- preprocessor$normFactors[preprocessor$keep]
+    mapping <- mapping[preprocessor$keep, , drop = FALSE]
+  }
+  if (length(w) != nrow(mapping) + as.integer(intercept) ||
+      any(!is.finite(factors) | factors == 0)) {
+    stop("Coefficient dimensions or normalization factors do not match the feature mapping")
+  }
+  factors <- c(if (intercept) 1, factors)
+  data.frame(
+    matrixColumn = seq_along(w),
+    covariateId = c(if (intercept) NA_real_, mapping$covariateId),
+    isIntercept = c(if (intercept) TRUE, rep(FALSE, nrow(mapping))),
+    coefficient = as.numeric(w),
+    normalizationFactor = factors,
+    # Shared matrix scale, including the loader's age/100 transformation.
+    coefficientSharedScale = as.numeric(w) / factors,
+    selected = w != 0,
+    stringsAsFactors = FALSE
+  )
+}
+
+exactNonzero <- function(w, intercept) {
+  if (any(!is.finite(w))) return(NA_integer_)
+  if (isTRUE(intercept)) w <- w[-1L]
+  sum(w != 0)
+}
+
+saveModelArtifact <- function(artifact, rows, modelDirectory) {
+  if (is.null(modelDirectory)) return(rows)
+  dir.create(modelDirectory, recursive = TRUE, showWarnings = FALSE)
+  prefix <- paste(vapply(list(artifact$task, paste0("fold", artifact$fold),
+    artifact$featureSet, artifact$method), safeFilePart, character(1)), collapse = "_")
+  target <- tempfile(paste0(prefix, "_"), tmpdir = modelDirectory, fileext = ".rds")
+  artifact$schemaVersion <- 1L
+  artifact$modelId <- basename(target)
+  artifact$createdAt <- format(Sys.time(), tz = "UTC", usetz = TRUE)
+  rows$modelFile <- file.path("models", basename(target))
+  rows$modelId <- artifact$modelId
+  # End-to-end elapsedSeconds is stamped by the runner after this write.
+  artifact$results <- rows[, setdiff(names(rows), "elapsedSeconds"), drop = FALSE]
+  artifact$sessionInfo <- utils::sessionInfo()
+  temporary <- tempfile(tmpdir = modelDirectory)
+  on.exit(unlink(temporary), add = TRUE)
+  saveRDS(artifact, temporary)
+  if (!file.rename(temporary, target)) stop("Could not save model artifact: ", target)
+  rows
+}
+
+hasSavedModel <- function(rows, resultDirectory, task, fold, featureSet, method) {
+  if (is.null(resultDirectory) ||
+      !all(c("modelFile", "modelId") %in% names(rows))) return(FALSE)
+  refs <- unique(rows[, c("modelFile", "modelId"), drop = FALSE])
+  if (nrow(refs) != 1L || anyNA(refs) || any(!nzchar(unlist(refs)))) return(FALSE)
+  path <- file.path(resultDirectory, refs$modelFile)
+  if (!file.exists(path)) return(FALSE)
+  artifact <- tryCatch(readRDS(path), error = function(e) NULL)
+  if (!is.list(artifact)) return(FALSE)
+  identical(artifact$schemaVersion, 1L) &&
+    identical(artifact$modelId, refs$modelId[[1]]) &&
+    identical(as.character(artifact$task), as.character(task)) &&
+    identical(as.integer(artifact$fold), as.integer(fold)) &&
+    identical(as.character(artifact$featureSet), as.character(featureSet)) &&
+    identical(as.character(artifact$method), as.character(method)) &&
+    length(artifact$models) > 0L &&
+    all(vapply(artifact$models, function(model) {
+      if (!is.list(model)) return(FALSE)
+      tab <- model$coefficients
+      is.data.frame(tab) && all(c("coefficient", "covariateId", "isIntercept") %in% names(tab)) &&
+        nrow(tab) > 0L && is.numeric(tab$coefficient) && all(is.finite(tab$coefficient))
+    }, logical(1)))
+}
+
+readMatchingDebugFit <- function(rows, resultDirectory, task, fold, featureSet, method) {
+  if (is.null(resultDirectory) || nrow(rows) != 1L || method %in% baselineMethods) return(NULL)
+  path <- debugPath(file.path(resultDirectory, "debug"), task, fold, featureSet, method, "fit")
+  if (!file.exists(path)) return(NULL)
+  tryCatch({
+    fit <- readRDS(path)
+    keys <- list(task = task, fold = fold, featureSet = featureSet, method = method)
+    metrics <- c("auc", "n", "outcomes", "clientId")
+    if (!is.list(fit) || !is.data.frame(fit$evaluation) || nrow(fit$evaluation) != 1L ||
+        !all(metrics %in% names(rows)) || !all(metrics %in% names(fit$evaluation)) ||
+        !all(vapply(names(keys), function(k) identical(as.character(fit[[k]]), as.character(keys[[k]])), logical(1))) ||
+        !all(vapply(metrics, function(k) isTRUE(all.equal(fit$evaluation[[k]], rows[[k]],
+          tolerance = 1e-12, check.attributes = FALSE)), logical(1))) ||
+        length(fit$coefficients) != rows$p) return(NULL)
+    lambda <- fit$selectedLambda %||% fit$config[["lambda", exact = TRUE]]
+    expected <- rows$selectedLambda
+    if (length(lambda) != 1L || length(expected) != 1L ||
+        !(is.na(lambda) && is.na(expected) || is.finite(lambda) && is.finite(expected) &&
+          abs(lambda - expected) <= 1e-12 * max(abs(lambda), abs(expected), .Machine$double.xmin))) return(NULL)
+    coefficientTable(fit$coefficients, fit$config$mapping, fit$config$intercept)
+    fit
+  }, error = function(e) NULL)
 }
 
 debugPath <- function(debugDirectory, task, fold, featureSet, method = NULL,
@@ -1134,6 +1257,17 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
   list(
     w = w,
     selectedLambda = selectedVariance,
+    fittingSettings = list(
+      penaltyScale = "Cyclops Laplace prior variance",
+      useCrossValidation = useCv,
+      requestedControl = control,
+      seed = seed,
+      selectedVariance = selectedVariance,
+      returnFlag = fit$return_flag,
+      logLikelihood = fit$log_likelihood,
+      logPrior = fit$log_prior,
+      priorInfo = fit$prior_info
+    ),
     elapsedSeconds = as.numeric(difftime(Sys.time(), start, units = "secs"))
   )
 }
@@ -1190,7 +1324,7 @@ assertCyclopsMethod <- function(method) {
 
 fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
                             args, task, featureSet, fold, trainClientIds,
-                            testClientIds, testClientIndexes) {
+                            testClientIds, testClientIndexes, modelDirectory = NULL) {
   assertCyclopsMethod(method)
 
   trainPlp <- lapply(trainPaths, FederatedLearning::loadClientData, popSettings = popSettings)
@@ -1220,6 +1354,10 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   )
   trainData <- processed$trainData
   testData <- processed$testData
+  localFits <- list()
+  localFailures <- list()
+  localIndexesOk <- integer()
+  weights <- numeric()
 
   if (identical(method, "PooledLasso")) {
     fits <- list(fitBaselineWeights(
@@ -1348,6 +1486,9 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         featureSet = featureSet,
         fold = fold,
         p = length(fit$w),
+        roundsCompleted = NA_integer_,
+        nonzeroPredictors = if (is.null(fit$localFits)) exactNonzero(fit$w, config$intercept) else NA_integer_,
+        penaltyScale = "Cyclops Laplace prior variance",
         selectedLambda = fit$selectedLambda %||% NA_real_,
         lambdaPathFile = NA_character_,
         leadIndex = fit$leadIndex %||% NA_integer_,
@@ -1479,6 +1620,43 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     baselineRows <- dplyr::bind_rows(baselineRows, failedRows)
   }
 
+  if (!is.null(modelDirectory)) {
+    modelRecord <- function(fit, sourceClientId = NA_character_, weight = NA_real_) {
+      list(
+        sourceClientId = sourceClientId,
+        weight = weight,
+        selectedLambda = fit$selectedLambda,
+        fittingSettings = fit$fittingSettings,
+        coefficients = coefficientTable(fit$w, trainMap, config$intercept, processed$preprocessor)
+      )
+    }
+    components <- lapply(seq_along(localFits), function(j) {
+      modelRecord(localFits[[j]], trainClientIds[[localIndexesOk[[j]]]],
+        if (length(weights)) weights[[j]] else NA_real_)
+    })
+    models <- if (identical(method, "LocalEnsembleLasso")) components else lapply(fits, function(fit) {
+      lead <- fit$leadIndex
+      modelRecord(fit, if (length(lead) == 1L && !is.na(lead)) trainClientIds[[lead]] else NA_character_)
+    })
+    baselineRows <- saveModelArtifact(list(
+      task = task, fold = fold, featureSet = featureSet, method = method,
+      models = models,
+      components = components,
+      aggregation = switch(method, LocalAvgLasso = "coefficientAverage=sampleSize",
+        LocalEnsembleLasso = paste0("predictionAverage=", argValue(args, "local-ensemble-weighting") %||% "sampleSize"),
+        "singleModel"),
+      localFailures = localFailures,
+      ineligibleClientIds = if (length(localFits)) trainClientIds[!eligible] else character(),
+      trainingSampleSizes = stats::setNames(vapply(trainData, `[[`, numeric(1), "n"), trainClientIds),
+      preprocessing = processed$preprocessor,
+      originalMapping = trainMap,
+      config = config,
+      args = args,
+      populationSettings = popSettings,
+      trainPaths = trainPaths, testPaths = testPaths,
+      trainClientIds = trainClientIds, testClientIds = testClientIds
+    ), baselineRows, modelDirectory)
+  }
   baselineRows
 }
 
@@ -1543,7 +1721,8 @@ adapFinalDiagnostic <- function(fit, name, default = NA_real_) {
 
 fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
                              task, featureSet, fold, testClientIds, verbose,
-                             debugDirectory = NULL) {
+                             debugDirectory = NULL, modelDirectory = NULL,
+                             provenance = list()) {
   if (isTRUE(config$adapTraceDiagnostics) && !is.null(debugDirectory) &&
       method %in% c("ADAP", "ADAP2", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")) {
     config$adapTraceFile <- debugPath(
@@ -1685,7 +1864,8 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
   if (!is.null(fit$lambdaSeq) && length(fit$lambdaSeq) > 0L) {
     lambdaPathFile <- file.path(
       resultDirectory,
-      sprintf("lambda_%s_%s_fold%s.csv", method, featureSet, fold)
+      sprintf("lambda_%s_%s_%s_fold%s.csv", safeFilePart(task), safeFilePart(method),
+        safeFilePart(featureSet), fold)
     )
     lambdaDf <- data.frame(
       lambda = fit$lambdaSeq,
@@ -1695,12 +1875,15 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     )
     utils::write.csv(lambdaDf, lambdaPathFile, row.names = FALSE)
   }
-  cbind(
+  resultRows <- cbind(
     data.frame(
       method = method,
       featureSet = featureSet,
       fold = fold,
       p = length(fit$w),
+      roundsCompleted = fit$roundsCompleted %||% NA_integer_,
+      nonzeroPredictors = exactNonzero(fit$w, config$intercept),
+      penaltyScale = if (method %in% c("ODAL", "ODAL1", "ODAL2")) "none (unpenalized surrogate)" else "mean negative log-likelihood L1 multiplier",
       selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
       lambdaPathFile = lambdaPathFile,
       leadIndex = fit$leadIndex %||% NA_integer_,
@@ -1760,6 +1943,22 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       stringsAsFactors = FALSE
     )
   )
+  saveModelArtifact(list(
+    task = task, fold = fold, featureSet = featureSet, method = method,
+    models = list(list(
+      sourceClientId = NA_character_,
+      coefficients = coefficientTable(fit$w, fit$config$mapping, fit$config$intercept),
+      selectedLambda = fit$selectedLambda %||% fit$config[["lambda", exact = TRUE]]
+    )),
+    config = fit$config,
+    provenance = provenance,
+    testClientIds = testClientIds,
+    roundsCompleted = fit$roundsCompleted,
+    lambdaSeq = fit$lambdaSeq,
+    cvScores = fit$cvScores,
+    cvValid = fit$cvValid,
+    lambdaSelectionMetric = fit$lambdaSelectionMetric
+  ), resultRows, modelDirectory)
 }
 
 safeStopCluster <- function(cl) {
@@ -1807,6 +2006,12 @@ runComparison <- function(args) {
   verbose <- logicalArg(args[["verbose"]], TRUE)
   resume <- logicalArg(args[["resume"]], TRUE)
   rerunErrors <- logicalArg(args[["rerun-errors"]], FALSE)
+  rerunMissingModels <- logicalArg(args[["rerun-missing-models"]], FALSE)
+  saveModels <- logicalArg(args[["save-models"]], TRUE)
+  if (rerunMissingModels && !saveModels) {
+    stop("--rerun-missing-models=true requires --save-models=true")
+  }
+  modelDirectory <- if (saveModels) file.path(resultDirectory, "models") else NULL
   debugDirectory <- if (logicalArg(args[["debug-diagnostics"]], FALSE)) {
     file.path(resultDirectory, "debug")
   } else {
@@ -1864,7 +2069,9 @@ runComparison <- function(args) {
             fold = fold,
             featureSet = featureSet,
             method = method,
-            rerunErrors = rerunErrors
+            rerunErrors = rerunErrors,
+            rerunMissingModels = rerunMissingModels,
+            resultDirectory = resultDirectory
           )
         },
         pending$featureSet,
@@ -1939,7 +2146,9 @@ runComparison <- function(args) {
             }
 
             for (method in methods) {
-              if (isCompletedCombination(rows, task, fold, featureSet, method, rerunErrors = rerunErrors)) {
+              if (isCompletedCombination(rows, task, fold, featureSet, method,
+                  rerunErrors = rerunErrors, rerunMissingModels = rerunMissingModels,
+                  resultDirectory = resultDirectory)) {
                 message(sprintf(
                   "[%s] skip task=%s fold=%s featureSet=%s method=%s: existing successful result",
                   format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method
@@ -1976,7 +2185,8 @@ runComparison <- function(args) {
                     fold = fold,
                     trainClientIds = clientIds[trainIds],
                     testClientIds = clientIds[testIds],
-                    testClientIndexes = testIds
+                    testClientIndexes = testIds,
+                    modelDirectory = modelDirectory
                   )
                 } else {
                   config <- selectMethodConfigForFold(
@@ -1999,7 +2209,13 @@ runComparison <- function(args) {
                     fold = fold,
                     testClientIds = clientIds[testIds],
                     verbose = verbose,
-                    debugDirectory = debugDirectory
+                    debugDirectory = debugDirectory,
+                    modelDirectory = modelDirectory,
+                    provenance = list(
+                      args = args, populationSettings = popSettings,
+                      trainClientIds = clientIds[trainIds], testClientIds = clientIds[testIds],
+                      trainPaths = trainPaths, testPaths = testPaths
+                    )
                   )
                 },
                 error = function(e) {
