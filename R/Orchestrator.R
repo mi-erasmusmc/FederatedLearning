@@ -3,13 +3,73 @@
 #' @param cl          cluster object
 #' @param algorithm    name, e.g. "DualAvg", "FedAvg"
 #' @param config       algorithm configuration list
+#'   For DualAvg, optional `dualAvgKktTolerance` enables a mean-loss lasso KKT
+#'   safeguard on early stopping. `dualAvgKktCheckEvery` (default 100) sets its
+#'   interval; the final round is always checked. Checks use existing objective
+#'   replies, adding gradient payloads but no communication exchanges.
+#'   `dualAvgGapDiagnostics = TRUE` records a numerical primal-dual gap without
+#'   changing stopping. `dualAvgGapCheckEvery` (default 100) controls candidate
+#'   creation. Dual evaluations arrive in the next existing objective exchange;
+#'   the best completed lower bound is valid for later iterates of the same fit.
+#'   Requires binary outcomes, positive lambda, and objective monitoring. Adds
+#'   summary payloads; row-level residuals remain on workers. The gap can be
+#'   conservative, especially when the best completed candidate is old.
 #' @param verbose      if TRUE, print optimization progress
-#' @return w
+#' @return A fitted model list. Duality-gap diagnostics add `primalObjective`,
+#'   `dualLowerBound`, `dualityGap`, `dualBoundRound`, `dualGapChecks`, and
+#'   `dualGapHistory`. Objectives and gaps use the configured aggregation's
+#'   mean-loss scale.
 #' @export
 fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   algo <- .getAlgorithm(algorithm)
   if (is.null(algo)) {
     stop(sprintf("Algorithm '%s' is not registered", algorithm))
+  }
+  kktTolerance <- config[["dualAvgKktTolerance", exact = TRUE]]
+  kktEnabled <- !is.null(kktTolerance)
+  if (kktEnabled) {
+    if (!(algorithm %in% c("DualAvg", "DualAvgCpp", "DualAvgR"))) {
+      stop("dualAvgKktTolerance is supported only for DualAvg")
+    }
+    if (!is.numeric(kktTolerance) || length(kktTolerance) != 1L ||
+        !is.finite(kktTolerance) || kktTolerance <= 0) {
+      stop("dualAvgKktTolerance must be a positive finite scalar")
+    }
+    checkEvery <- config$dualAvgKktCheckEvery %||% 100L
+    if (!is.numeric(checkEvery) || length(checkEvery) != 1L ||
+        !is.finite(checkEvery) || checkEvery < 1 || checkEvery != floor(checkEvery)) {
+      stop("dualAvgKktCheckEvery must be a positive integer")
+    }
+    config$dualAvgKktCheckEvery <- checkEvery
+    lambda <- config[["lambda", exact = TRUE]]
+    if (!is.numeric(lambda) || length(lambda) != 1L || !is.finite(lambda) || lambda < 0) {
+      stop("The DualAvg KKT safeguard requires a finite non-negative lambda")
+    }
+    if (identical(config$convergenceObjective, "none")) {
+      stop("The DualAvg KKT safeguard requires objective monitoring")
+    }
+  }
+  gapEnabled <- config$dualAvgGapDiagnostics %||% FALSE
+  if (!is.logical(gapEnabled) || length(gapEnabled) != 1L || is.na(gapEnabled)) {
+    stop("dualAvgGapDiagnostics must be TRUE or FALSE")
+  }
+  if (gapEnabled) {
+    if (!(algorithm %in% c("DualAvg", "DualAvgCpp", "DualAvgR"))) {
+      stop("Duality-gap diagnostics are supported only for DualAvg")
+    }
+    gapEvery <- config$dualAvgGapCheckEvery %||% 100L
+    if (!is.numeric(gapEvery) || length(gapEvery) != 1L || !is.finite(gapEvery) ||
+        gapEvery < 1 || gapEvery != floor(gapEvery)) {
+      stop("dualAvgGapCheckEvery must be a positive integer")
+    }
+    config$dualAvgGapCheckEvery <- gapEvery
+    lambda <- config[["lambda", exact = TRUE]]
+    if (!is.numeric(lambda) || length(lambda) != 1L || !is.finite(lambda) || lambda <= 0) {
+      stop("Duality-gap diagnostics require a positive finite lambda")
+    }
+    if (identical(config$convergenceObjective, "none")) {
+      stop("Duality-gap diagnostics require objective monitoring")
+    }
   }
   clientFrac <- config$clientFrac %||% 1
   if (!is.numeric(clientFrac) || length(clientFrac) != 1L ||
@@ -93,11 +153,45 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     )
   }
 
-  getLocalConvergenceObjective <- function(w) {
+  dualCache <- new.env(parent = emptyenv())
+  getLocalConvergenceObjective <- function(w, checkKkt = FALSE, prepareDual = FALSE,
+                                           dualRequest = NULL, round = NULL) {
     .assertWorkerState(
       "clientData",
       action = "Run clusterCreateMatrices() before objective evaluation."
     )
+    dualEvaluation <- NULL
+    if (!is.null(dualRequest)) {
+      if (is.null(dualCache$residual) || !isTRUE(dualCache$round == dualRequest$round)) {
+        stop("Missing or stale worker dual candidate")
+      }
+      dualEvaluation <- logisticDualEntropyCpp(dualCache$residual,
+        clientData$yLabels, dualRequest$scales)
+      dualEvaluation$round <- dualCache$round
+      dualCache$residual <- NULL
+    }
+    if (isTRUE(checkKkt) || gapEnabled) {
+      if (prepareDual && isTRUE(config$intercept) && any(clientData$xMatrix[, 1L] != 1)) {
+        stop("Dual diagnostics require a unit-valued first column for the intercept")
+      }
+      stats <- logisticObjectiveGradientCpp(.asDgCMatrix(clientData$xMatrix),
+        w, clientData$yLabels, dualStats = prepareDual,
+        computeGradient = isTRUE(checkKkt) || prepareDual)
+      if (!is.null(stats$gradient)) stats$gradient <- as.numeric(stats$gradient)
+      if (prepareDual) {
+        dualCache$residual <- as.numeric(stats$dualResidual)
+        dualCache$round <- round
+        stats$dualResidual <- NULL
+        stats$dualMass <- as.numeric(stats$dualMass)
+      }
+      stats$objective <- switch(config$convergenceObjective,
+        negLogLikelihood = stats$loss,
+        cyclopsGradient = stats$cyclopsObjective)
+      stats$dualEvaluation <- dualEvaluation
+      fields <- c("objective", "loss", "gradient", "n", "dualMass",
+        "dualClassGradient", "dualGradientScale", "dualEvaluation")
+      return(stats[intersect(fields, names(stats))])
+    }
     n <- nrow(clientData$xMatrix)
     objective <- switch(config$convergenceObjective,
       negLogLikelihood = logisticNegLogLik(
@@ -157,6 +251,8 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     "logisticNegLogLik",
     "gradLogistic",
     "logisticGradientCpp",
+    "logisticObjectiveGradientCpp",
+    "logisticDualEntropyCpp",
     "cyclopsGradientObjective",
     "cyclopsGradientObjectiveCpp",
     ".asDgCMatrix"
@@ -197,6 +293,14 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   }
   roundOffset <- as.integer(roundOffset)
   roundsCompleted <- 0L
+  kktChecks <- 0L
+  kktMaxAbs <- NA_real_
+  converged <- FALSE
+  pendingDual <- NULL
+  dualLowerBound <- 0 # r = 0 is always feasible for binary logistic lasso.
+  dualBoundRound <- NA_integer_
+  dualGapChecks <- 0L
+  dualGapHistory <- list()
   if (!is.null(config$clientSampleSeed)) {
     oldSeed <- if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
       get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
@@ -236,6 +340,16 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     serverState <- srv$state
     serverReport <- srv$report
     serverReport$activeClients <- activeClients
+    if (kktEnabled) {
+      serverReport$checkKkt <- roundsCompleted %% checkEvery == 0L ||
+        roundsCompleted == config$rounds
+    }
+    if (gapEnabled) {
+      serverReport$dualGapRequest <- pendingDual
+      serverReport$prepareDualGap <- roundsCompleted < config$rounds &&
+        (roundsCompleted == 1L || roundsCompleted %% gapEvery == 0L)
+      serverReport$dualGapRound <- roundsCompleted
+    }
     parallel::clusterExport(cl, c("serverReport"), envir = environment())
     hasWeights <- !is.null(serverReport$w) &&
       !isTRUE(serverReport$skipConvergence) &&
@@ -244,10 +358,60 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     if (hasWeights) {
       localObjectives <- parallel::clusterEvalQ(
         cl,
-        getLocalConvergenceObjective(serverReport$w)
+        getLocalConvergenceObjective(serverReport$w, isTRUE(serverReport$checkKkt),
+          isTRUE(serverReport$prepareDualGap), serverReport$dualGapRequest,
+          serverReport$dualGapRound)
       )
       lossVec <- vapply(localObjectives, `[[`, numeric(1), "objective")
       globalObjective <- sum(lossVec)
+      kktPassed <- !kktEnabled
+      if (kktEnabled && isTRUE(serverReport$checkKkt)) {
+        gradient <- weightedReportAverage(localObjectives, "gradient",
+          aggregation = config$aggregation %||% "sampleSize")
+        kktMaxAbs <- max(.lassoKktResidual(serverReport$w, gradient,
+          lambda, intercept = isTRUE(config$intercept)))
+        kktChecks <- kktChecks + 1L
+        kktPassed <- kktMaxAbs <= kktTolerance
+        if (verbose) {
+          cat(sprintf("KKT round %d: max residual = %.6g (tolerance %.6g)\n",
+            roundsCompleted, kktMaxAbs, kktTolerance))
+        }
+      }
+      if (gapEnabled) {
+        aggregation <- config$aggregation %||% "sampleSize"
+        evaluation <- NULL
+        if (!is.null(pendingDual)) {
+          evaluation <- .dualGapEvaluation(localObjectives, pendingDual, lambda,
+            isTRUE(config$intercept), aggregation)
+          dualGapChecks <- dualGapChecks + 1L
+          if (evaluation$objective > dualLowerBound) {
+            dualLowerBound <- evaluation$objective
+            dualBoundRound <- pendingDual$round
+          }
+        }
+        meanLosses <- vapply(localObjectives, function(x) x$loss / x$n, numeric(1))
+        penalized <- seq_along(serverReport$w)
+        if (isTRUE(config$intercept)) penalized <- penalized[-1L]
+        primalObjective <- sum(reportWeights(localObjectives, aggregation) * meanLosses) +
+          lambda * sum(abs(serverReport$w[penalized]))
+        dualityGap <- .checkedDualityGap(primalObjective, dualLowerBound)
+        gapRow <- data.frame(round = roundsCompleted, candidateRound = pendingDual$round %||% NA_integer_,
+          primalObjective = primalObjective, candidateDual = evaluation$objective %||% NA_real_,
+          dualLowerBound = dualLowerBound, dualBoundRound = dualBoundRound,
+          dualityGap = dualityGap, rawGap = primalObjective - dualLowerBound,
+          dualBalance = evaluation$balance %||% NA_real_,
+          dualGradientMaxAbs = pendingDual$gradientMaxAbs %||% NA_real_,
+          kktMaxAbs = if (isTRUE(serverReport$checkKkt)) kktMaxAbs else NA_real_)
+        if (!is.null(evaluation) || roundsCompleted == config$rounds) {
+          dualGapHistory[[length(dualGapHistory) + 1L]] <- gapRow
+          if (verbose) cat(sprintf("Dual gap round %d: %.6g (bound from round %s)\n",
+            roundsCompleted, dualityGap, dualBoundRound))
+        }
+        pendingDual <- if (isTRUE(serverReport$prepareDualGap)) {
+          .dualGapRequest(localObjectives, lambda, isTRUE(config$intercept),
+            aggregation, roundsCompleted)
+        } else NULL
+      }
 
       if (!is.null(previousObjective)) {
         deltaAbs <- globalObjective - previousObjective
@@ -283,7 +447,9 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
         }
       }
       previousObjective <- globalObjective
-      if (!is.null(config$epsilon) && is.finite(criteria) && abs(criteria) < config$epsilon) {
+      if (!is.null(config$epsilon) && is.finite(criteria) &&
+          abs(criteria) < config$epsilon && kktPassed) {
+        converged <- TRUE
         if (verbose) {
           message("Convergence criteria met in round ", r, "\n")
         }
@@ -302,6 +468,23 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     config = config,
     roundsCompleted = roundsCompleted
   )
+  if (kktEnabled) {
+    result$converged <- converged
+    result$stopReason <- if (converged) "converged" else "roundLimit"
+    result$kktMaxAbs <- kktMaxAbs
+    result$kktChecks <- kktChecks
+  }
+  if (gapEnabled) {
+    if (length(dualGapHistory) == 0L || dualGapHistory[[length(dualGapHistory)]]$round != roundsCompleted) {
+      dualGapHistory[[length(dualGapHistory) + 1L]] <- gapRow
+    }
+    result$primalObjective <- primalObjective
+    result$dualLowerBound <- dualLowerBound
+    result$dualityGap <- dualityGap
+    result$dualBoundRound <- dualBoundRound
+    result$dualGapChecks <- dualGapChecks
+    result$dualGapHistory <- do.call(rbind, dualGapHistory)
+  }
   if (!is.null(globalObjective)) {
     result$globalObjective <- globalObjective
   }
@@ -310,12 +493,13 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   } else if (!is.null(serverState$cvMetric)) {
     result$cvMetric <- serverState$cvMetric
   }
-  extraNames <- setdiff(names(serverReport), c("w", "done", "cvMetric", "skipConvergence"))
+  extraNames <- setdiff(names(serverReport), c("w", "done", "cvMetric", "skipConvergence", "checkKkt",
+    "dualGapRequest", "prepareDualGap", "dualGapRound"))
   for (nm in extraNames) {
     result[[nm]] <- serverReport[[nm]]
   }
   if (isTRUE(config$pooledDiagnostics %||% FALSE)) {
-    fitDiagnostics <- parallel::clusterEvalQ(
+    fitDiagnostics <- if (kktEnabled) localObjectives else parallel::clusterEvalQ(
       cl,
       getLocalFitDiagnostics(serverReport$w %||% serverState$w)
     )

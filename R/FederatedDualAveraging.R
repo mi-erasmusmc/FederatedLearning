@@ -23,6 +23,15 @@ clientUpdateDA <- function(clientData,
                            serverBroadcast,
                            config) {
   z <- serverBroadcast$z
+  n <- length(clientData$yLabels)
+  if (n == 0L || nrow(clientData$xMatrix) != n || ncol(clientData$xMatrix) != length(z)) {
+    stop("DualAvg requires conformable, nonempty xMatrix, yLabels and dual state")
+  }
+  count <- clientData[["n", exact = TRUE]]
+  if (!is.null(count) && (!is.numeric(count) || length(count) != 1L ||
+      !is.finite(count) || count != n)) {
+    stop("clientData$n must equal nrow(xMatrix) and length(yLabels)")
+  }
   # client state is global in client
   for (i in seq_len(config$k) - 1) {
     # eta_tilde = eta_s * eta_c * round * K + eta_c * k
@@ -37,7 +46,7 @@ clientUpdateDA <- function(clientData,
     z <- z - config$etaClient * g
   }
   delta <- z - serverBroadcast$z
-  list(delta = delta, n = clientData$n %||% length(clientData$yLabels))
+  list(delta = delta, n = n)
 }
 
 #' One server round

@@ -48,6 +48,34 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// logisticObjectiveGradientCpp
+List logisticObjectiveGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, const Eigen::VectorXd& y, bool dualStats, bool computeGradient);
+RcppExport SEXP _FederatedLearning_logisticObjectiveGradientCpp(SEXP xSEXP, SEXP betaSEXP, SEXP ySEXP, SEXP dualStatsSEXP, SEXP computeGradientSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::SparseMatrix<double> >& >::type x(xSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type y(ySEXP);
+    Rcpp::traits::input_parameter< bool >::type dualStats(dualStatsSEXP);
+    Rcpp::traits::input_parameter< bool >::type computeGradient(computeGradientSEXP);
+    rcpp_result_gen = Rcpp::wrap(logisticObjectiveGradientCpp(x, beta, y, dualStats, computeGradient));
+    return rcpp_result_gen;
+END_RCPP
+}
+// logisticDualEntropyCpp
+List logisticDualEntropyCpp(const Eigen::VectorXd& residual, const Eigen::VectorXd& y, const Eigen::VectorXd& scales);
+RcppExport SEXP _FederatedLearning_logisticDualEntropyCpp(SEXP residualSEXP, SEXP ySEXP, SEXP scalesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type residual(residualSEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type y(ySEXP);
+    Rcpp::traits::input_parameter< const Eigen::VectorXd& >::type scales(scalesSEXP);
+    rcpp_result_gen = Rcpp::wrap(logisticDualEntropyCpp(residual, y, scales));
+    return rcpp_result_gen;
+END_RCPP
+}
 // cyclopsGradientObjectiveCpp
 double cyclopsGradientObjectiveCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x, const Eigen::VectorXd& beta, const Eigen::VectorXd& y);
 RcppExport SEXP _FederatedLearning_cyclopsGradientObjectiveCpp(SEXP xSEXP, SEXP betaSEXP, SEXP ySEXP) {
@@ -232,6 +260,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_FederatedLearning_serverInitDualAveragingCpp", (DL_FUNC) &_FederatedLearning_serverInitDualAveragingCpp, 1},
     {"_FederatedLearning_clientUpdateDualAveragingCpp", (DL_FUNC) &_FederatedLearning_clientUpdateDualAveragingCpp, 3},
     {"_FederatedLearning_serverRoundDualAveragingCpp", (DL_FUNC) &_FederatedLearning_serverRoundDualAveragingCpp, 3},
+    {"_FederatedLearning_logisticObjectiveGradientCpp", (DL_FUNC) &_FederatedLearning_logisticObjectiveGradientCpp, 5},
+    {"_FederatedLearning_logisticDualEntropyCpp", (DL_FUNC) &_FederatedLearning_logisticDualEntropyCpp, 3},
     {"_FederatedLearning_cyclopsGradientObjectiveCpp", (DL_FUNC) &_FederatedLearning_cyclopsGradientObjectiveCpp, 3},
     {"_FederatedLearning_logisticGradientCpp", (DL_FUNC) &_FederatedLearning_logisticGradientCpp, 4},
     {"_FederatedLearning_logisticGradientHessianDiagCpp", (DL_FUNC) &_FederatedLearning_logisticGradientHessianDiagCpp, 4},

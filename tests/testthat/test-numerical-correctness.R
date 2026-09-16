@@ -89,7 +89,7 @@ test_that("gradient remains finite and bounded under extreme logits", {
   y <- c(0, 0, 1, 1, 1)
 
   grad <- FederatedLearning::gradLogistic(beta, x, y)
-  gradCpp <- FederatedLearning:::logisticGradientCpp(methods::as(x, "dgCMatrix"), beta, y)
+  gradCpp <- FederatedLearning:::logisticGradientCpp(methods::as(x, "dgCMatrix"), beta, y, eps = 0)
 
   expect_true(all(is.finite(grad)))
   expect_equal(gradCpp, grad, tolerance = 1e-12)
