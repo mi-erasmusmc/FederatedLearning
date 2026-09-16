@@ -29,7 +29,8 @@ clientUpdateDA <- function(clientData,
     etaTilde <- 
       config$etaServer * config$etaClient * serverBroadcast$r * config$k + config$etaClient * i
     # primal retrieval
-    w <- FederatedLearning::proxL1(z, alphaLambda = etaTilde * config$lambda)
+    w <- FederatedLearning::proxL1(z, alphaLambda = etaTilde * config$lambda,
+      intercept = isTRUE(config$intercept))
     # full batch gradient
     g <- FederatedLearning::gradLogistic(w, clientData$xMatrix, clientData$yLabels)
     # dual update
@@ -55,7 +56,8 @@ serverRoundDA <- function(serverState,
   # and primal state
   # primal retrieval
   coef <- config$etaServer * config$etaClient * (serverState$r + 1) * config$k
-  w <- FederatedLearning::proxL1(z, alphaLambda = coef * config$lambda)
+  w <- FederatedLearning::proxL1(z, alphaLambda = coef * config$lambda,
+    intercept = isTRUE(config$intercept))
   list(state = list(z = z),
        report = list(w = w, z = z))
 }

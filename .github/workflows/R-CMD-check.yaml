@@ -27,6 +27,7 @@ jobs:
       R_REMOTES_NO_ERRORS_FROM_WARNINGS: true
       RSPM: ${{ matrix.config.rspm }}
       _R_CHECK_DONTTEST_EXAMPLES_: "false"
+      FEDERATEDLEARNING_PDA_REF: ee90de152f6886bcba1404cce9cde11cb31f3777
 
     steps:
       - uses: actions/checkout@v6
@@ -54,7 +55,7 @@ jobs:
           cache: always
           extra-packages: |
             any::rcmdcheck
-            any::pda
+            Penncil/pda@${{ env.FEDERATEDLEARNING_PDA_REF }}
           needs: check
 
       - uses: r-lib/actions/check-r-package@v2

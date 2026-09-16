@@ -12,6 +12,10 @@
 #   --folds=1:5 \
 #   --taskA-risk-window-end=365 \
 #   --taskB-risk-window-end=30
+#
+# Model artifacts are saved by default under <result-directory>/models.
+# To backfill missing artifacts, repeat the original command with
+# --resume=true --rerun-missing-models=true (and restrict --methods as needed).
 
 parseArgs <- function(args = commandArgs(trailingOnly = TRUE)) {
   out <- list()
@@ -155,35 +159,22 @@ nonEmptyRows <- function(rows) {
   !is.null(rows) && nrow(rows) > 0L
 }
 
-matchingCombination <- function(rows, task, fold, featureSet, method) {
-  if (!nonEmptyRows(rows)) {
-    return(logical())
-  }
-  required <- c("task", "fold", "featureSet", "method")
-  if (!all(required %in% names(rows))) {
-    return(rep(FALSE, nrow(rows)))
-  }
-  rows$task == task &
-    rows$fold == fold &
-    rows$featureSet == featureSet &
-    rows$method == method
-}
-
-successfulRows <- function(rows) {
-  if (!"error" %in% names(rows)) {
-    return(rep(TRUE, nrow(rows)))
-  }
-  is.na(rows$error) | !nzchar(rows$error)
-}
+matchingCombination <- FederatedLearning:::matchingCombination
+successfulRows <- FederatedLearning:::successfulRows
 
 isCompletedCombination <- function(rows, task, fold, featureSet, method,
-                                   rerunErrors = FALSE) {
+                                   rerunErrors = FALSE, rerunMissingModels = FALSE,
+                                   resultDirectory = NULL) {
   idx <- matchingCombination(rows, task, fold, featureSet, method)
   if (!any(idx)) {
     return(FALSE)
   }
-  if (isTRUE(rerunErrors)) {
-    return(any(successfulRows(rows)[idx]))
+  successful <- rows[idx & successfulRows(rows), , drop = FALSE]
+  if (isTRUE(rerunErrors) && nrow(successful) == 0L) {
+    return(FALSE)
+  }
+  if (isTRUE(rerunMissingModels) && nrow(successful) > 0L) {
+    return(!is.null(readModelArtifact(successful, resultDirectory, task, fold, featureSet, method)))
   }
   TRUE
 }
@@ -240,9 +231,11 @@ stampMethodElapsed <- function(rows, startTime) {
   rows
 }
 
-safeFilePart <- function(x) {
-  gsub("[^A-Za-z0-9_.-]+", "-", as.character(x))
-}
+safeFilePart <- FederatedLearning:::safeFilePart
+coefficientTable <- FederatedLearning:::coefficientTable
+exactNonzero <- FederatedLearning:::exactNonzero
+saveModelArtifact <- FederatedLearning:::saveModelArtifact
+readModelArtifact <- FederatedLearning:::readModelArtifact
 
 debugPath <- function(debugDirectory, task, fold, featureSet, method = NULL,
                       suffix = "debug", extension = "rds") {
@@ -674,31 +667,22 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
     lambdaDefault = lambdaDefault,
     totalPopSize = totalPopSize,
     globalMap = globalMap,
+    trainPopSizes = trainPopSizes,
     verbose = verbose
   )
 
-  contextFinal <- list(
-    cl = clTrain,
-    configBase = configBase,
-    rounds = config$rounds,
-    clientFrac = config$clientFrac,
-    epsilon = config$epsilon,
-    totalPopSize = totalPopSize,
-    globalMap = globalMap
-  )
   config$mapping <- globalMap
   config$p <- nrow(globalMap)
-  config$lambda <- lambdaStrategy$initial(tuned$bestLambda, totalPopSize, contextFinal)
-  config$lambdaSearchDefault <- lambdaDefault
-  config$lambdaSearchBest <- tuned$bestLambda
-  config$lambdaSearchBestTrain <- tuned$bestLambdaTrain %||% NA_real_
-  config$lambdaSearchInnerAuc <- tuned$perf %||% NA_real_
+  config$lambda <- tuned$bestLambda
+  config$selectedVariance <- tuned$bestSearchValue
+  config$lambdaSearchTrace <- tuned$trace
+  config$lambdaSearchStopReason <- tuned$stopReason
   config$innerCvScore <- tuned$perf %||% NA_real_
   if (isTRUE(verbose)) {
     message(sprintf(
-      "Selected %s lambda: search scale = %.5g, fit scale = %.5g, inner-CV AUC = %.5g",
+      "Selected %s penalty: prior variance = %.5g, mean-loss lambda = %.5g, inner-CV AUC = %.5g",
       method,
-      config$lambdaSearchBest,
+      config$selectedVariance,
       config$lambda,
       config$innerCvScore
     ))
@@ -782,7 +766,7 @@ selectMethodConfigForFold <- function(method, clTrain, configs, trainPopSizes, a
     config
   })
   scores <- vapply(tunedConfigs, function(config) {
-    config$innerCvScore %||% config$lambdaSearchInnerAuc %||% NA_real_
+    config$innerCvScore %||% NA_real_
   }, numeric(1))
   if (all(!is.finite(scores))) {
     best <- 1L
@@ -1073,7 +1057,7 @@ preprocessBaselineData <- function(trainData, testData = NULL, config, args) {
   list(trainData = trainData, testData = testData, preprocessor = preprocessor)
 }
 
-fitCyclopsWeights <- function(clientDataList, args, seed) {
+fitCyclopsWeights <- function(clientDataList, args, seed, intercept = TRUE) {
   if (!requireNamespace("Cyclops", quietly = TRUE)) {
     stop("Cyclops is required for pooled/local baseline models")
   }
@@ -1082,10 +1066,15 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
   if (length(unique(y)) < 2) {
     stop("Cannot fit Cyclops logistic model: training data has only one outcome class")
   }
+  if (isTRUE(intercept) && (ncol(x) < 1L || anyNA(x[, 1L]) || any(x[, 1L] != 1))) {
+    stop("Configured intercept must be the first matrix column, containing only ones")
+  }
 
   start <- Sys.time()
 
   cyclopsData <- Cyclops::createCyclopsData(y = y, sx = x, modelType = "lr")
+  # A constant sparse column is not automatically recognized as an intercept.
+  excluded <- if (isTRUE(intercept)) as.numeric(Cyclops::getCovariateIds(cyclopsData)[1L]) else NULL
   useCv <- logicalArg(argValue(args, "cyclops-cv"), TRUE)
   variance <- numArg(argValue(args, "cyclops-variance"), numArg(argValue(args, "baseline-variance"), 0.01))
   startingVariance <- numArg(
@@ -1095,6 +1084,7 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
   prior <- Cyclops::createPrior(
     "laplace",
     variance = variance,
+    exclude = excluded,
     useCrossValidation = useCv
   )
   control <- Cyclops::createControl(
@@ -1134,25 +1124,40 @@ fitCyclopsWeights <- function(clientDataList, args, seed) {
   list(
     w = w,
     selectedLambda = selectedVariance,
+    fittingSettings = list(
+      penaltyScale = "Cyclops Laplace prior variance",
+      intercept = isTRUE(intercept),
+      unpenalizedCovariates = excluded,
+      useCrossValidation = useCv,
+      requestedControl = control,
+      seed = seed,
+      selectedVariance = selectedVariance,
+      returnFlag = fit$return_flag,
+      logLikelihood = fit$log_likelihood,
+      logPrior = fit$log_prior,
+      priorInfo = fit$prior_info
+    ),
     elapsedSeconds = as.numeric(difftime(Sys.time(), start, units = "secs"))
   )
 }
 
-fitBaselineWeights <- function(clientDataList, args, seed) {
+fitBaselineWeights <- function(clientDataList, args, seed, intercept = TRUE) {
   fitCyclopsWeights(
     clientDataList = clientDataList,
     args = args,
-    seed = seed
+    seed = seed,
+    intercept = intercept
   )
 }
 
-fitLocalBaselineSafely <- function(trainData, localIndex, trainClientId, args, seed) {
+fitLocalBaselineSafely <- function(trainData, localIndex, trainClientId, args, seed, intercept = TRUE) {
   start <- Sys.time()
   tryCatch({
     fit <- fitBaselineWeights(
       list(trainData[[localIndex]]),
       args = args,
-      seed = seed
+      seed = seed,
+      intercept = intercept
     )
     list(
       ok = TRUE,
@@ -1190,7 +1195,7 @@ assertCyclopsMethod <- function(method) {
 
 fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
                             args, task, featureSet, fold, trainClientIds,
-                            testClientIds, testClientIndexes) {
+                            testClientIds, testClientIndexes, modelDirectory = NULL) {
   assertCyclopsMethod(method)
 
   trainPlp <- lapply(trainPaths, FederatedLearning::loadClientData, popSettings = popSettings)
@@ -1220,12 +1225,17 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   )
   trainData <- processed$trainData
   testData <- processed$testData
+  localFits <- list()
+  localFailures <- list()
+  localIndexesOk <- integer()
+  weights <- numeric()
 
   if (identical(method, "PooledLasso")) {
     fits <- list(fitBaselineWeights(
       trainData,
       args = args,
-      seed = intArg(args[["baseline-seed"]], 42L) + fold
+      seed = intArg(args[["baseline-seed"]], 42L) + fold,
+      intercept = isTRUE(config$intercept)
     ))
     fits[[1]]$leadIndex <- NA_integer_
     fits[[1]]$innerCvScore <- NA_real_
@@ -1241,7 +1251,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         localIndex = i,
         trainClientId = trainClientIds[[i]],
         args = args,
-        seed = intArg(args[["baseline-seed"]], 42L) + fold + i
+        seed = intArg(args[["baseline-seed"]], 42L) + fold + i,
+        intercept = isTRUE(config$intercept)
       )
     })
     localOk <- vapply(localAttempts, `[[`, logical(1), "ok")
@@ -1348,6 +1359,9 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         featureSet = featureSet,
         fold = fold,
         p = length(fit$w),
+        roundsCompleted = NA_integer_,
+        nonzeroPredictors = if (is.null(fit$localFits)) exactNonzero(fit$w, config$intercept) else NA_integer_,
+        penaltyScale = "Cyclops Laplace prior variance",
         selectedLambda = fit$selectedLambda %||% NA_real_,
         lambdaPathFile = NA_character_,
         leadIndex = fit$leadIndex %||% NA_integer_,
@@ -1479,6 +1493,43 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     baselineRows <- dplyr::bind_rows(baselineRows, failedRows)
   }
 
+  if (!is.null(modelDirectory)) {
+    modelRecord <- function(fit, sourceClientId = NA_character_, weight = NA_real_) {
+      list(
+        sourceClientId = sourceClientId,
+        weight = weight,
+        selectedLambda = fit$selectedLambda,
+        fittingSettings = fit$fittingSettings,
+        coefficients = coefficientTable(fit$w, trainMap, config$intercept, processed$preprocessor)
+      )
+    }
+    components <- lapply(seq_along(localFits), function(j) {
+      modelRecord(localFits[[j]], trainClientIds[[localIndexesOk[[j]]]],
+        if (length(weights)) weights[[j]] else NA_real_)
+    })
+    models <- if (identical(method, "LocalEnsembleLasso")) components else lapply(fits, function(fit) {
+      lead <- fit$leadIndex
+      modelRecord(fit, if (length(lead) == 1L && !is.na(lead)) trainClientIds[[lead]] else NA_character_)
+    })
+    baselineRows <- saveModelArtifact(list(
+      task = task, fold = fold, featureSet = featureSet, method = method,
+      models = models,
+      components = components,
+      aggregation = switch(method, LocalAvgLasso = "coefficientAverage=sampleSize",
+        LocalEnsembleLasso = paste0("predictionAverage=", argValue(args, "local-ensemble-weighting") %||% "sampleSize"),
+        "singleModel"),
+      localFailures = localFailures,
+      ineligibleClientIds = if (length(localFits)) trainClientIds[!eligible] else character(),
+      trainingSampleSizes = stats::setNames(vapply(trainData, `[[`, numeric(1), "n"), trainClientIds),
+      preprocessing = processed$preprocessor,
+      originalMapping = trainMap,
+      config = config,
+      args = args,
+      populationSettings = popSettings,
+      trainPaths = trainPaths, testPaths = testPaths,
+      trainClientIds = trainClientIds, testClientIds = testClientIds
+    ), baselineRows, modelDirectory)
+  }
   baselineRows
 }
 
@@ -1543,7 +1594,8 @@ adapFinalDiagnostic <- function(fit, name, default = NA_real_) {
 
 fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
                              task, featureSet, fold, testClientIds, verbose,
-                             debugDirectory = NULL) {
+                             debugDirectory = NULL, modelDirectory = NULL,
+                             provenance = list()) {
   if (isTRUE(config$adapTraceDiagnostics) && !is.null(debugDirectory) &&
       method %in% c("ADAP", "ADAP2", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")) {
     config$adapTraceFile <- debugPath(
@@ -1590,8 +1642,6 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         config = fit$config,
         roundsCompleted = fit$roundsCompleted %||% NA_integer_,
         selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
-        lambdaSearchBest = fit$config$lambdaSearchBest %||% NA_real_,
-        lambdaSearchInnerAuc = fit$config$lambdaSearchInnerAuc %||% NA_real_,
         leadIndex = fit$leadIndex %||% NA_integer_,
         leadWeight = fit$leadWeight %||% NA_real_,
         leadWeightMin = fit$leadWeightMin %||% NA_real_,
@@ -1685,7 +1735,8 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
   if (!is.null(fit$lambdaSeq) && length(fit$lambdaSeq) > 0L) {
     lambdaPathFile <- file.path(
       resultDirectory,
-      sprintf("lambda_%s_%s_fold%s.csv", method, featureSet, fold)
+      sprintf("lambda_%s_%s_%s_fold%s.csv", safeFilePart(task), safeFilePart(method),
+        safeFilePart(featureSet), fold)
     )
     lambdaDf <- data.frame(
       lambda = fit$lambdaSeq,
@@ -1695,12 +1746,15 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     )
     utils::write.csv(lambdaDf, lambdaPathFile, row.names = FALSE)
   }
-  cbind(
+  resultRows <- cbind(
     data.frame(
       method = method,
       featureSet = featureSet,
       fold = fold,
       p = length(fit$w),
+      roundsCompleted = fit$roundsCompleted %||% NA_integer_,
+      nonzeroPredictors = exactNonzero(fit$w, config$intercept),
+      penaltyScale = if (method %in% c("ODAL", "ODAL1", "ODAL2")) "none (unpenalized surrogate)" else "mean negative log-likelihood L1 multiplier",
       selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
       lambdaPathFile = lambdaPathFile,
       leadIndex = fit$leadIndex %||% NA_integer_,
@@ -1760,6 +1814,22 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       stringsAsFactors = FALSE
     )
   )
+  saveModelArtifact(list(
+    task = task, fold = fold, featureSet = featureSet, method = method,
+    models = list(list(
+      sourceClientId = NA_character_,
+      coefficients = coefficientTable(fit$w, fit$config$mapping, fit$config$intercept),
+      selectedLambda = fit$selectedLambda %||% fit$config[["lambda", exact = TRUE]]
+    )),
+    config = fit$config,
+    provenance = provenance,
+    testClientIds = testClientIds,
+    roundsCompleted = fit$roundsCompleted,
+    lambdaSeq = fit$lambdaSeq,
+    cvScores = fit$cvScores,
+    cvValid = fit$cvValid,
+    lambdaSelectionMetric = fit$lambdaSelectionMetric
+  ), resultRows, modelDirectory)
 }
 
 safeStopCluster <- function(cl) {
@@ -1807,6 +1877,12 @@ runComparison <- function(args) {
   verbose <- logicalArg(args[["verbose"]], TRUE)
   resume <- logicalArg(args[["resume"]], TRUE)
   rerunErrors <- logicalArg(args[["rerun-errors"]], FALSE)
+  rerunMissingModels <- logicalArg(args[["rerun-missing-models"]], FALSE)
+  saveModels <- logicalArg(args[["save-models"]], TRUE)
+  if (rerunMissingModels && !saveModels) {
+    stop("--rerun-missing-models=true requires --save-models=true")
+  }
+  modelDirectory <- if (saveModels) file.path(resultDirectory, "models") else NULL
   debugDirectory <- if (logicalArg(args[["debug-diagnostics"]], FALSE)) {
     file.path(resultDirectory, "debug")
   } else {
@@ -1864,7 +1940,9 @@ runComparison <- function(args) {
             fold = fold,
             featureSet = featureSet,
             method = method,
-            rerunErrors = rerunErrors
+            rerunErrors = rerunErrors,
+            rerunMissingModels = rerunMissingModels,
+            resultDirectory = resultDirectory
           )
         },
         pending$featureSet,
@@ -1939,7 +2017,9 @@ runComparison <- function(args) {
             }
 
             for (method in methods) {
-              if (isCompletedCombination(rows, task, fold, featureSet, method, rerunErrors = rerunErrors)) {
+              if (isCompletedCombination(rows, task, fold, featureSet, method,
+                  rerunErrors = rerunErrors, rerunMissingModels = rerunMissingModels,
+                  resultDirectory = resultDirectory)) {
                 message(sprintf(
                   "[%s] skip task=%s fold=%s featureSet=%s method=%s: existing successful result",
                   format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method
@@ -1976,7 +2056,8 @@ runComparison <- function(args) {
                     fold = fold,
                     trainClientIds = clientIds[trainIds],
                     testClientIds = clientIds[testIds],
-                    testClientIndexes = testIds
+                    testClientIndexes = testIds,
+                    modelDirectory = modelDirectory
                   )
                 } else {
                   config <- selectMethodConfigForFold(
@@ -1999,7 +2080,13 @@ runComparison <- function(args) {
                     fold = fold,
                     testClientIds = clientIds[testIds],
                     verbose = verbose,
-                    debugDirectory = debugDirectory
+                    debugDirectory = debugDirectory,
+                    modelDirectory = modelDirectory,
+                    provenance = list(
+                      args = args, populationSettings = popSettings,
+                      trainClientIds = clientIds[trainIds], testClientIds = clientIds[testIds],
+                      trainPaths = trainPaths, testPaths = testPaths
+                    )
                   )
                 },
                 error = function(e) {

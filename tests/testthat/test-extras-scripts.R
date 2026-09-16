@@ -826,7 +826,7 @@ test_that("comparison runner records local baseline fit failures", {
   runnerEnv <- new.env(parent = globalenv())
   sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
 
-  runnerEnv$fitBaselineWeights <- function(clientDataList, args, seed) {
+  runnerEnv$fitBaselineWeights <- function(clientDataList, args, seed, intercept = TRUE) {
     if (identical(seed, 2L)) {
       stop("local fit did not converge")
     }
