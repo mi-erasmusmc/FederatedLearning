@@ -107,6 +107,17 @@ test_that("dual constraints remain feasible with large class totals and a small 
   lambda <- 1e-7
   probabilities <- c(0.01 + lambda, 0.02 - lambda)
   optimum <- c(mean(qlogis(probabilities)), diff(qlogis(probabilities)) / 2)
+  compensatedSum <- function(values) {
+    total <- 0
+    correction <- 0
+    for (value in values) {
+      adjusted <- value - correction
+      nextTotal <- total + adjusted
+      correction <- (nextTotal - total) - adjusted
+      total <- nextTotal
+    }
+    total
+  }
   for (repeatCount in c(1L, 4L)) {
     x <- cbind(1, rep(group, repeatCount))
     labels <- rep(y, repeatCount)
@@ -115,8 +126,10 @@ test_that("dual constraints remain feasible with large class totals and a small 
     residual <- ifelse(labels == 0, plogis(eta), -plogis(-eta))
     request <- FederatedLearning:::.dualGapRequest(list(stats), lambda, TRUE, "sampleSize", 1L)
     r <- residual * request$scales[labels + 1L]
-    # R sum uses an extended-precision accumulator where available.
-    score <- vapply(seq_len(ncol(x)), function(j) sum(x[, j] * r) / length(r), numeric(1))
+    # Use an independent Kahan sum: long double is only double on macOS ARM.
+    score <- vapply(seq_len(ncol(x)), function(j) {
+      compensatedSum(x[, j] * r) / length(r)
+    }, numeric(1))
     expect_lt(abs(score[1]), 1e-14)
     expect_lte(abs(score[2]), lambda)
     expect_lte(request$gradientMaxAbs, lambda)
