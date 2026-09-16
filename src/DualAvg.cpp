@@ -1,5 +1,6 @@
 // [[Rcpp::depends(RcppEigen)]]
 #include <RcppEigen.h>
+#include "LogisticMath.h"
 using namespace Rcpp;
 
 // A tiny inline soft‐threshold helper
@@ -20,29 +21,6 @@ static Eigen::VectorXd proxL1_E(const Eigen::VectorXd &z, double alpha, bool int
     w[j] = soft(z[j], alpha);
   }
   return w;
-}
-
-static inline double stable_sigmoid_scalar_da(double eta) {
-  if (eta >= 0.0) {
-    const double z = std::exp(-eta);
-    return 1.0 / (1.0 + z);
-  }
-  const double z = std::exp(eta);
-  return z / (1.0 + z);
-}
-
-static Eigen::ArrayXd stable_sigmoid_array_da(const Eigen::VectorXd& eta,
-                                              double eps = 1e-8) {
-  Eigen::ArrayXd out(eta.size());
-  for (int i = 0; i < eta.size(); ++i) {
-    out[i] = stable_sigmoid_scalar_da(eta[i]);
-    if (out[i] < eps) {
-      out[i] = eps;
-    } else if (out[i] > 1.0 - eps) {
-      out[i] = 1.0 - eps;
-    }
-  }
-  return out;
 }
 
 //' @export
@@ -84,9 +62,18 @@ List clientUpdateDualAveragingCpp(List &clientData,
 
   Eigen::VectorXd z0 = z;
   int n = yLabels.size();
-  double reportN = double(n);
+  if (n == 0 || xMatrix.rows() != n || xMatrix.cols() != z.size()) {
+    stop("DualAvg requires conformable, nonempty xMatrix, yLabels and dual state");
+  }
   if (clientData.containsElementNamed("n") && !Rf_isNull(clientData["n"])) {
-    reportN = as<double>(clientData["n"]);
+    SEXP count = clientData["n"];
+    if (!Rf_isNumeric(count) || Rf_xlength(count) != 1) {
+      stop("clientData$n must equal nrow(xMatrix) and length(yLabels)");
+    }
+    double reportN = as<double>(count);
+    if (!R_finite(reportN) || reportN != double(n)) {
+      stop("clientData$n must equal nrow(xMatrix) and length(yLabels)");
+    }
   }
   for (int i = 0; i < k; ++i) {
     // composite penalty weight ˜η_{r,k}
@@ -96,8 +83,7 @@ List clientUpdateDualAveragingCpp(List &clientData,
 
     // 2) compute logistic gradient: g = (Xᵀ(σ(Xw) – y))/n
     Eigen::VectorXd lin = xMatrix * w; // size‐n
-    Eigen::ArrayXd sig = stable_sigmoid_array_da(lin);
-    Eigen::VectorXd g = xMatrix.transpose() * (sig - yLabels.array()).matrix();
+    Eigen::VectorXd g = xMatrix.transpose() * fl::logisticResiduals(lin, yLabels);
     g /= double(n);
 
     // 3) dual‐averaging step
@@ -105,7 +91,7 @@ List clientUpdateDualAveragingCpp(List &clientData,
   }
   Eigen::VectorXd delta = z - z0;
   return List::create(_["delta"] = delta,
-                      _["n"] = reportN);
+                      _["n"] = double(n));
 }
 
 //' @export

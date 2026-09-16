@@ -30,10 +30,12 @@ proxL1 <- function(z, alphaLambda, intercept = TRUE) {
 gradLogistic <- function(weights, xMatrix, yLabels) {
   assertConformableWeights(weights, xMatrix, context = "gradLogistic")
   if (inherits(xMatrix, "sparseMatrix")) {
-    return(as.numeric(logisticGradientCpp(.asDgCMatrix(xMatrix), weights, yLabels)))
+    return(as.numeric(logisticGradientCpp(.asDgCMatrix(xMatrix), weights, yLabels, eps = 0)))
   }
-  eta <- stats::plogis(as.vector(xMatrix %*% weights))
-  res <- eta - yLabels
+  eta <- as.numeric(xMatrix %*% weights)
+  res <- stats::plogis(eta) - yLabels
+  cases <- yLabels == 1
+  res[cases] <- -stats::plogis(-eta[cases])
   as.numeric(crossprod(xMatrix, res)) / length(yLabels)
 }
 
@@ -51,8 +53,8 @@ assertConformableWeights <- function(weights, xMatrix, context = "model") {
 }
 
 binaryLogLoss <- function(eta, yLabels, meanLoss = TRUE) {
-  logTerm <- ifelse(eta > 0, eta + log1p(exp(-eta)), log1p(exp(eta)))
-  loss <- logTerm - yLabels * eta
+  loss <- log1p(exp(-abs(eta))) +
+    ifelse(eta >= 0, (1 - yLabels) * eta, -yLabels * eta)
   if (meanLoss) {
     mean(loss)
   } else {
@@ -76,4 +78,17 @@ cyclopsGradientObjective <- function(weights, xMatrix, yLabels) {
 
 logisticLoss <- function(weights, xMatrix, yLabels) {
   -logisticNegLogLik(weights, xMatrix, yLabels, meanLoss = FALSE)
+}
+
+.lassoKktResidual <- function(weights, gradient, lambda, intercept = TRUE) {
+  if (length(weights) == 0L || length(weights) != length(gradient) ||
+      any(!is.finite(weights)) || any(!is.finite(gradient)) ||
+      !is.numeric(lambda) || length(lambda) != 1L || !is.finite(lambda) || lambda < 0) {
+    stop("KKT residual requires finite, conformable coefficients/gradients and non-negative lambda")
+  }
+  residual <- pmax(abs(gradient) - lambda, 0)
+  active <- weights != 0
+  residual[active] <- abs(gradient[active] + lambda * sign(weights[active]))
+  if (isTRUE(intercept)) residual[1L] <- abs(gradient[1L])
+  residual
 }

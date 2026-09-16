@@ -16,6 +16,14 @@ serverRoundDualAveragingCpp <- function(serverState, clientReports, config) {
     .Call(`_FederatedLearning_serverRoundDualAveragingCpp`, serverState, clientReports, config)
 }
 
+logisticObjectiveGradientCpp <- function(x, beta, y, dualStats = FALSE, computeGradient = TRUE) {
+    .Call(`_FederatedLearning_logisticObjectiveGradientCpp`, x, beta, y, dualStats, computeGradient)
+}
+
+logisticDualEntropyCpp <- function(residual, y, scales) {
+    .Call(`_FederatedLearning_logisticDualEntropyCpp`, residual, y, scales)
+}
+
 cyclopsGradientObjectiveCpp <- function(x, beta, y) {
     .Call(`_FederatedLearning_cyclopsGradientObjectiveCpp`, x, beta, y)
 }

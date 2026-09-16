@@ -1,21 +1,13 @@
 // [[Rcpp::depends(RcppEigen)]]
 #include <RcppEigen.h>
+#include "LogisticMath.h"
 
 using namespace Rcpp;
-
-static inline double stable_sigmoid_scalar(double eta) {
-  if (eta >= 0.0) {
-    const double z = std::exp(-eta);
-    return 1.0 / (1.0 + z);
-  }
-  const double z = std::exp(eta);
-  return z / (1.0 + z);
-}
 
 static Eigen::ArrayXd stable_sigmoid_array(const Eigen::VectorXd& eta) {
   Eigen::ArrayXd out(eta.size());
   for (int i = 0; i < eta.size(); ++i) {
-    out[i] = stable_sigmoid_scalar(eta[i]);
+    out[i] = fl::logisticProbability(eta[i]);
   }
   return out;
 }
@@ -31,6 +23,114 @@ static Eigen::ArrayXd clipped_probabilities(const Eigen::VectorXd& eta,
     }
   }
   return p;
+}
+
+// Dual feasibility involves subtracting class totals much larger than lambda.
+struct CompensatedSum {
+  double sum = 0.0;
+  double correction = 0.0;
+  void add(double value) {
+    const double next = sum + value;
+    correction += std::abs(sum) >= std::abs(value) ?
+      (sum - next) + value : (value - next) + sum;
+    sum = next;
+  }
+  double value() const { return sum + correction; }
+};
+
+// [[Rcpp::export]]
+List logisticObjectiveGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
+                                   const Eigen::VectorXd& beta,
+                                   const Eigen::VectorXd& y,
+                                   bool dualStats = false,
+                                   bool computeGradient = true) {
+  if (x.cols() != beta.size() || x.rows() != y.size() || y.size() == 0) {
+    stop("logisticObjectiveGradientCpp requires conformable, nonempty inputs");
+  }
+  if (!beta.allFinite() || !y.allFinite() || (y.array() < 0).any() || (y.array() > 1).any()) {
+    stop("logisticObjectiveGradientCpp requires finite coefficients and labels in [0, 1]");
+  }
+  const Eigen::VectorXd eta = x * beta;
+  if (!eta.allFinite()) {
+    stop("logisticObjectiveGradientCpp requires finite linear predictors");
+  }
+  CompensatedSum lossSum;
+  for (int i = 0; i < eta.size(); ++i) {
+    // Avoid both overflow and cancellation for correctly classified extreme logits.
+    lossSum.add(std::log1p(std::exp(-std::abs(eta[i]))) +
+      (eta[i] >= 0.0 ? (1.0 - y[i]) * eta[i] : -y[i] * eta[i]));
+  }
+  const double loss = lossSum.value();
+  const double cyclopsObjective = eta.dot(y);
+  if (!R_finite(loss) || !R_finite(cyclopsObjective)) {
+    stop("logisticObjectiveGradientCpp produced non-finite statistics");
+  }
+  List result = List::create(_["loss"] = loss, _["cyclopsObjective"] = cyclopsObjective,
+                             _["n"] = y.size());
+  Eigen::VectorXd residual;
+  if (computeGradient || dualStats) residual = fl::logisticResiduals(eta, y);
+  if (computeGradient) {
+    const Eigen::VectorXd gradient = x.transpose() * residual / static_cast<double>(y.size());
+    if (!gradient.allFinite()) stop("logisticObjectiveGradientCpp produced non-finite gradient");
+    result["gradient"] = gradient;
+  }
+  if (dualStats) {
+    CompensatedSum mass[2];
+    for (int i = 0; i < y.size(); ++i) {
+      if (y[i] != 0.0 && y[i] != 1.0) stop("Dual diagnostics require binary labels");
+      const double magnitude = std::abs(residual[i]);
+      mass[static_cast<int>(y[i])].add(magnitude);
+    }
+    Eigen::MatrixXd classGradient(x.cols(), 2);
+    double gradientScale = 0.0;
+    for (int j = 0; j < x.cols(); ++j) {
+      CompensatedSum totals[2], absolute;
+      for (Eigen::Map<Eigen::SparseMatrix<double> >::InnerIterator it(x, j); it; ++it) {
+        const double value = it.value() * std::abs(residual[it.row()]);
+        totals[static_cast<int>(y[it.row()])].add(value);
+        absolute.add(std::abs(value));
+      }
+      for (int label = 0; label < 2; ++label) {
+        classGradient(j, label) = totals[label].value() / y.size();
+      }
+      gradientScale = std::max(gradientScale, absolute.value() / y.size());
+    }
+    if (!classGradient.allFinite() || !R_finite(gradientScale)) {
+      stop("Dual diagnostics produced non-finite class gradients");
+    }
+    Eigen::Vector2d classMass;
+    classMass << mass[0].value() / y.size(), mass[1].value() / y.size();
+    result["dualMass"] = classMass;
+    result["dualClassGradient"] = classGradient;
+    result["dualGradientScale"] = gradientScale;
+    result["dualResidual"] = residual;
+  }
+  return result;
+}
+
+// [[Rcpp::export]]
+List logisticDualEntropyCpp(const Eigen::VectorXd& residual,
+                             const Eigen::VectorXd& y,
+                             const Eigen::VectorXd& scales) {
+  if (residual.size() == 0 || residual.size() != y.size() || scales.size() != 2 ||
+      !residual.allFinite() || !y.allFinite() || !scales.allFinite() ||
+      (scales.array() < 0).any() || (scales.array() > 1).any()) {
+    stop("Dual entropy requires conformable finite residuals and two scales in [0, 1]");
+  }
+  long double entropy = 0.0L;
+  long double balance = 0.0L;
+  for (int i = 0; i < residual.size(); ++i) {
+    if ((y[i] != 0.0 && y[i] != 1.0) || residual[i] < -y[i] || residual[i] > 1.0 - y[i]) {
+      stop("Dual entropy residual violates its label-dependent domain");
+    }
+    const double r = residual[i] * scales[static_cast<int>(y[i])];
+    const double q = std::abs(r);
+    // Binary entropy is symmetric, so use |r| without subtracting from one.
+    if (q > 0.0 && q < 1.0) entropy -= q * std::log(q) + (1.0 - q) * std::log1p(-q);
+    balance += r;
+  }
+  return List::create(_["entropy"] = static_cast<double>(entropy / y.size()),
+                      _["balance"] = static_cast<double>(balance / y.size()));
 }
 
 // [[Rcpp::export]]
@@ -63,9 +163,16 @@ Eigen::VectorXd logisticGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double>
          static_cast<int>(x.rows()), static_cast<int>(y.size()));
   }
   const int n = y.size();
+  if (n == 0) stop("logisticGradientCpp requires nonempty inputs");
   Eigen::VectorXd eta = x * beta;
-  Eigen::ArrayXd p = clipped_probabilities(eta, eps);
-  Eigen::VectorXd residual = (p - y.array()).matrix();
+  Eigen::VectorXd residual;
+  if (eps == 0.0) {
+    residual = fl::logisticResiduals(eta, y);
+  } else {
+    // PDA-specific callers retain their explicit probability-floor convention.
+    Eigen::ArrayXd p = clipped_probabilities(eta, eps);
+    residual = (p - y.array()).matrix();
+  }
   return (x.transpose() * residual) / static_cast<double>(n);
 }
 

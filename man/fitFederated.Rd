@@ -11,12 +11,26 @@ fitFederated(cl, algorithm, config, verbose = TRUE)
 
 \item{algorithm}{name, e.g. "DualAvg", "FedAvg"}
 
-\item{config}{algorithm configuration list}
+\item{config}{algorithm configuration list
+For DualAvg, optional \code{dualAvgKktTolerance} enables a mean-loss lasso KKT
+safeguard on early stopping. \code{dualAvgKktCheckEvery} (default 100) sets its
+interval; the final round is always checked. Checks use existing objective
+replies, adding gradient payloads but no communication exchanges.
+\code{dualAvgGapDiagnostics = TRUE} records a numerical primal-dual gap without
+changing stopping. \code{dualAvgGapCheckEvery} (default 100) controls candidate
+creation. Dual evaluations arrive in the next existing objective exchange;
+the best completed lower bound is valid for later iterates of the same fit.
+Requires binary outcomes, positive lambda, and objective monitoring. Adds
+summary payloads; row-level residuals remain on workers. The gap can be
+conservative, especially when the best completed candidate is old.}
 
 \item{verbose}{if TRUE, print optimization progress}
 }
 \value{
-w
+A fitted model list. Duality-gap diagnostics add \code{primalObjective},
+\code{dualLowerBound}, \code{dualityGap}, \code{dualBoundRound}, \code{dualGapChecks}, and
+\code{dualGapHistory}. Objectives and gaps use the configured aggregation's
+mean-loss scale.
 }
 \description{
 Run any registered federated learning algorithm end-to-end
