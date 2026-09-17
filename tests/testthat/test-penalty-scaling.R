@@ -38,13 +38,14 @@ test_that("variance CV uses each training split's row count and preserves fold-l
   testthat::local_mocked_bindings(
     subsetCluster = function(cl, ids) list(ids = ids),
     fitFederated = function(cl, algorithm, config, verbose) {
-      calls[[length(calls) + 1L]] <<- list(ids = cl$ids, config = config)
       n <- sum(sizes[cl$ids])
-      list(w = 2 / (n * config$lambda)^2, z = rep(sum(cl$ids), 2),
+      w <- c(2 / (n * config$lambda)^2, sum(cl$ids))
+      calls[[length(calls) + 1L]] <<- list(ids = cl$ids, config = config, w = w)
+      list(w = w, z = rep(sum(cl$ids) + 10, 2),
         roundsCompleted = 3L, config = config)
     },
     clusterCreateMatrices = function(...) NULL,
-    clusterEvaluateModel = function(cl, w) data.frame(auc = 0.8 - 0.01 * abs(log(w / 0.01))),
+    clusterEvaluateModel = function(cl, w) data.frame(auc = 0.8 - 0.01 * abs(log(w[1] / 0.01))),
     .package = "FederatedLearning"
   )
   for (sizes in list(c(10, 20, 70), c(50, 50, 50, 50), c(10, 30))) {
@@ -72,7 +73,7 @@ test_that("variance CV uses each training split's row count and preserves fold-l
       if (i <= length(sizes)) {
         expect_null(cfg$initialZ)
       } else {
-        expect_equal(cfg$initialZ, rep(sum(calls[[i]]$ids), 2))
+        expect_equal(cfg$initialZ, calls[[i - length(sizes)]]$w)
         expect_equal(cfg$roundOffset, 0L)
       }
     }

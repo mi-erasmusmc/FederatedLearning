@@ -56,6 +56,29 @@ test_that("DualAvg updates use true tail residuals rather than a probability flo
   }
 })
 
+test_that("a coefficient restart evaluates its first gradient at the previous model", {
+  x <- cbind(1, c(0, 0.2, 0.5, 1), c(0, 1, 0, 1))
+  y <- c(0, 0, 1, 1)
+  previous <- c(-2, 0, 0.3)
+  data <- list(xMatrix = FederatedLearning:::.asDgCMatrix(Matrix::Matrix(x, sparse = TRUE)),
+               yLabels = y, n = length(y))
+  for (lambda in c(0, 0.01, 1)) {
+    cfg <- list(p = 2L, intercept = TRUE, initialZ = previous, k = 1L,
+                etaClient = 0.4, etaServer = 1.5, lambda = lambda, aggregation = "sampleSize")
+    state <- serverInitDualAveragingCpp(cfg)
+    state$r <- 0L
+    g <- as.numeric(crossprod(x, plogis(as.numeric(x %*% previous)) - y)) / length(y)
+    report <- clientUpdateDualAveragingCpp(data, state, cfg)
+    expect_equal(as.numeric(report$delta), -cfg$etaClient * g, tolerance = 1e-12)
+    result <- serverRoundDualAveragingCpp(state, list(report), cfg)
+    z <- previous - cfg$etaClient * cfg$etaServer * g
+    threshold <- cfg$etaClient * cfg$etaServer * lambda
+    expected <- c(z[1], sign(z[-1]) * pmax(abs(z[-1]) - threshold, 0))
+    expect_equal(as.numeric(result$report$w), expected, tolerance = 1e-12)
+    expect_equal(as.numeric(result$report$w)[1], z[1], tolerance = 1e-12)
+  }
+})
+
 test_that("DualAvg refuses stale counts or incompatible rows before updating", {
   x <- FederatedLearning:::.asDgCMatrix(Matrix::Matrix(cbind(1, c(-1, 1)), sparse = TRUE))
   data <- list(xMatrix = x, yLabels = c(0, 1), n = 2L)
