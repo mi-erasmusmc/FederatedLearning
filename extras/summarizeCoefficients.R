@@ -34,10 +34,12 @@ readMatchingDebugFit <- function(rows, resultDirectory, task, fold, featureSet, 
 }
 
 summarizeCoefficients <- function(resultDirectory,
-                                 methods = c("PooledLasso", "DualAvg", "LocalAvgLasso"),
+                                 methods = c("PooledLasso", "DualAvg", "LocalAvgLasso",
+                                   "SparseLocalAvgLasso", "DebiasedLocalAvgLasso"),
                                  outputDirectory = file.path(resultDirectory, "coefficient_summary")) {
-  if (!all(methods %in% c("PooledLasso", "DualAvg", "LocalAvgLasso"))) {
-    stop("This export supports PooledLasso, DualAvg and LocalAvgLasso")
+  if (!all(methods %in% c("PooledLasso", "DualAvg", "LocalAvgLasso",
+      "SparseLocalAvgLasso", "DebiasedLocalAvgLasso"))) {
+    stop("This export supports PooledLasso, DualAvg and coefficient averaging baselines")
   }
   rows <- utils::read.csv(file.path(resultDirectory, "comparison_results.csv"), stringsAsFactors = FALSE)
   rows <- rows[rows$method %in% methods, , drop = FALSE]
@@ -88,6 +90,8 @@ summarizeCoefficients <- function(resultDirectory,
       nonzeroPredictors = if (is.null(tab)) NA_integer_ else length(nonzero),
       minAbsNonzero = if (length(nonzero)) min(abs(nonzero)) else NA_real_,
       selectedLambda = if (nrow(selected) == 1L) selected$selectedLambda else NA_real_,
+      aggregationThreshold = if (nrow(selected) == 1L && "aggregationThreshold" %in% names(selected))
+        selected$aggregationThreshold else NA_real_,
       penaltyScale = if (key$method == "DualAvg") "mean negative log-likelihood L1 multiplier" else "Cyclops Laplace prior variance",
       selectedVariance = if (is.null(variance)) NA_real_ else variance,
       stringsAsFactors = FALSE
@@ -123,7 +127,7 @@ if (sys.nframe() == 0L) {
   directory <- getArg("result-directory")
   if (is.null(directory)) stop("Supply --result-directory")
   summarizeCoefficients(directory,
-    methods = trimws(strsplit(getArg("methods", "PooledLasso,DualAvg,LocalAvgLasso"), ",", fixed = TRUE)[[1]]),
+    methods = trimws(strsplit(getArg("methods", "PooledLasso,DualAvg,LocalAvgLasso,SparseLocalAvgLasso,DebiasedLocalAvgLasso"), ",", fixed = TRUE)[[1]]),
     outputDirectory = getArg("output-directory", file.path(directory, "coefficient_summary"))
   )
 }
