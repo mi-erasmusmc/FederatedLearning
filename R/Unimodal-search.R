@@ -268,7 +268,8 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
       )
     )
     if (!is.null(ws)) {
-      cfg$initialZ <- ws$z
+      # Resetting the dual clock must also discard its accumulated threshold.
+      cfg$initialZ <- if (useWarmStartRoundOffset) ws$z else ws$w
       cfg$roundOffset <- if (useWarmStartRoundOffset) ws$roundOffset else 0L
     }
     if (verbose) {
@@ -283,6 +284,7 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
       assign(
         key,
         list(
+          w = res$w,
           z = res$z,
           roundOffset = (ws$roundOffset %||% 0L) + (res$roundsCompleted %||% rounds),
           lambda = lambda,

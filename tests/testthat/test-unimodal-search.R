@@ -114,6 +114,51 @@ test_that("tuneLambda warm-starts DualAvg path fits with previous dual state", {
   }, logical(1))))
 })
 
+test_that("reset-clock path starts preserve coefficients within each validation split", {
+  for (warmStart in c(FALSE, TRUE)) {
+    configs <- list()
+    weights <- list()
+    dualStates <- list()
+    fit <- function(cl, algorithm, config, verbose = TRUE) {
+      index <- length(configs) + 1L
+      configs[[index]] <<- config
+      weights[[index]] <<- c(-cl$ids[1], 0, config$lambda)
+      dualStates[[index]] <<- weights[[index]] + c(0, 10, 20)
+      list(w = weights[[index]], z = dualStates[[index]], config = config,
+           roundsCompleted = config$rounds)
+    }
+    with_namespace_bindings(
+      list(
+        subsetCluster = function(cl, ids) list(ids = ids),
+        fitFederated = fit,
+        clusterCreateMatrices = function(cl, config) invisible(NULL),
+        clusterEvaluateModel = function(cl, w) data.frame(auc = 0.8 - abs(log(w[3])) / 10)
+      ),
+      FederatedLearning:::tuneLambda(
+        cl = list(1, 2), algorithm = "DualAvg",
+        configBase = list(warmStartLambdaPath = warmStart, warmStartRoundOffset = FALSE),
+        trainIds = 1:2, rounds = 3L, clientFrac = 1, epsilon = 1e-6,
+        lambdaStrategy = list(initial = function(x, n, context) x,
+                              final = function(x, n, context) x),
+        lambdaDefault = 1, totalPopSize = 20,
+        globalMap = data.frame(covariateId = 1:2, columnId = 1:2),
+        stopByY = 1, firstCut = 10, verbose = FALSE
+      )
+    )
+    expect_gte(length(configs), 4L)
+    for (i in seq_along(configs)) {
+      if (i <= 2L || !warmStart) {
+        expect_null(configs[[i]]$initialZ)
+      } else {
+        expect_equal(configs[[i]]$initialZ, weights[[i - 2L]])
+        expect_equal(configs[[i]]$roundOffset, 0L)
+        expect_equal(configs[[i]]$initialZ[2], 0)
+        expect_false(isTRUE(all.equal(configs[[i]]$initialZ, dualStates[[i - 2L]])))
+      }
+    }
+  }
+})
+
 test_that("tuneLambda errors when validation AUC is undefined", {
   fakeSubsetCluster <- function(cl, ids) {
     list(ids = ids)
