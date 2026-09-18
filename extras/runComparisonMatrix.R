@@ -141,12 +141,15 @@ methodRounds <- function(method, args) {
 baselineMethods <- c(
   "PooledLasso",
   "LocalAvgLasso",
+  "SparseLocalAvgLasso",
+  "DebiasedLocalAvgLasso",
   "BiggestSiteLasso",
   "LocalEnsembleLasso",
   "LocalBestLasso",
   "LocalSiteLasso"
 )
 dualAvgMethods <- c("DualAvg", "DualAvgCpp", "DualAvgR")
+sparseAverageMethods <- c("SparseLocalAvgLasso", "DebiasedLocalAvgLasso")
 
 readCsvIfExists <- function(path) {
   if (!file.exists(path)) {
@@ -1193,6 +1196,87 @@ assertCyclopsMethod <- function(method) {
   invisible(NULL)
 }
 
+sparseAverageSettings <- function(args) {
+  fixed <- argValue(args, "local-average-threshold")
+  grid <- c(0, numCsvArg(argValue(args, "local-average-thresholds"),
+    c(0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1)))
+  if (!is.null(fixed)) grid <- numArg(fixed, NA_real_)
+  if (!length(grid) || any(!is.finite(grid) | grid < 0)) stop("Invalid averaging threshold(s)")
+  grid <- sort(unique(grid))
+  metric <- argValue(args, "local-average-metric") %||% "auc"
+  if (!metric %in% c("auc", "logLoss")) stop("--local-average-metric must be auc or logLoss")
+  list(grid = grid, fixed = !is.null(fixed), metric = metric,
+    multiplier = numArg(argValue(args, "local-debias-multiplier"), 1),
+    maxFeatures = intArg(argValue(args, "local-debias-max-features"), 512L))
+}
+
+averageSparseLocalFits <- function(fits, trainData, method, settings) {
+  sizes <- vapply(trainData, function(x) nrow(x$xMatrix), numeric(1))
+  if (length(fits) != length(trainData) || !length(fits) || any(sizes <= 0)) {
+    stop("Sparse averaging requires matching fits and nonempty training clients")
+  }
+  for (i in seq_along(fits)) FederatedLearning:::assertConformableWeights(
+    fits[[i]]$w, trainData[[i]]$xMatrix, context = "sparse averaging")
+  debias <- if (method == "DebiasedLocalAvgLasso") {
+    Map(function(fit, data) FederatedLearning:::debiasLocalLasso(data, fit$w,
+      settings$multiplier, settings$maxFeatures), fits, trainData)
+  } else NULL
+  coefficients <- if (is.null(debias)) lapply(fits, `[[`, "w") else lapply(debias, `[[`, "w")
+  weights <- sizes / sum(sizes)
+  list(w = Reduce("+", Map(`*`, coefficients, weights)), weights = weights, debias = debias)
+}
+
+sparseAverageScales <- function(preprocessor, p, intercept) {
+  scales <- rep(1, p)
+  if (isTRUE(preprocessor$enabled)) {
+    slopes <- seq_len(p)
+    if (isTRUE(intercept)) slopes <- slopes[-1L]
+    scales[slopes] <- preprocessor$normFactors[preprocessor$keep]
+  }
+  scales
+}
+
+tuneSparseAverage <- function(trainData, method, args, config, seed) {
+  settings <- sparseAverageSettings(args)
+  if (settings$fixed) return(list(tau = settings$grid, metric = settings$metric,
+    score = NA_real_, trace = data.frame(), splits = list(), settings = settings))
+  if (length(trainData) < 2L) stop("Threshold tuning requires at least two training sites")
+  trace <- splits <- vector("list", length(trainData))
+  for (validation in seq_along(trainData)) {
+    training <- setdiff(seq_along(trainData), validation)
+    processed <- preprocessBaselineData(trainData[training], trainData[validation], config, args)
+    attempts <- lapply(seq_along(training), function(i) fitLocalBaselineSafely(
+      processed$trainData, i, as.character(training[i]), args, seed + training[i], config$intercept))
+    ok <- vapply(attempts, `[[`, logical(1), "ok")
+    if (!any(ok)) stop("No local fits succeeded in threshold validation split ", validation)
+    aggregate <- averageSparseLocalFits(lapply(attempts[ok], `[[`, "fit"),
+      processed$trainData[ok], method, settings)
+    scales <- sparseAverageScales(processed$preprocessor, length(aggregate$w), config$intercept)
+    data <- processed$testData[[1]]
+    scores <- vapply(settings$grid, function(tau) {
+      w <- FederatedLearning:::softThresholdAverage(aggregate$w, tau, config$intercept, scales)
+      if (settings$metric == "auc") {
+        binaryAuc(data$yLabels, stats::plogis(as.numeric(data$xMatrix %*% w)))
+      } else {
+        FederatedLearning:::logisticNegLogLik(w, data$xMatrix, data$yLabels, meanLoss = TRUE)
+      }
+    }, numeric(1))
+    if (any(!is.finite(scores))) stop("Non-finite threshold validation score at training site ", validation)
+    trace[[validation]] <- data.frame(validationSite = validation, tau = settings$grid,
+      score = scores, metric = settings$metric, successfulLocalFits = sum(ok))
+    splits[[validation]] <- list(trainingSites = training, validationSite = validation,
+      preprocessing = processed$preprocessor, failures = attempts[!ok],
+      contributingSites = training[ok], weights = aggregate$weights, debias = aggregate$debias,
+      localFits = lapply(attempts[ok], `[[`, "fit"))
+  }
+  trace <- do.call(rbind, trace)
+  scores <- vapply(settings$grid, function(tau) mean(trace$score[trace$tau == tau]), numeric(1))
+  # The sorted grid deliberately prefers the smallest threshold on exact ties.
+  best <- if (settings$metric == "auc") which.max(scores) else which.min(scores)
+  list(tau = settings$grid[best], metric = settings$metric, score = scores[best],
+    trace = trace, splits = splits, settings = settings)
+}
+
 fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
                             args, task, featureSet, fold, trainClientIds,
                             testClientIds, testClientIndexes, modelDirectory = NULL) {
@@ -1213,6 +1297,12 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   matrixConfig$mapping <- trainMap
   matrixConfig$p <- nrow(trainMap)
   trainData <- lapply(trainPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
+
+  thresholdStart <- Sys.time()
+  thresholdTuning <- if (method %in% sparseAverageMethods) {
+    tuneSparseAverage(trainData, method, args, config, intArg(args[["baseline-seed"]], 42L) + fold)
+  } else NULL
+  thresholdElapsed <- as.numeric(difftime(Sys.time(), thresholdStart, units = "secs"))
 
   testPlp <- lapply(testPaths, FederatedLearning::loadClientData, popSettings = popSettings)
   testData <- lapply(testPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
@@ -1274,7 +1364,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       fits[[1]]$leadIndex <- localIndexesOk[[which.max(trainN)]]
       fits[[1]]$innerCvScore <- NA_real_
       fits[[1]]$configLabel <- paste0("source=", trainClientIds[[fits[[1]]$leadIndex]], failureLabel)
-    } else if (identical(method, "LocalAvgLasso")) {
+    } else if (method %in% c("LocalAvgLasso", sparseAverageMethods)) {
       weights <- trainN / sum(trainN)
       fits <- list(list(
         w = Reduce("+", Map(function(localFit, wi) localFit$w * wi, localFits, weights)),
@@ -1284,6 +1374,23 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         innerCvScore = NA_real_,
         configLabel = paste0("coefficientAverage=sampleSize", failureLabel)
       ))
+      if (method %in% sparseAverageMethods) {
+        aggregateStart <- Sys.time()
+        aggregate <- averageSparseLocalFits(localFits, trainData[localIndexesOk], method, thresholdTuning$settings)
+        scales <- sparseAverageScales(processed$preprocessor, length(aggregate$w), config$intercept)
+        fits[[1]]$w <- FederatedLearning:::softThresholdAverage(aggregate$w,
+          thresholdTuning$tau, config$intercept, scales)
+        fits[[1]]$aggregationThreshold <- thresholdTuning$tau
+        fits[[1]]$innerCvScore <- thresholdTuning$score
+        fits[[1]]$fittingSettings <- list(thresholdTuning = thresholdTuning,
+          unthresholdedAverage = aggregate$w, debias = aggregate$debias,
+          thresholdScale = "shared coefficient units before baseline normalization")
+        fits[[1]]$elapsedSeconds <- thresholdElapsed +
+          sum(vapply(localAttempts, `[[`, numeric(1), "elapsedSeconds")) +
+          as.numeric(difftime(Sys.time(), aggregateStart, units = "secs"))
+        fits[[1]]$configLabel <- paste0("coefficientAverage=sampleSize;tau=", thresholdTuning$tau,
+          ";thresholdMetric=", thresholdTuning$metric, failureLabel)
+      }
     } else if (identical(method, "LocalEnsembleLasso")) {
       weighting <- argValue(args, "local-ensemble-weighting") %||% "sampleSize"
       weights <- localModelWeights(trainN, args)
@@ -1363,6 +1470,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         nonzeroPredictors = if (is.null(fit$localFits)) exactNonzero(fit$w, config$intercept) else NA_integer_,
         penaltyScale = "Cyclops Laplace prior variance",
         selectedLambda = fit$selectedLambda %||% NA_real_,
+        aggregationThreshold = fit$aggregationThreshold %||% NA_real_,
         lambdaPathFile = NA_character_,
         leadIndex = fit$leadIndex %||% NA_integer_,
         leadWeight = NA_real_,
@@ -1405,8 +1513,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       ),
       evalRows,
       data.frame(
-        messages = 0,
-        numbers = 0,
+        messages = if (method %in% sparseAverageMethods) NA_real_ else 0,
+        numbers = if (method %in% sparseAverageMethods) NA_real_ else 0,
         task = task,
         error = NA_character_,
         stringsAsFactors = FALSE
@@ -1516,6 +1624,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       models = models,
       components = components,
       aggregation = switch(method, LocalAvgLasso = "coefficientAverage=sampleSize",
+        SparseLocalAvgLasso = "softThresholdedCoefficientAverage=sampleSize",
+        DebiasedLocalAvgLasso = "nodewiseDebiasedThresholdedAverage=sampleSize",
         LocalEnsembleLasso = paste0("predictionAverage=", argValue(args, "local-ensemble-weighting") %||% "sampleSize"),
         "singleModel"),
       localFailures = localFailures,
