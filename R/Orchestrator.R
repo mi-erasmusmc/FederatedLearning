@@ -15,7 +15,9 @@
 #'   summary payloads; row-level residuals remain on workers. The gap can be
 #'   conservative, especially when the best completed candidate is old.
 #' @param verbose      if TRUE, print optimization progress
-#' @return A fitted model list. Duality-gap diagnostics add `primalObjective`,
+#' @return A fitted model list. KKT safeguarding adds `converged`, `stopReason`,
+#'   `kktMaxAbs`, `kktChecks`, and a per-check `kktHistory` data frame.
+#'   Duality-gap diagnostics add `primalObjective`,
 #'   `dualLowerBound`, `dualityGap`, `dualBoundRound`, `dualGapChecks`, and
 #'   `dualGapHistory`. Objectives and gaps use the configured aggregation's
 #'   mean-loss scale.
@@ -296,6 +298,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   kktChecks <- 0L
   kktMaxAbs <- NA_real_
   converged <- FALSE
+  kktHistory <- list()
   pendingDual <- NULL
   dualLowerBound <- 0 # r = 0 is always feasible for binary logistic lasso.
   dualBoundRound <- NA_integer_
@@ -372,6 +375,8 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
           lambda, intercept = isTRUE(config$intercept)))
         kktChecks <- kktChecks + 1L
         kktPassed <- kktMaxAbs <= kktTolerance
+        kktHistory[[kktChecks]] <- data.frame(round = roundsCompleted,
+          kktMaxAbs = kktMaxAbs, objective = globalObjective)
         if (verbose) {
           cat(sprintf("KKT round %d: max residual = %.6g (tolerance %.6g)\n",
             roundsCompleted, kktMaxAbs, kktTolerance))
@@ -473,6 +478,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     result$stopReason <- if (converged) "converged" else "roundLimit"
     result$kktMaxAbs <- kktMaxAbs
     result$kktChecks <- kktChecks
+    result$kktHistory <- if (length(kktHistory)) do.call(rbind, kktHistory) else data.frame()
   }
   if (gapEnabled) {
     if (length(dualGapHistory) == 0L || dualGapHistory[[length(dualGapHistory)]]$round != roundsCompleted) {

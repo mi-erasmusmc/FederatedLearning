@@ -16,6 +16,9 @@
 # Model artifacts are saved by default under <result-directory>/models.
 # To backfill missing artifacts, repeat the original command with
 # --resume=true --rerun-missing-models=true (and restrict --methods as needed).
+# For guarded DualAvg tuning and final fitting, use --dualavg-kkt-tolerance=1e-7
+# and --dualavg-kkt-check-every=100. Nonconverged fits fail the method rather than
+# being scored; --debug-diagnostics=true preserves their KKT history and CV trace.
 
 parseArgs <- function(args = commandArgs(trailingOnly = TRUE)) {
   out <- list()
@@ -344,6 +347,11 @@ methodConfig <- function(method, featureSet, args) {
   )
 
   if (method %in% dualAvgMethods) {
+    kktTolerance <- argValue(args, "dualavg-kkt-tolerance")
+    if (!is.null(kktTolerance)) {
+      cfg$dualAvgKktTolerance <- numArg(kktTolerance, NA_real_)
+      cfg$dualAvgKktCheckEvery <- numArg(argValue(args, "dualavg-kkt-check-every"), 100L)
+    }
     cfg$etaClient <- firstValue(numCsvArg(argValue(args, "eta-client"), 1))
     cfg$etaServer <- firstValue(numCsvArg(argValue(args, "eta-server"), 1))
     cfg$k <- firstValue(intCsvArg(argValue(args, "k"), 10L))
@@ -720,6 +728,8 @@ scoreFederatedConfigInnerCv <- function(method, clTrain, config, trainIds, verbo
       config = config,
       verbose = verbose
     )
+    FederatedLearning:::.requireDualAvgConvergence(fit, config,
+      paste0("config CV (validation client ", valId, ")"))
     valConfig <- fit$config
     valConfig$mapping <- fit$config$mapping
     valConfig$p <- nrow(fit$config$mapping)
@@ -1625,6 +1635,8 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
   )
   elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
 
+  FederatedLearning:::.requireDualAvgConvergence(fit, config, "final fit", config$lambdaSearchTrace)
+
   testConfig <- config
   testConfig$mapping <- fit$config$mapping
   testConfig$p <- nrow(fit$config$mapping)
@@ -1641,6 +1653,11 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         method = method,
         config = fit$config,
         roundsCompleted = fit$roundsCompleted %||% NA_integer_,
+        dualAvgConverged = fit$converged %||% NA,
+        dualAvgStopReason = fit$stopReason %||% NA_character_,
+        dualAvgKktMaxAbs = fit$kktMaxAbs %||% NA_real_,
+        dualAvgKktChecks = fit$kktChecks %||% NA_integer_,
+        dualAvgKktHistory = fit$kktHistory,
         selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
         leadIndex = fit$leadIndex %||% NA_integer_,
         leadWeight = fit$leadWeight %||% NA_real_,
@@ -1748,6 +1765,10 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
   }
   resultRows <- cbind(
     data.frame(
+      dualAvgConverged = fit$converged %||% NA,
+      dualAvgStopReason = fit$stopReason %||% NA_character_,
+      dualAvgKktMaxAbs = fit$kktMaxAbs %||% NA_real_,
+      dualAvgKktChecks = fit$kktChecks %||% NA_integer_,
       method = method,
       featureSet = featureSet,
       fold = fold,
@@ -1825,6 +1846,11 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     provenance = provenance,
     testClientIds = testClientIds,
     roundsCompleted = fit$roundsCompleted,
+    dualAvgConverged = fit$converged %||% NA,
+    dualAvgStopReason = fit$stopReason %||% NA_character_,
+    dualAvgKktMaxAbs = fit$kktMaxAbs %||% NA_real_,
+    dualAvgKktChecks = fit$kktChecks %||% NA_integer_,
+    dualAvgKktHistory = fit$kktHistory,
     lambdaSeq = fit$lambdaSeq,
     cvScores = fit$cvScores,
     cvValid = fit$cvValid,
@@ -2090,6 +2116,7 @@ runComparison <- function(args) {
                   )
                 },
                 error = function(e) {
+                  convergence <- e$dualAvgConvergence
                   message(sprintf(
                     "[%s] ERROR task=%s fold=%s featureSet=%s method=%s: %s",
                     format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method,
@@ -2107,6 +2134,7 @@ runComparison <- function(args) {
                       calls = vapply(sys.calls(), function(x) paste(deparse(x), collapse = "\n"), character(1)),
                       configs = configs,
                       selectedConfig = selectedConfig,
+                      dualAvgConvergence = convergence,
                       trainClientIds = clientIds[trainIds],
                       testClientIds = clientIds[testIds]
                     ),
@@ -2121,6 +2149,12 @@ runComparison <- function(args) {
                     method = method,
                     featureSet = featureSet,
                     fold = fold,
+                    dualAvgConverged = convergence$converged %||% NA,
+                    dualAvgStopReason = convergence$stopReason %||% NA_character_,
+                    dualAvgKktMaxAbs = convergence$kktMaxAbs %||% NA_real_,
+                    dualAvgKktChecks = convergence$kktChecks %||% NA_integer_,
+                    dualAvgFailedFitRounds = convergence$roundsCompleted %||% NA_integer_,
+                    dualAvgConvergenceStage = convergence$stage %||% NA_character_,
                     p = NA_integer_,
                     selectedLambda = NA_real_,
                     lambdaPathFile = NA_character_,

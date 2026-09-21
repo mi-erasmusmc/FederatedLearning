@@ -27,7 +27,9 @@ conservative, especially when the best completed candidate is old.}
 \item{verbose}{if TRUE, print optimization progress}
 }
 \value{
-A fitted model list. Duality-gap diagnostics add \code{primalObjective},
+A fitted model list. KKT safeguarding adds \code{converged}, \code{stopReason},
+\code{kktMaxAbs}, \code{kktChecks}, and a per-check \code{kktHistory} data frame.
+Duality-gap diagnostics add \code{primalObjective},
 \code{dualLowerBound}, \code{dualityGap}, \code{dualBoundRound}, \code{dualGapChecks}, and
 \code{dualGapHistory}. Objectives and gaps use the configured aggregation's
 mean-loss scale.

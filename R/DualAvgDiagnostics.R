@@ -56,3 +56,22 @@
   }
   list(objective = sum(weights * entropy), balance = balance)
 }
+.requireDualAvgConvergence <- function(fit, config, stage, trace = NULL) {
+  tolerance <- config[["dualAvgKktTolerance", exact = TRUE]]
+  if (is.null(tolerance)) return(invisible(NULL))
+  residual <- fit$kktMaxAbs %||% NA_real_
+  if (isTRUE(fit$converged) && length(residual) == 1L &&
+      is.finite(residual) && residual <= tolerance) return(invisible(NULL))
+  diagnostics <- list(stage = stage, converged = FALSE,
+    stopReason = fit$stopReason %||% "missingConvergenceStatus",
+    roundsCompleted = fit$roundsCompleted %||% NA_integer_,
+    kktMaxAbs = residual, kktChecks = fit$kktChecks %||% NA_integer_,
+    kktTolerance = tolerance, kktHistory = fit$kktHistory,
+    config = fit$config %||% config, coefficients = fit$w,
+    lambdaSearchTrace = trace)
+  stop(structure(list(message = sprintf(
+    "DualAvg %s did not converge: %s after %s rounds; KKT %.6g (tolerance %.6g).",
+    stage, diagnostics$stopReason, diagnostics$roundsCompleted, residual, tolerance),
+    call = NULL, dualAvgConvergence = diagnostics),
+    class = c("dualAvgConvergenceError", "error", "condition")))
+}

@@ -175,10 +175,12 @@ test_that("federated artifacts contain exact support and task-specific lambda pa
   dir.create(directory)
   on.exit(unlink(directory, recursive = TRUE), add = TRUE)
   config <- list(intercept = TRUE, mapping = data.frame(covariateId = c(10, 20), columnId = 1:2),
-    lambda = 0.01, rounds = 10L, trainClientPaths = c("a", "b"))
+    lambda = 0.01, rounds = 10L, trainClientPaths = c("a", "b"), dualAvgKktTolerance = 1e-7)
   local_mocked_bindings(
     fitFederated = function(cl, algorithm, config, verbose) list(w = c(-2, 0, 1e-20), config = config,
-      roundsCompleted = 3L, lambdaSeq = c(0.01, 0.1), cvScores = c(0.7, 0.6)),
+      roundsCompleted = 3L, lambdaSeq = c(0.01, 0.1), cvScores = c(0.7, 0.6),
+      converged = TRUE, stopReason = "converged", kktMaxAbs = 1e-8, kktChecks = 1L,
+      kktHistory = data.frame(round = 3L, kktMaxAbs = 1e-8)),
     clusterCreateMatrices = function(cl, config) NULL,
     clusterEvaluateModel = function(cl, w) data.frame(client = 1L, auc = 0.7, n = 10, outcomes = 2),
     .package = "FederatedLearning"
@@ -194,6 +196,10 @@ test_that("federated artifacts contain exact support and task-specific lambda pa
   expect_equal(first$nonzeroPredictors, 1L)
   expect_identical(saved$models[[1]]$coefficients$coefficient, c(-2, 0, 1e-20))
   expect_equal(saved$roundsCompleted, 3L)
+  expect_true(first$dualAvgConverged)
+  expect_equal(first$dualAvgStopReason, "converged")
+  expect_equal(first$dualAvgKktMaxAbs, 1e-8)
+  expect_equal(saved$dualAvgKktHistory$kktMaxAbs, 1e-8)
   expect_equal(saved$provenance$populationSettings$riskWindowEnd, 365L)
   expect_equal(saved$lambdaSeq, c(0.01, 0.1))
   blocked <- file.path(directory, "blocked")
