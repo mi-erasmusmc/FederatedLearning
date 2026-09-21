@@ -280,6 +280,19 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
       )
     }
     res <- fitFederated(trainCluster, algorithm, cfg, verbose = verbose)
+    traceIndex <- length(trace) + 1L
+    trace[[traceIndex]] <<- data.frame(
+      iteration = iterLabel, validationClient = valId,
+      searchScale = searchScale, searchValue = lambda, fitLambda = cfg$lambda,
+      trainingRows = if (usesFitScale) sum(trainPopSizes[train2]) else NA_real_,
+      roundsCompleted = res$roundsCompleted %||% NA_integer_,
+      converged = res$converged %||% NA,
+      stopReason = res$stopReason %||% NA_character_,
+      kktMaxAbs = res$kktMaxAbs %||% NA_real_,
+      kktChecks = res$kktChecks %||% NA_integer_, auc = NA_real_
+    )
+    .requireDualAvgConvergence(res, cfg, paste0("inner CV (validation client ", valId, ")"),
+      do.call(rbind, trace))
     if (useWarmStarts && !is.null(res$z)) {
       assign(
         key,
@@ -296,12 +309,7 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     clusterCreateMatrices(valCluster, res$config)
     ev <- clusterEvaluateModel(valCluster, res$w)
     score <- .innerCvScoreFromEvaluation(ev)
-    trace[[length(trace) + 1L]] <<- data.frame(
-      iteration = iterLabel, validationClient = valId,
-      searchScale = searchScale, searchValue = lambda, fitLambda = cfg$lambda,
-      trainingRows = if (usesFitScale) sum(trainPopSizes[train2]) else NA_real_,
-      auc = score
-    )
+    trace[[traceIndex]]$auc <<- score
     score
   }
 
