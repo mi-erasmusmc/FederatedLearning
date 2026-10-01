@@ -1007,7 +1007,8 @@ checkPreprocessingReference <- function(preprocessor, directory, task, fold, fea
   rows <- rows[matchingCombination(rows, task, fold, featureSet, "PooledLasso"), , drop = FALSE]
   model <- readModelArtifact(rows, directory, task, fold, featureSet, "PooledLasso")
   if (is.null(model)) stop("Missing saved pooled reference for preprocessing comparison")
-  if (!identical(model$populationSettings, popSettings) ||
+  # Numeric and integer storage represent the same settings, but values must match exactly.
+  if (!isTRUE(all.equal(model$populationSettings, popSettings, tolerance = 0)) ||
       !setequal(trimws(model$trainClientIds), trainClientIds) ||
       !setequal(trimws(model$testClientIds), testClientIds) ||
       !identical(model$config$mapType, config$mapType) ||
