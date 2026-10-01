@@ -20,8 +20,8 @@ test_that("distributed filtering matches baseline filtering on unequal sites", {
   env <- preprocessingRunner()
   f <- preprocessingFixture()
   args <- list("baseline-preprocess-min-fraction" = "0.2")
-  summaries <- lapply(f$clients, env$trainingFeatureSummary, intercept = TRUE)
-  p <- env$preprocessorFromSummaries(summaries, f$mapping, env$baselinePreprocessSettings(args))
+  summaries <- lapply(f$clients, trainingFeatureSummary, intercept = TRUE)
+  p <- preprocessorFromSummaries(summaries, f$mapping, env$baselinePreprocessSettings(args))
   baseline <- env$fitBaselinePreprocessor(f$clients, TRUE, args)
   expect_identical(p$audit$retained, as.logical(baseline$keep))
   expect_identical(p$audit$retained, c(TRUE, FALSE, FALSE, FALSE, TRUE, TRUE))
@@ -34,11 +34,11 @@ test_that("distributed filtering matches baseline filtering on unequal sites", {
   expect_true(p$audit$removedNearConstant[3])
   expect_false(p$audit$removedNearConstant[6])
   expect_identical(p$scope, "outer-training")
-  expect_identical(p$fingerprint, env$preprocessingFingerprint(c(1002, 40, 50)))
+  expect_identical(p$fingerprint, preprocessingFingerprint(c(1002, 40, 50)))
   dense <- f$clients
   dense[[1]]$xMatrix <- as.matrix(dense[[1]]$xMatrix)
   dense[[2]]$xMatrix <- as.matrix(dense[[2]]$xMatrix)
-  expect_equal(lapply(dense, env$trainingFeatureSummary, intercept = TRUE), summaries)
+  expect_equal(lapply(dense, trainingFeatureSummary, intercept = TRUE), summaries)
   # Retaining a common map is equivalent to explicit matrix subsetting, including age scale.
   for (client in f$clients) {
     actual <- env$applyBaselinePreprocessor(client, baseline, TRUE)$xMatrix
@@ -61,20 +61,20 @@ test_that("preprocessing handles shapes, threshold rounding and invalid summarie
   expect_false(any(result$keep))
   x <- list(xMatrix = Matrix::Matrix(matrix(c(0.1, 0.2, 0.3), ncol = 1), sparse = TRUE),
     yLabels = c(0, 1, 0), n = 3)
-  summary <- env$trainingFeatureSummary(x, FALSE)
+  summary <- trainingFeatureSummary(x, FALSE)
   expect_equal(summary$n, 3)
   expect_length(summary$nnz, 1)
   single <- x
   single$xMatrix <- x$xMatrix[1, , drop = FALSE]
   single$yLabels <- 0
   single$n <- 1
-  expect_equal(env$trainingFeatureSummary(single, FALSE)$sum, 0.1)
+  expect_equal(trainingFeatureSummary(single, FALSE)$sum, 0.1)
   x$n <- 999
-  expect_error(env$trainingFeatureSummary(x, FALSE), "row count")
+  expect_error(trainingFeatureSummary(x, FALSE), "row count")
   expect_error(env$baselineFeatureSelection(0, 0, 0, 0, settings), "Invalid")
   expect_error(env$baselineFeatureSelection(4, 5, 0, 0, settings), "Invalid")
   expect_error(env$baselineFeatureSelection(4, 1, NA, 0, settings), "Invalid")
-  expect_error(env$preprocessorFromSummaries(list(summary),
+  expect_error(preprocessorFromSummaries(list(summary),
     data.frame(covariateId = 10, columnId = 2), settings), "feature map")
 })
 
@@ -131,7 +131,7 @@ test_that("saved pooled masks and population provenance are checked before fitti
   env <- preprocessingRunner()
   f <- preprocessingFixture()
   args <- list("baseline-preprocess-min-fraction" = "0.2")
-  p <- env$preprocessorFromSummaries(lapply(f$clients, env$trainingFeatureSummary, intercept = TRUE),
+  p <- preprocessorFromSummaries(lapply(f$clients, trainingFeatureSummary, intercept = TRUE),
     f$mapping, env$baselinePreprocessSettings(args))
   cfg <- list(mapType = "union", intercept = TRUE)
   population <- list(riskWindowEnd = 365L)
@@ -190,7 +190,7 @@ test_that("audit-only runner never loads held-out data or invokes fitters", {
     }, .package = "FederatedLearning")
   env$safeStopCluster <- function(cl) NULL
   env$fitFederatedPreprocessor <- function(cl, config, args) {
-    env$preprocessorFromSummaries(lapply(f$clients, env$trainingFeatureSummary, intercept = TRUE),
+    preprocessorFromSummaries(lapply(f$clients, trainingFeatureSummary, intercept = TRUE),
       f$mapping, env$baselinePreprocessSettings(args))
   }
   env$fitFederatedFold <- env$fitBaselineFold <- env$selectMethodConfigForFold <- function(...) stop("FIT CALLED")
@@ -208,7 +208,7 @@ test_that("no-op masks leave baseline transforms and DualAvg updates unchanged",
   data <- list(xMatrix = x, yLabels = c(0, 1, 0, 1), n = 4L)
   mapping <- data.frame(covariateId = c(1002, 8532001), columnId = 1:2)
   settings <- env$baselinePreprocessSettings(list())
-  p <- env$preprocessorFromSummaries(list(env$trainingFeatureSummary(data, TRUE)), mapping, settings)
+  p <- preprocessorFromSummaries(list(trainingFeatureSummary(data, TRUE)), mapping, settings)
   expect_true(all(p$audit$retained))
   expect_equal(p$mapping, mapping)
   pp <- env$fitBaselinePreprocessor(list(data), TRUE, list())
@@ -228,7 +228,7 @@ test_that("filtered maps survive lambda tuning and artifact saving without doubl
   env <- preprocessingRunner()
   f <- preprocessingFixture()
   args <- list("baseline-preprocess-min-fraction" = "0.2")
-  filtering <- env$preprocessorFromSummaries(lapply(f$clients, env$trainingFeatureSummary, intercept = TRUE),
+  filtering <- preprocessorFromSummaries(lapply(f$clients, trainingFeatureSummary, intercept = TRUE),
     f$mapping, env$baselinePreprocessSettings(args))
   filtering$communication <- list(messages = 2L, numbers = 38L)
   filtering$elapsedSeconds <- 0.5

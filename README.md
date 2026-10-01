@@ -141,35 +141,38 @@ The default minimum frequency is `floor(0.001 * trainingRows)`. The option named
 or duplicate columns. Matched filtering requires baseline preprocessing enabled
 and `--baseline-preprocess-normalize=false`. Age keeps its existing age/100 scale.
 
-Start with the original comparison arguments and a **new** result directory:
+To check an existing comparison, use the installed package:
 
 ```r
-source("extras/runComparisonMatrix.R")
-args <- originalArgs  # The named argument list from the original comparison
-args[["result-directory"]] <- "results/matchedFiltering"
-args[["federated-preprocess"]] <- "baseline"
-args[["baseline-preprocess-normalize"]] <- "false"
-args[["preprocessing-reference-directory"]] <- "results/originalComparison"
-args[["preprocessing-audit-only"]] <- "true"
-runComparison(args)
-audit <- read.csv("results/matchedFiltering/preprocessing/summary.csv")
-stopifnot(all(audit$referenceStatus == "matched"))
-audit[audit$requiresRefit, ]
+audit <- FederatedLearning::auditMatchedPreprocessing("results/originalComparison")
 ```
 
-Audit-only mode loads training sites but neither loads held-out data nor fits
-models. The optional reference directory must contain saved `PooledLasso` models.
-A missing reference, different population settings, row count or feature mask
-stops the run before fitting. Without that argument, the audit reports
-`not_requested`, which is not confirmation of parity with an earlier run.
+This restores the settings, task-specific horizons and training paths from saved
+`PooledLasso` models. It does not need the original command or runner script,
+load held-out data, fit models, or modify the original results. Review
+`preprocessing-audit/summary.csv` inside the old result directory. The companion
+`features.csv` lists the filtering decisions. Missing models and other fold-level
+errors are recorded in the summary, so completed audits are not lost.
 
-After checking the audit, set `preprocessing-audit-only` to `false` and restrict
-`tasks`, `folds` and `methods` to the desired pilot. Keep the original horizons,
-seeds, penalties and solver settings. Test ODAL2 first, then a penalized surrogate
+Optional `tasks` and `folds` arguments restrict the audit. If the data have moved,
+pass `dataRoot` pointing to the directory containing `task/clientId` folders.
+Saved models are required. A `matched` result confirms the feature mask and
+training row counts, not that every underlying data value is unchanged.
+`requiresRefit=false` means filtering changed no columns, not a general guarantee
+that other settings are unchanged.
+
+After reviewing the audit, run a small comparison pilot in a **new** result
+directory with `--federated-preprocess=baseline`,
+`--baseline-preprocess-normalize=false`, and
+`--preprocessing-reference-directory=results/originalComparison`.
+Keep the original horizons, seeds, penalties and solver settings. The reference
+check stops fitting on a mismatch. Test ODAL2 first, then a penalized surrogate
 and DualAvg with tuning. Gate the wider rerun on correct masks, coefficient
-mapping and saved-model rescoring, not on improved AUC. `requiresRefit=false`
-means filtering changed no columns, not a general guarantee that other settings
-or the input data are unchanged. Reuse old results only after checking those too.
+mapping and saved-model rescoring, not on improved AUC.
+
+The runner also supports `--preprocessing-audit-only=true` for auditing a new
+configuration without fitting. Without a reference directory this reports
+`not_requested`, not confirmation of parity with an earlier run.
 
 Per-fold CSV/RDS audits retain nonzero counts, moments, both removal flags, the
 original and retained maps, and a retained-ID fingerprint. Federated model
