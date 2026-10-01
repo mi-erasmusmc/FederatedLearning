@@ -19,6 +19,9 @@
 # For guarded DualAvg tuning and final fitting, use --dualavg-kkt-tolerance=1e-7
 # and --dualavg-kkt-check-every=100. Nonconverged fits fail the method rather than
 # being scored; --debug-diagnostics=true preserves their KKT history and CV trace.
+# Matched filtering: --federated-preprocess=baseline (no extra normalization).
+# Audit without fitting: --preprocessing-audit-only=true
+# Verify saved pooled masks: --preprocessing-reference-directory=<previous results>
 
 parseArgs <- function(args = commandArgs(trailingOnly = TRUE)) {
   out <- list()
@@ -947,6 +950,116 @@ baselinePreprocessSettings <- function(args) {
   )
 }
 
+baselineFeatureSelection <- FederatedLearning:::baselineFeatureSelection
+
+federatedPreprocessMode <- function(args) {
+  mode <- argValue(args, "federated-preprocess") %||% "none"
+  if (!mode %in% c("none", "baseline")) {
+    stop("--federated-preprocess must be none or baseline")
+  }
+  if (mode == "baseline") {
+    settings <- baselinePreprocessSettings(args)
+    if (!isTRUE(settings$enabled) || isTRUE(settings$normalize)) {
+      stop("Matched filtering requires baseline preprocessing enabled and normalization disabled")
+    }
+    if (!is.finite(settings$minFraction) || settings$minFraction < 0 || settings$minFraction > 1) {
+      stop("Matched preprocessing min-fraction must be between 0 and 1")
+    }
+  }
+  mode
+}
+
+guardPreprocessingSettings <- function(args, directory) {
+  mode <- federatedPreprocessMode(args)
+  contract <- list(version = 1L, mode = mode, scope = "outer-training",
+    settings = baselinePreprocessSettings(args))
+  if (mode == "baseline") contract$matrixSettings <- preprocessingMatrixSettings(
+    methodConfig("PooledLasso", "all", args))
+  path <- file.path(directory, "preprocessing_settings.rds")
+  if (file.exists(path)) {
+    if (!identical(readRDS(path), contract)) {
+      stop("Preprocessing settings differ from this result directory. Use a new result directory.")
+    }
+  } else {
+    if (mode != "none" && file.exists(file.path(directory, "comparison_results.csv"))) {
+      stop("Cannot mix matched preprocessing with unverified existing results. Use a new result directory.")
+    }
+    saveRDS(contract, path)
+  }
+  invisible(contract)
+}
+
+preprocessingMatrixSettings <- function(config) {
+  fields <- c("mapType", "intercept", "covariateIds", "analysisIds",
+    "diagnosticControlsPerCase", "diagnosticDownsampleSeed")
+  stats::setNames(lapply(fields, function(name) config[[name, exact = TRUE]]), fields)
+}
+
+fitFederatedPreprocessor <- function(cl, config, args) {
+  FederatedLearning:::collectTrainingFeatureFilter(cl, config, baselinePreprocessSettings(args))
+}
+
+checkPreprocessingReference <- function(preprocessor, directory, task, fold, featureSet,
+                                        trainClientIds, testClientIds, popSettings, config) {
+  if (is.null(directory)) return("not_requested")
+  rows <- readCsvIfExists(file.path(directory, "comparison_results.csv"))
+  if (!nonEmptyRows(rows)) stop("Missing pooled results for preprocessing comparison")
+  rows <- rows[matchingCombination(rows, task, fold, featureSet, "PooledLasso"), , drop = FALSE]
+  model <- readModelArtifact(rows, directory, task, fold, featureSet, "PooledLasso")
+  if (is.null(model)) stop("Missing saved pooled reference for preprocessing comparison")
+  if (!identical(model$populationSettings, popSettings) ||
+      !setequal(trimws(model$trainClientIds), trainClientIds) ||
+      !setequal(trimws(model$testClientIds), testClientIds) ||
+      !identical(model$config$mapType, config$mapType) ||
+      !identical(model$config$intercept, config$intercept) ||
+      !identical(model$preprocessing$settings, preprocessor$settings)) {
+    stop("Pooled preprocessing reference has different population, sites, or settings")
+  }
+  if (!FederatedLearning:::preprocessingMatchesModel(preprocessor, model, trainClientIds)) {
+    stop("Matched filter differs from the saved pooled feature mask or training row count")
+  }
+  "matched"
+}
+
+savePreprocessingAudit <- function(preprocessor, directory, task, fold, featureSet,
+                                   trainClientIds, testClientIds, popSettings) {
+  dir.create(directory, recursive = TRUE, showWarnings = FALSE)
+  stem <- paste(safeFilePart(task), paste0("fold", fold), safeFilePart(featureSet), sep = "_")
+  path <- file.path(directory, paste0(stem, ".rds"))
+  preprocessor$trainClientIds <- trainClientIds
+  names(preprocessor$trainingSampleSizes) <- trainClientIds
+  preprocessor$testClientIds <- testClientIds
+  preprocessor$populationSettings <- popSettings
+  if (file.exists(path)) {
+    old <- readRDS(path)
+    fields <- c("audit", "settings", "trainClientIds", "testClientIds", "populationSettings", "trainingSampleSizes")
+    if (!isTRUE(all.equal(old[fields], preprocessor[fields], tolerance = 1e-12))) {
+      stop("Preprocessing audit changed for this fold. Use a new result directory.")
+    }
+  }
+  saveRDS(preprocessor, path)
+  audit <- cbind(task = task, fold = fold, featureSet = featureSet,
+    fingerprint = preprocessor$fingerprint, referenceStatus = preprocessor$referenceStatus,
+    preprocessor$audit)
+  utils::write.csv(audit, file.path(directory, paste0(stem, ".csv")), row.names = FALSE)
+  summaryPath <- file.path(directory, "summary.csv")
+  summaries <- readCsvIfExists(summaryPath)
+  current <- data.frame(task = task, fold = fold, featureSet = featureSet,
+    candidatePredictors = nrow(audit), retainedPredictors = sum(audit$retained),
+    removedRare = sum(audit$removedRare), removedNearConstant = sum(audit$removedNearConstant),
+    requiresRefit = any(!audit$retained), fingerprint = preprocessor$fingerprint,
+    referenceStatus = preprocessor$referenceStatus)
+  if (nonEmptyRows(summaries)) {
+    same <- summaries$task == task & summaries$fold == fold & summaries$featureSet == featureSet
+    current <- rbind(summaries[!same, , drop = FALSE], current)
+  }
+  utils::write.csv(current, summaryPath, row.names = FALSE)
+  message(sprintf("Preprocessing %s fold %s %s: retained %s/%s, rare %s, near-constant %s, pooled reference: %s",
+    task, fold, featureSet, sum(audit$retained), nrow(audit), sum(audit$removedRare),
+    sum(audit$removedNearConstant), preprocessor$referenceStatus))
+  preprocessor
+}
+
 sparseColumnMax <- function(x) {
   if (!inherits(x, "sparseMatrix")) {
     return(apply(as.matrix(x), 2, max, na.rm = TRUE))
@@ -979,19 +1092,9 @@ fitBaselinePreprocessor <- function(trainData, intercept = TRUE, args) {
   xFeatures <- xTrain[, featureCols, drop = FALSE]
   nTrain <- nrow(xFeatures)
   nnz <- Matrix::colSums(xFeatures != 0)
-  keep <- rep(TRUE, length(featureCols))
-
-  if (isTRUE(settings$removeRedundancy)) {
-    xMeans <- Matrix::colMeans(xFeatures)
-    x2Means <- Matrix::colMeans(xFeatures^2)
-    variances <- pmax(x2Means - xMeans^2, 0)
-    keep <- keep & variances > sqrt(.Machine$double.eps)
-  }
-
-  if (is.finite(settings$minFraction) && settings$minFraction > 0) {
-    minCount <- floor(settings$minFraction * nTrain)
-    keep <- keep & nnz >= minCount
-  }
+  selection <- baselineFeatureSelection(nTrain, nnz, Matrix::colMeans(xFeatures),
+    Matrix::colMeans(xFeatures^2), settings)
+  keep <- selection$keep
 
   if (!any(keep)) {
     stop("Baseline preprocessing removed all non-intercept covariates")
@@ -1233,6 +1336,11 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     config = config,
     args = args
   )
+  if (!is.null(config$featureFiltering) &&
+      (!identical(as.character(trainMap$covariateId), config$featureFiltering$audit$covariateId) ||
+       !identical(as.logical(processed$preprocessor$keep), config$featureFiltering$audit$retained))) {
+    stop("Centralized baseline filter differs from the shared training mask")
+  }
   trainData <- processed$trainData
   testData <- processed$testData
   localFits <- list()
@@ -1835,6 +1943,13 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       stringsAsFactors = FALSE
     )
   )
+  filtering <- fit$config$featureFiltering
+  if (!is.null(filtering)) {
+    resultRows$preprocessFingerprint <- filtering$fingerprint
+    resultRows$preprocessMessages <- filtering$communication$messages
+    resultRows$preprocessNumbers <- filtering$communication$numbers
+    resultRows$preprocessElapsedSeconds <- filtering$elapsedSeconds
+  }
   saveModelArtifact(list(
     task = task, fold = fold, featureSet = featureSet, method = method,
     models = list(list(
@@ -1843,6 +1958,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       selectedLambda = fit$selectedLambda %||% fit$config[["lambda", exact = TRUE]]
     )),
     config = fit$config,
+    featureFiltering = filtering,
     provenance = provenance,
     testClientIds = testClientIds,
     roundsCompleted = fit$roundsCompleted,
@@ -1877,6 +1993,13 @@ runComparison <- function(args) {
   dataRoot <- args[["data-root"]] %||% "data"
   resultDirectory <- args[["result-directory"]] %||% "results/comparisonMatrix"
   dir.create(resultDirectory, recursive = TRUE, showWarnings = FALSE)
+  preprocessMode <- federatedPreprocessMode(args)
+  auditOnly <- logicalArg(argValue(args, "preprocessing-audit-only"), FALSE)
+  referenceDirectory <- argValue(args, "preprocessing-reference-directory")
+  if ((auditOnly || !is.null(referenceDirectory)) && preprocessMode != "baseline") {
+    stop("Preprocessing audit/reference requires --federated-preprocess=baseline")
+  }
+  guardPreprocessingSettings(args, resultDirectory)
   resultFile <- file.path(resultDirectory, "comparison_results.csv")
   summaryFile <- file.path(resultDirectory, "summary_by_method.csv")
   diagnosticsFile <- file.path(resultDirectory, "diagnostics.csv")
@@ -1979,7 +2102,7 @@ runComparison <- function(args) {
         function(featureSet) isCompletedDiagnostic(diagnostics, task, fold, featureSet),
         logical(1)
       )
-      if (all(pending$done) && all(diagnosticsDone)) {
+      if (!auditOnly && all(pending$done) && all(diagnosticsDone)) {
         message(sprintf(
           "[%s] skip task=%s fold=%s: all requested methods and diagnostics are already complete",
           format(Sys.time(), "%H:%M:%S"), task, fold
@@ -2001,10 +2124,35 @@ runComparison <- function(args) {
           clTrain <- FederatedLearning::clusterInit(trainHosts, trainPaths, mirai = mirai)
           trainPopSizes <- FederatedLearning::clusterLoadData(clTrain, trainPaths, popSettings)
 
-          clTest <- FederatedLearning::clusterInit(testHosts, testPaths, mirai = mirai)
-          FederatedLearning::clusterLoadData(clTest, testPaths, popSettings)
+          if (!auditOnly) {
+            clTest <- FederatedLearning::clusterInit(testHosts, testPaths, mirai = mirai)
+            FederatedLearning::clusterLoadData(clTest, testPaths, popSettings)
+          }
 
           for (featureSet in featureSets) {
+            filtering <- NULL
+            if (preprocessMode == "baseline") {
+              filterConfig <- methodConfig("PooledLasso", featureSet, args)
+              for (method in methods) for (cfg in methodConfigGrid(method, featureSet, args)) {
+                if (!identical(preprocessingMatrixSettings(cfg), preprocessingMatrixSettings(filterConfig))) {
+                  stop("Matched preprocessing requires the same matrix settings for all methods/configs")
+                }
+              }
+              filtering <- fitFederatedPreprocessor(clTrain, filterConfig, args)
+              referenceError <- NULL
+              filtering$referenceStatus <- tryCatch(checkPreprocessingReference(filtering,
+                referenceDirectory, task, fold, featureSet, clientIds[trainIds],
+                clientIds[testIds], popSettings, filterConfig), error = function(e) {
+                  referenceError <<- conditionMessage(e)
+                  "mismatch"
+                })
+              filtering <- savePreprocessingAudit(filtering,
+                file.path(resultDirectory, "preprocessing"), task, fold, featureSet,
+                clientIds[trainIds], clientIds[testIds], popSettings)
+              if (!is.null(referenceError)) stop(referenceError)
+              if (auditOnly) next
+              if (!nrow(filtering$mapping)) stop("Matched preprocessing removed all non-intercept covariates")
+            }
             featureDebugConfig <- NULL
             if (!is.null(debugDirectory)) {
               featureDebugConfig <- methodConfig(methods[[1]], featureSet, args)
@@ -2016,6 +2164,10 @@ runComparison <- function(args) {
                 analysisIds = featureDebugConfig$analysisIds
               )
               featureDebugConfig$p <- nrow(featureDebugConfig$mapping)
+              if (!is.null(filtering)) {
+                featureDebugConfig$mapping <- filtering$mapping
+                featureDebugConfig$p <- nrow(filtering$mapping)
+              }
               collectDebugDiagnostics(
                 cl = clTrain,
                 config = featureDebugConfig,
@@ -2060,6 +2212,11 @@ runComparison <- function(args) {
               configs <- methodConfigGrid(method, featureSet, args)
               configs <- lapply(configs, function(config) {
                 config$trainClientPaths <- trainPaths
+                if (!is.null(filtering)) {
+                  config$mapping <- filtering$mapping
+                  config$p <- nrow(filtering$mapping)
+                  config$featureFiltering <- filtering
+                }
                 if (!is.null(debugDirectory) && method %in% c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")) {
                   config$adapCvDiagnostics <- TRUE
                 }
@@ -2237,6 +2394,10 @@ runComparison <- function(args) {
               analysisIds = diagConfig$analysisIds
             )
             diagConfig$p <- nrow(diagConfig$mapping)
+            if (!is.null(filtering)) {
+              diagConfig$mapping <- filtering$mapping
+              diagConfig$p <- nrow(filtering$mapping)
+            }
             FederatedLearning::clusterCreateMatrices(clTrain, diagConfig)
             diagRows <- FederatedLearning::clusterDiagnostics(clTrain, diagConfig)
             diagRows$task <- task
@@ -2258,6 +2419,7 @@ runComparison <- function(args) {
     }
   }
 
+  if (auditOnly) return(invisible(list(preprocessingDirectory = file.path(resultDirectory, "preprocessing"))))
   allRows <- if (nonEmptyRows(rows)) addPooledObjectiveGap(rows) else data.frame()
   summaryRows <- summarizeResults(allRows)
   utils::write.csv(allRows, resultFile, row.names = FALSE)
