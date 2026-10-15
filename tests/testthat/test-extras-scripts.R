@@ -55,17 +55,6 @@ test_that("fetch task helpers expand cohort ranges and keep one row per cohort",
 
   expect_equal(fetchEnv$csvValues("100:102,200"), c("100", "101", "102", "200"))
   expect_equal(fetchEnv$defaultPhenotypeLibraryIds(), 1152:1215)
-  json <- fetchEnv$cohortJson(list(expression = list(ConceptSets = list())))
-  expect_type(json, "character")
-  expect_false(inherits(json, "json"))
-
-  json <- fetchEnv$cohortJson(list(expression = list(
-    PrimaryCriteria = list(ObservationWindow = c(PriorDays = 0, PostDays = 0))
-  )))
-  expect_match(json, '"ObservationWindow"\\s*:\\s*\\{')
-  expect_match(json, '"PriorDays"\\s*:\\s*0')
-  expect_match(json, '"PostDays"\\s*:\\s*0')
-  expect_false(grepl('"ObservationWindow"\\s*:\\s*\\[', json))
   expect_equal(fetchEnv$qualifiedTableName("scratch.username", "cohort"), "scratch.username.cohort")
   expect_equal(fetchEnv$qualifiedTableName("scratch.username", "other.cohort"), "other.cohort")
 
@@ -89,6 +78,23 @@ test_that("fetch task helpers expand cohort ranges and keep one row per cohort",
   )
   expect_equal(nrow(cohortRow), 1L)
   expect_equal(cohortRow$sql, "select 1\nselect 2")
+})
+
+test_that("cohort JSON preserves named observation-window fields", {
+  skip_if_not_installed("RJSONIO")
+  fetchEnv <- loadFetchEnv()
+
+  json <- fetchEnv$cohortJson(list(expression = list(ConceptSets = list())))
+  expect_type(json, "character")
+  expect_false(inherits(json, "json"))
+
+  json <- fetchEnv$cohortJson(list(expression = list(
+    PrimaryCriteria = list(ObservationWindow = c(PriorDays = 0, PostDays = 0))
+  )))
+  expect_match(json, '"ObservationWindow"\\s*:\\s*\\{')
+  expect_match(json, '"PriorDays"\\s*:\\s*0')
+  expect_match(json, '"PostDays"\\s*:\\s*0')
+  expect_false(grepl('"ObservationWindow"\\s*:\\s*\\[', json))
 })
 
 test_that("Circe cohort SQL qualifies target cohort table", {
@@ -227,6 +233,7 @@ test_that("keyring resolvers can be used inside connection profiles", {
 
 test_that("WebAPI auth supports db credentials resolved from keyring", {
   skip_if_not_installed("keyring")
+  skip_if_not_installed("ROhdsiWebApi")
   fetchEnv <- loadFetchEnv()
 
   captured <- NULL
@@ -270,6 +277,7 @@ test_that("WebAPI auth supports db credentials resolved from keyring", {
 })
 
 test_that("WebAPI auth supports bearer token headers", {
+  skip_if_not_installed("ROhdsiWebApi")
   fetchEnv <- loadFetchEnv()
 
   captured <- NULL
