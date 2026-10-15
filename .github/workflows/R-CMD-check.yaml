@@ -58,6 +58,15 @@ jobs:
             Penncil/pda@${{ env.FEDERATEDLEARNING_PDA_REF }}
           needs: check
 
+      - name: Test package and scripts from source tree
+        shell: Rscript {0}
+        run: |
+          status <- system2(file.path(R.home("bin"), "R"), c("CMD", "INSTALL", "."))
+          if (status != 0L) stop("Package installation failed")
+          library(FederatedLearning)
+          testthat::test_local(".", load_package = "installed", reporter = "summary",
+                               stop_on_failure = TRUE)
+
       - uses: r-lib/actions/check-r-package@v2
         with:
           args: 'c("--no-manual", "--no-build-vignettes")'
