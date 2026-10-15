@@ -119,7 +119,7 @@ Rscript extras/runComparisonMatrix.R \
   --data-root=data \
   --tasks=taskA,taskB \
   --feature-sets=ageSex,ageSexPhenotypes \
-  --methods=DualAvg,ODAL,ADAP_PDA,ADAP1,ADAPDiag \
+  --methods=DualAvg,ODAL,ADAP,ADAP1,ADAPDiag \
   --client-ids=site1,site2,site3 \
   --folds=1:3 \
   --result-directory=results/comparisonMatrix
@@ -197,13 +197,18 @@ Registered algorithm names are passed to `fitFederated(algorithm = ...)`.
 | `DualAvg` | C++ implementation of distributed dual averaging for L1-regularized logistic regression. | Server broadcasts dual state; clients return dual-state deltas. |
 | `DualAvgCpp` | Explicit alias for the C++ dual-averaging implementation. | Same high-level payload as `DualAvg`. |
 | `DualAvgR` | R reference implementation used for parity testing. | Same high-level payload as `DualAvg`. |
-| `ODAL` | One-shot distributed approximation using local fits, gradients, Hessians, and a lead-site surrogate solve. | Local coefficients, gradients, full Hessians, final lead-site coefficients. |
-| `ADAP` | Earlier ADAP-style surrogate implementation. | Local lasso estimates and derivative summaries. |
-| `ADAP_PDA` | ADAP implementation aligned closely with the `pda` package full-Hessian method. | Local estimates, gradients, full Hessians, lead-site surrogate fit. |
+| `ODAL`, `ODAL2` | Unpenalized second-order surrogate, fitted with `optim` (BFGS by default). | Local coefficients, gradients, full Hessians, final lead-site coefficients. |
+| `ODAL1` | Unpenalized first-order surrogate. | Local coefficients, gradients, final lead-site coefficients. |
+| `ADAP`, `ADAP2` | Full-Hessian ADAP surrogate with quadratic coordinate descent and additional numerical acceptance checks. | Local lasso estimates, gradients, full Hessians, lead-site surrogate fit. |
+| `ADAP_PDA` | Legacy full-Hessian correction with simultaneous diagonal proximal updates, not the pinned upstream PDA coordinate-descent solver. | Local estimates, gradients, full Hessians, lead-site surrogate fit. |
 | `ADAP1` | First-order ADAP-style variant without Hessian transmission. | Local estimates, gradients, lead-site surrogate fit. |
-| `ADAPDiag` | Reduced ADAP variant using diagonal Hessian information when configured. | Local estimates, gradients, optional Hessian diagonals, lead-site surrogate fit. |
+| `ADAPDiag` | Diagonal-correction extension, retaining full lead-site curvature by default. | Local estimates, gradients, Hessian diagonals, lead-site surrogate fit. |
 
 Several PDA-style methods finish in a small number of phases rather than many communication rounds. Dual averaging usually uses many more rounds but smaller per-round payloads.
+
+These implementations do not reproduce every upstream initialization, tuning or
+acceptance rule. See the [surrogate fidelity audit](extras/surrogateFidelity.md)
+for the pinned reference, actual method dispatch and cross-validation boundaries.
 
 ## Feature Sets
 

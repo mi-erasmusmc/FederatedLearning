@@ -12,7 +12,7 @@ test_that("ADAP reduced variants are registered", {
   expect_type(FederatedLearning:::.getAlgorithm("ODAL2"), "list")
 })
 
-test_that("ADAP_PDA uses the public PDA full-quadratic coordinate descent solver", {
+test_that("ADAP_PDA selects the legacy pda solve style", {
   state <- FederatedLearning:::.serverInitPdaAdapPda(list(p = 3L))
   expect_equal(state$adapSolveStyle, "pda")
   expect_equal(state$adapMethodName, "ADAP_PDA")
@@ -681,7 +681,7 @@ test_that("ADAP reduced phase aggregation distinguishes first-order and diagonal
   expect_equal(diag1$report$communicationNumbers, length(g1) * 2 + length(h1) * 2)
 })
 
-test_that("ADAP_PDA public solver uses full quadratic lambda range and coordinate descent", {
+test_that("ADAP full-quadratic solver uses its quadratic lambda range and coordinate descent", {
   set.seed(11)
   x <- Matrix::Matrix(cbind(1, matrix(rnorm(60), nrow = 15)), sparse = TRUE)
   y <- rbinom(15, 1, 0.45)

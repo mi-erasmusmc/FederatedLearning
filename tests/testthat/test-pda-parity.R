@@ -68,6 +68,7 @@ test_that("ADAP logistic primitives match the official nested functions", {
 })
 
 test_that("ADAP initialization matches official PDA with matched standardization", {
+  skip_if_not_installed("glmnet")
   initialize <- officialPda("ADAP.initialize")
   set.seed(103)
   x <- sweep(matrix(rnorm(600), nrow = 200), 2, c(0.2, 1, 5), "*")
@@ -86,6 +87,68 @@ test_that("ADAP initialization matches official PDA with matched standardization
     expect_equal(ours$bhat, reference$bhat_i, tolerance = 1e-6)
     expect_equal(ours$n, reference$site_size)
   }
+})
+
+test_that("ADAP local initialization defaults to unstandardized glmnet with ten folds", {
+  skip_if_not_installed("glmnet")
+  set.seed(111)
+  x <- sweep(matrix(rnorm(450), nrow = 150), 2, c(.2, 1, 5), "*")
+  y <- rbinom(150, 1, stats::plogis(-.5 + 2 * x[, 1] - x[, 2]))
+  set.seed(112)
+  expected <- glmnet::cv.glmnet(x, y, family = "binomial", alpha = 1,
+    intercept = TRUE, standardize = FALSE, nfolds = 10)
+  set.seed(112)
+  actual <- .fitPdaStyleLocalLasso(x, cbind(1, x), y, list())
+  expect_equal(actual$beta, as.numeric(stats::coef(expected, s = "lambda.min")), tolerance = 1e-12)
+  expect_equal(actual$lambda, expected$lambda.min, tolerance = 1e-12)
+  expect_identical(formals(glmnet::glmnet)$standardize, TRUE)
+  expect_equal(formals(glmnet::cv.glmnet)$nfolds, 10)
+})
+
+test_that("leaveValOut matches the pinned PDA inner-fold quadratic at fixed initialization", {
+  estimate <- officialPda("ADAP.estimate")
+  reference <- pdaAdapFunctions()
+  foldLoops <- Filter(function(expr) {
+    is.call(expr) && identical(expr[[1]], as.name("for")) &&
+      identical(expr[[2]], as.name("f"))
+  }, as.list(body(estimate))[-1L])
+  expect_length(foldLoops, 1L)
+  statements <- as.list(foldLoops[[1]][[4]])[-1L]
+  x <- cbind(1, seq(-1, 1, length.out = 12), rep(c(0, 1, 2), 4))
+  y <- rep(c(0, 1, 0, 0), 3)
+  lead <- 1:8
+  validation <- c(2L, 5L, 7L)
+  train <- setdiff(lead, validation)
+  betaBar <- c(-.7, .2, -.1)
+  betaLead <- c(-.4, .1, .05)
+  global <- .logisticNegGradientHessian(betaBar, x, y)
+  list2env(list(Xf = x[train, ], Yf = matrix(y[train]),
+    Xfdel = x[validation, ], Yfdel = matrix(y[validation]),
+    betabar = betaBar, betatilde = betaLead, N = nrow(x),
+    ndel = length(validation), p = ncol(x),
+    L_all = t(global$gradient), L2_all = as.vector(global$hessian)), reference)
+  # Evaluate the original upstream fold expressions, not a rewritten formula.
+  for (name in c("L2_allf", "Bf", "atilde_f")) {
+    expression <- Filter(function(expr) {
+      is.call(expr) && identical(expr[[1]], as.name("<-")) &&
+        identical(expr[[2]], as.name(name))
+    }, statements)
+    expect_length(expression, 1L)
+    eval(expression[[1]], reference)
+  }
+  local_mocked_bindings(
+    .pdaAdapSurrogateLeadCv = function(..., makeFoldInfo) {
+      makeFoldInfo(list(idxVal = validation, idxTr = train, nVal = length(validation)))
+    },
+    .package = "FederatedLearning"
+  )
+  fold <- .pdaAdapLeadCv(x[lead, ], y[lead], betaLead, betaBar,
+    global$gradient, global$hessian, lambdaSeq = .1, totalN = nrow(x))
+  actual <- .adapSurrogateComponents(betaLead, betaBar, x[train, ], y[train],
+    fold$gradTrainGlobal, fold$hessTrainGlobal)
+  expect_equal(unname(fold$hessTrainGlobal), matrix(reference$L2_allf, 3), tolerance = 1e-12)
+  expect_equal(unname(actual$B), unname(reference$Bf), tolerance = 1e-12)
+  expect_equal(actual$aTilde, as.numeric(reference$atilde_f), tolerance = 1e-12)
 })
 
 test_that("ADAP summaries use official site initialization files and sample-size weights", {
