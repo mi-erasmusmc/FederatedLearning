@@ -21,6 +21,17 @@ proxL1 <- function(z, alphaLambda, intercept = TRUE) {
   }
 }
 
+.logisticResiduals <- function(eta, y) {
+  residual <- stats::plogis(eta) - y
+  cases <- y == 1
+  residual[cases] <- -stats::plogis(-eta[cases])
+  residual
+}
+
+.logisticCurvature <- function(eta) {
+  stats::plogis(eta) * stats::plogis(-eta)
+}
+
 #' Stochastic gradient of logistic loss
 #' @param weights   numeric vector of parameters
 #' @param xMatrix   numeric matrix (n by p)
@@ -33,9 +44,7 @@ gradLogistic <- function(weights, xMatrix, yLabels) {
     return(as.numeric(logisticGradientCpp(.asDgCMatrix(xMatrix), weights, yLabels, eps = 0)))
   }
   eta <- as.numeric(xMatrix %*% weights)
-  res <- stats::plogis(eta) - yLabels
-  cases <- yLabels == 1
-  res[cases] <- -stats::plogis(-eta[cases])
+  res <- .logisticResiduals(eta, yLabels)
   as.numeric(crossprod(xMatrix, res)) / length(yLabels)
 }
 

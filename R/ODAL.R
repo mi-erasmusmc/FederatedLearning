@@ -210,6 +210,10 @@
     if (identical(serverBroadcast$odalVariant %||% .odalVariant(config), "second")) {
       out$Hess <- .logisticNegHessian(betaBar, xDesign)
     }
+    # Preserve lead data before the server can reject the aggregated curvature.
+    if (isTRUE(getOption("FederatedLearning.localId", NA_integer_) == serverBroadcast$leadIndex)) {
+      .captureSurrogateLead(config, clientData, serverBroadcast)
+    }
     return(out)
   }
 
@@ -228,6 +232,16 @@
     } else {
       NULL
     }
+    capture <- .surrogateCaptureContext(config, clientData$n)
+    captureExit <- .beginSurrogateCapture(capture, xDesign, y,
+      inputs = list(kind = odalVariant, betaBar = betaBar, betaStart = betaBar,
+        globalGrad = otherGrad, globalHess = otherHess, leadGrad = localGradBar,
+        leadHess = localHessBar, linearCorrection = otherGrad - localGradBar,
+        quadraticCorrection = if (identical(odalVariant, "second")) otherHess - localHessBar else NULL,
+        lambda = 0, leadWeight = 1, linearTermCentered = FALSE),
+      settings = list(method = config$optimMethod %||% "BFGS", maxit = config$optimMaxit %||% 1000L,
+        gradient = "finite_difference", nonfiniteSentinel = .Machine$double.xmax / 1e100))
+    on.exit(.endSurrogateCapture(captureExit, returnValue()), add = TRUE)
     objective <- function(beta) {
       delta <- beta - betaBar
       val <- .negLogLikMean(beta, xDesign, y) +
@@ -327,11 +341,12 @@
         leadHess,
         tau = config$odalCurvatureTau %||% 1e-10
       )
+      state$otherHess <- globalHess
       if (identical(config$odalCurvatureAction %||% "report", "fail") &&
           identical(correctionDiagnostics$curvatureStatus, "indefinite")) {
+        .captureSurrogateRejection(config, state, correctionDiagnostics, "negative_C_eigenvalue")
         stop("ODAL2 second-order surrogate has indefinite Hessian correction", call. = FALSE)
       }
-      state$otherHess <- globalHess
       state$curvatureStatus <- correctionDiagnostics$curvatureStatus
       state$correctionEigenMin <- correctionDiagnostics$correctionEigenMin
       state$correctionEigenMax <- correctionDiagnostics$correctionEigenMax

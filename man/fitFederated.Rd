@@ -22,7 +22,12 @@ creation. Dual evaluations arrive in the next existing objective exchange;
 the best completed lower bound is valid for later iterates of the same fit.
 Requires binary outcomes, positive lambda, and objective monitoring. Adds
 summary payloads; row-level residuals remain on workers. The gap can be
-conservative, especially when the best completed candidate is old.}
+conservative, especially when the best completed candidate is old.
+For ODAL1/2 and exact ADAP1/2/Diag, \code{surrogateCaptureDirectory} opts into
+private diagnostic snapshots in a new subdirectory per fit. These include
+patient-level lead matrices and labels and must remain inside the data
+environment, outside shared results. Intended for local-worker simulation.
+No extra client exchanges or changes to solver acceptance are introduced.}
 
 \item{verbose}{if TRUE, print optimization progress}
 }

@@ -187,7 +187,8 @@ clusterCreateMatrices <- function(cl, config) {
 
 .evaluateBinaryMetrics <- function(y, preds, w, threshold = 1e-4) {
   aucVal <- if (length(unique(y)) == 2) {
-    as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
+    as.numeric(pROC::roc(response = y, predictor = preds,
+      levels = c(0, 1), direction = "<", quiet = TRUE)$auc)
   } else {
     NA_real_
   }

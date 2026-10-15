@@ -28,23 +28,23 @@ cyclopsGradientObjectiveCpp <- function(x, beta, y) {
     .Call(`_FederatedLearning_cyclopsGradientObjectiveCpp`, x, beta, y)
 }
 
-logisticGradientCpp <- function(x, beta, y, eps = 1e-8) {
+logisticGradientCpp <- function(x, beta, y, eps = 0) {
     .Call(`_FederatedLearning_logisticGradientCpp`, x, beta, y, eps)
 }
 
-logisticGradientHessianDiagCpp <- function(x, beta, y, eps = 1e-8) {
+logisticGradientHessianDiagCpp <- function(x, beta, y, eps = 0) {
     .Call(`_FederatedLearning_logisticGradientHessianDiagCpp`, x, beta, y, eps)
 }
 
-logisticHessianDiagCpp <- function(x, beta, eps = 1e-8) {
+logisticHessianDiagCpp <- function(x, beta, eps = 0) {
     .Call(`_FederatedLearning_logisticHessianDiagCpp`, x, beta, eps)
 }
 
-logisticHessianCpp <- function(x, beta, eps = 1e-8) {
+logisticHessianCpp <- function(x, beta, eps = 0) {
     .Call(`_FederatedLearning_logisticHessianCpp`, x, beta, eps)
 }
 
-logisticGradientHessianCpp <- function(x, beta, y, eps = 1e-8) {
+logisticGradientHessianCpp <- function(x, beta, y, eps = 0) {
     .Call(`_FederatedLearning_logisticGradientHessianCpp`, x, beta, y, eps)
 }
 
@@ -52,15 +52,15 @@ quadraticLassoCdCpp <- function(aTilde, bMatrix, betaInit, lambda, maxIter = 100
     .Call(`_FederatedLearning_quadraticLassoCdCpp`, aTilde, bMatrix, betaInit, lambda, maxIter, tol, penalizeNullable, initialStepBound, minStep, maxBacktracks)
 }
 
-adapFullSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, leadWeight = 1.0, proxRho = 0.0, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {
+adapFullSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, leadWeight = 1.0, proxRho = 0.0, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 0, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {
     .Call(`_FederatedLearning_adapFullSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, globalHess, gradBar, hBar, lambda, leadWeight, proxRho, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks)
 }
 
-adapFirstSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, gradBar, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {
+adapFirstSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, gradBar, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 0, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {
     .Call(`_FederatedLearning_adapFirstSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, gradBar, lambda, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks)
 }
 
-adapDiagSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, globalHessDiag, gradBar, hBarDiag, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 1e-8, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {
+adapDiagSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, globalHessDiag, gradBar, hBarDiag, lambda, maxOuter = 100L, maxInner = 100L, tol = 1e-5, eps = 0, initialStepBound = 1.0, minStep = 1e-8, maxBacktracks = 25L) {
     .Call(`_FederatedLearning_adapDiagSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, globalHessDiag, gradBar, hBarDiag, lambda, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks)
 }
 

@@ -14,6 +14,11 @@
 #'   Requires binary outcomes, positive lambda, and objective monitoring. Adds
 #'   summary payloads; row-level residuals remain on workers. The gap can be
 #'   conservative, especially when the best completed candidate is old.
+#'   For ODAL1/2 and exact ADAP1/2/Diag, `surrogateCaptureDirectory` opts into
+#'   private diagnostic snapshots in a new subdirectory per fit. These include
+#'   patient-level lead matrices and labels and must remain inside the data
+#'   environment, outside shared results. Intended for local-worker simulation.
+#'   No extra client exchanges or changes to solver acceptance are introduced.
 #' @param verbose      if TRUE, print optimization progress
 #' @return A fitted model list. KKT safeguarding adds `converged`, `stopReason`,
 #'   `kktMaxAbs`, `kktChecks`, and a per-check `kktHistory` data frame.
@@ -102,6 +107,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   if (is.null(config[["p"]])) {
     config[["p"]] <- nrow(globalMap)
   }
+  config <- .prepareSurrogateCapture(config, algorithm)
   clusterCreateMatrices(cl, config)
   parallel::clusterApply(
     cl,
@@ -335,6 +341,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
       clientUpdate(serverBroadcast = serverState)
     )
     # step 2: server round
+    .captureSurrogateRound(config, serverState, report, r)
     srv <- algo$serverRound(
       serverState = serverState,
       clientReports = report,
