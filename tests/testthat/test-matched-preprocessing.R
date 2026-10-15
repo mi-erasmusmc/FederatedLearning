@@ -171,6 +171,47 @@ test_that("saved pooled masks and population provenance are checked before fitti
   expect_error(env$savePreprocessingAudit(bad, directory, "task", 3, "all", c("a", "b"), "c", population), "audit changed")
 })
 
+test_that("reference population checks accept numeric storage differences but reject value changes", {
+  env <- preprocessingRunner()
+  f <- preprocessingFixture()
+  args <- list("baseline-preprocess-min-fraction" = "0.2")
+  p <- preprocessorFromSummaries(lapply(f$clients, trainingFeatureSummary, intercept = TRUE),
+    f$mapping, env$baselinePreprocessSettings(args))
+  cfg <- list(mapType = "union", intercept = TRUE)
+  population <- structure(list(riskWindowStart = 1L, riskWindowEnd = 30,
+    removeSubjectsWithPriorOutcome = TRUE), class = "populationSettings")
+  artifact <- list(task = "task", fold = 3L, featureSet = "all", method = "PooledLasso",
+    originalMapping = f$mapping, preprocessing = env$fitBaselinePreprocessor(f$clients, TRUE, args),
+    populationSettings = population, config = cfg,
+    trainClientIds = c("a", "b"), testClientIds = "c", trainingSampleSizes = c(a = 3, b = 7),
+    models = list(list(coefficients = env$coefficientTable(c(-1, 0.2, 0, 0.1), p$mapping, TRUE))))
+  directory <- tempfile()
+  dir.create(directory)
+  on.exit(unlink(directory, recursive = TRUE), add = TRUE)
+  rows <- data.frame(task = "task", fold = 3, featureSet = "all", method = "PooledLasso", auc = 0.7)
+  rows <- env$saveModelArtifact(artifact, rows, file.path(directory, "models"))
+  write.csv(rows, file.path(directory, "comparison_results.csv"), row.names = FALSE)
+  verify <- function(pop) env$checkPreprocessingReference(p, directory, "task", 3,
+    "all", c("a", "b"), "c", pop, cfg)
+
+  reconstructed <- population
+  reconstructed$riskWindowStart <- 1
+  reconstructed$riskWindowEnd <- 30L
+  expect_identical(verify(reconstructed), "matched")
+  for (end in c(365, 30 + 1e-10, NA_real_)) {
+    changed <- reconstructed
+    changed$riskWindowEnd <- end
+    expect_error(verify(changed), "population")
+  }
+  changed <- reconstructed
+  changed$removeSubjectsWithPriorOutcome <- FALSE
+  expect_error(verify(changed), "population")
+  expect_error(verify(unclass(reconstructed)), "population")
+  changed <- reconstructed
+  changed$riskWindowStart <- NULL
+  expect_error(verify(changed), "population")
+})
+
 test_that("audit-only runner never loads held-out data or invokes fitters", {
   skip_if_not_installed("PatientLevelPrediction")
   env <- preprocessingRunner()
