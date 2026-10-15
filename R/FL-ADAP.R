@@ -32,16 +32,15 @@
   if (inherits(xDesign, "sparseMatrix")) {
     return(as.numeric(logisticGradientCpp(.asDgCMatrix(xDesign), beta, y)))
   }
-  pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
-  as.numeric(Matrix::crossprod(xDesign, pVec - y)) / length(y)
+  residual <- .logisticResiduals(as.numeric(xDesign %*% beta), y)
+  as.numeric(Matrix::crossprod(xDesign, residual)) / length(y)
 }
 
 .logisticNegHessian <- function(beta, xDesign) {
   if (inherits(xDesign, "sparseMatrix")) {
     return(as.matrix(logisticHessianCpp(.asDgCMatrix(xDesign), beta)))
   }
-  pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
-  wDiag <- pVec * (1 - pVec)
+  wDiag <- .logisticCurvature(as.numeric(xDesign %*% beta))
   as.matrix(Matrix::crossprod(xDesign, Matrix::Diagonal(x = wDiag) %*% xDesign)) / nrow(xDesign)
 }
 
@@ -50,9 +49,9 @@
     out <- logisticGradientHessianCpp(.asDgCMatrix(xDesign), beta, y)
     return(list(gradient = as.numeric(out$gradient), hessian = as.matrix(out$hessian)))
   }
-  pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
-  residual <- pVec - y
-  wDiag <- pVec * (1 - pVec)
+  eta <- as.numeric(xDesign %*% beta)
+  residual <- .logisticResiduals(eta, y)
+  wDiag <- .logisticCurvature(eta)
   list(
     gradient = as.numeric(Matrix::crossprod(xDesign, residual)) / length(y),
     hessian = as.matrix(Matrix::crossprod(xDesign, Matrix::Diagonal(x = wDiag) %*% xDesign)) / nrow(xDesign)
@@ -63,8 +62,7 @@
   if (inherits(xDesign, "sparseMatrix")) {
     return(as.numeric(logisticHessianDiagCpp(.asDgCMatrix(xDesign), beta)))
   }
-  pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
-  wDiag <- pVec * (1 - pVec)
+  wDiag <- .logisticCurvature(as.numeric(xDesign %*% beta))
   as.numeric(Matrix::colSums((xDesign^2) * wDiag)) / nrow(xDesign)
 }
 
@@ -73,9 +71,9 @@
     out <- logisticGradientHessianDiagCpp(.asDgCMatrix(xDesign), beta, y)
     return(list(gradient = as.numeric(out$gradient), hessianDiag = as.numeric(out$hessianDiag)))
   }
-  pVec <- pmin(pmax(stats::plogis(as.numeric(xDesign %*% beta)), 1e-8), 1 - 1e-8)
-  residual <- pVec - y
-  wDiag <- pVec * (1 - pVec)
+  eta <- as.numeric(xDesign %*% beta)
+  residual <- .logisticResiduals(eta, y)
+  wDiag <- .logisticCurvature(eta)
   list(
     gradient = as.numeric(Matrix::crossprod(xDesign, residual)) / length(y),
     hessianDiag = as.numeric(Matrix::colSums((xDesign^2) * wDiag)) / nrow(xDesign)
@@ -97,7 +95,8 @@
     return(NA_real_)
   }
   preds <- stats::plogis(as.numeric(xDesign %*% beta))
-  as.numeric(pROC::roc(response = y, predictor = preds, quiet = TRUE)$auc)
+  as.numeric(pROC::roc(response = y, predictor = preds,
+    levels = c(0, 1), direction = "<", quiet = TRUE)$auc)
 }
 
 .adapRangeStats <- function(x, prefix) {
@@ -1641,10 +1640,9 @@
         tol = tol,
         ridge = ridge,
         betaInit = warmStarts[[fold]],
-        returnDetails = collectDiagnostics
+        returnDetails = TRUE
       )
       fit <- .adapFitBeta(fitObj)
-      warmStarts[[fold]] <- fit
       valStats <- if (.adapFitFailed(fitObj)) {
         .adapFailedValidationStats(selectionMetric)
       } else {
@@ -1655,7 +1653,12 @@
           metric = selectionMetric
         )
       }
-      foldLoss[fold] <- unname(valStats["score"])
+      foldLoss[fold] <- if (isTRUE(as.logical(valStats["scoreFinite"]))) {
+        warmStarts[[fold]] <- fit
+        unname(valStats["score"])
+      } else {
+        NA_real_
+      }
       if (isTRUE(collectDiagnostics)) {
         leadTerms <- if (isTRUE(useFull)) {
           .logisticNegGradientHessian(betaBar, xDesign[idxTr, , drop = FALSE], y[idxTr])
@@ -1667,7 +1670,7 @@
         } else {
           .adapRangeStats(globalHess - leadTerms$hessianDiag, "hCorrection")
         }
-        diagnosticRows[[length(diagnosticRows) + 1L]] <<- data.frame(
+        diagnosticRows[[length(diagnosticRows) + 1L]] <- data.frame(
           lambda = lambdaSeq[li],
           lambdaKey = format(lambdaSeq[li], digits = 17, scientific = TRUE),
           innerFold = fold,
@@ -1685,9 +1688,12 @@
         )
       }
     }
-    scores[li] <- mean(foldLoss, na.rm = TRUE)
+    scores[li] <- mean(foldLoss)
   }
   idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
+  if (is.na(idx)) {
+    stop("ADAP_PDA lambda CV failed: no valid candidate across all folds", call. = FALSE)
+  }
   list(
     lambda = lambdaSeq[idx],
     scores = scores,

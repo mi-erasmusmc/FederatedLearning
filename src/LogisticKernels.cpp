@@ -25,6 +25,24 @@ static Eigen::ArrayXd clipped_probabilities(const Eigen::VectorXd& eta,
   return p;
 }
 
+static Eigen::VectorXd logistic_residuals(const Eigen::VectorXd& eta,
+                                         const Eigen::VectorXd& y, double eps) {
+  if (eps == 0.0) return fl::logisticResiduals(eta, y);
+  return (clipped_probabilities(eta, eps) - y.array()).matrix();
+}
+
+static Eigen::ArrayXd logistic_curvature(const Eigen::VectorXd& eta, double eps) {
+  if (eps != 0.0) {
+    const Eigen::ArrayXd p = clipped_probabilities(eta, eps);
+    return p * (1.0 - p);
+  }
+  Eigen::ArrayXd weights(eta.size());
+  for (int i = 0; i < eta.size(); ++i) {
+    weights[i] = fl::logisticCurvature(eta[i]);
+  }
+  return weights;
+}
+
 // Dual feasibility involves subtracting class totals much larger than lambda.
 struct CompensatedSum {
   double sum = 0.0;
@@ -153,7 +171,7 @@ double cyclopsGradientObjectiveCpp(const Eigen::Map<Eigen::SparseMatrix<double> 
 Eigen::VectorXd logisticGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                                     const Eigen::VectorXd& beta,
                                     const Eigen::VectorXd& y,
-                                    double eps = 1e-8) {
+                                    double eps = 0) {
   if (x.cols() != beta.size()) {
     stop("logisticGradientCpp dimension mismatch: xMatrix has %d columns but weights has length %d",
          static_cast<int>(x.cols()), static_cast<int>(beta.size()));
@@ -165,14 +183,7 @@ Eigen::VectorXd logisticGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double>
   const int n = y.size();
   if (n == 0) stop("logisticGradientCpp requires nonempty inputs");
   Eigen::VectorXd eta = x * beta;
-  Eigen::VectorXd residual;
-  if (eps == 0.0) {
-    residual = fl::logisticResiduals(eta, y);
-  } else {
-    // PDA-specific callers retain their explicit probability-floor convention.
-    Eigen::ArrayXd p = clipped_probabilities(eta, eps);
-    residual = (p - y.array()).matrix();
-  }
+  Eigen::VectorXd residual = logistic_residuals(eta, y, eps);
   return (x.transpose() * residual) / static_cast<double>(n);
 }
 
@@ -180,7 +191,7 @@ Eigen::VectorXd logisticGradientCpp(const Eigen::Map<Eigen::SparseMatrix<double>
 List logisticGradientHessianDiagCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                                     const Eigen::VectorXd& beta,
                                     const Eigen::VectorXd& y,
-                                    double eps = 1e-8) {
+                                    double eps = 0) {
   if (x.cols() != beta.size()) {
     stop("logisticGradientHessianDiagCpp dimension mismatch: xMatrix has %d columns but weights has length %d",
          static_cast<int>(x.cols()), static_cast<int>(beta.size()));
@@ -192,10 +203,9 @@ List logisticGradientHessianDiagCpp(const Eigen::Map<Eigen::SparseMatrix<double>
   const int n = y.size();
   const int pDim = x.cols();
   Eigen::VectorXd eta = x * beta;
-  Eigen::ArrayXd prob = clipped_probabilities(eta, eps);
-  Eigen::VectorXd residual = (prob - y.array()).matrix();
+  Eigen::VectorXd residual = logistic_residuals(eta, y, eps);
   Eigen::VectorXd gradient = (x.transpose() * residual) / static_cast<double>(n);
-  Eigen::ArrayXd weights = prob * (1.0 - prob);
+  Eigen::ArrayXd weights = logistic_curvature(eta, eps);
   Eigen::VectorXd diag = Eigen::VectorXd::Zero(pDim);
 
   for (int outer = 0; outer < x.outerSize(); ++outer) {
@@ -213,7 +223,7 @@ List logisticGradientHessianDiagCpp(const Eigen::Map<Eigen::SparseMatrix<double>
 // [[Rcpp::export]]
 Eigen::VectorXd logisticHessianDiagCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                                        const Eigen::VectorXd& beta,
-                                       double eps = 1e-8) {
+                                       double eps = 0) {
   if (x.cols() != beta.size()) {
     stop("logisticHessianDiagCpp dimension mismatch: xMatrix has %d columns but weights has length %d",
          static_cast<int>(x.cols()), static_cast<int>(beta.size()));
@@ -221,8 +231,7 @@ Eigen::VectorXd logisticHessianDiagCpp(const Eigen::Map<Eigen::SparseMatrix<doub
   const int n = x.rows();
   const int pDim = x.cols();
   Eigen::VectorXd eta = x * beta;
-  Eigen::ArrayXd prob = clipped_probabilities(eta, eps);
-  Eigen::ArrayXd weights = prob * (1.0 - prob);
+  Eigen::ArrayXd weights = logistic_curvature(eta, eps);
   Eigen::VectorXd diag = Eigen::VectorXd::Zero(pDim);
 
   for (int outer = 0; outer < x.outerSize(); ++outer) {
@@ -236,7 +245,7 @@ Eigen::VectorXd logisticHessianDiagCpp(const Eigen::Map<Eigen::SparseMatrix<doub
 // [[Rcpp::export]]
 Eigen::MatrixXd logisticHessianCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                                    const Eigen::VectorXd& beta,
-                                   double eps = 1e-8) {
+                                   double eps = 0) {
   if (x.cols() != beta.size()) {
     stop("logisticHessianCpp dimension mismatch: xMatrix has %d columns but weights has length %d",
          static_cast<int>(x.cols()), static_cast<int>(beta.size()));
@@ -244,8 +253,7 @@ Eigen::MatrixXd logisticHessianCpp(const Eigen::Map<Eigen::SparseMatrix<double> 
   const int n = x.rows();
   const int pDim = x.cols();
   Eigen::VectorXd eta = x * beta;
-  Eigen::ArrayXd prob = clipped_probabilities(eta, eps);
-  Eigen::VectorXd weights = (prob * (1.0 - prob)).matrix();
+  Eigen::VectorXd weights = logistic_curvature(eta, eps).matrix();
   Eigen::SparseMatrix<double> weightedX = x;
 
   for (int outer = 0; outer < weightedX.outerSize(); ++outer) {
@@ -261,7 +269,7 @@ Eigen::MatrixXd logisticHessianCpp(const Eigen::Map<Eigen::SparseMatrix<double> 
 List logisticGradientHessianCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                                 const Eigen::VectorXd& beta,
                                 const Eigen::VectorXd& y,
-                                double eps = 1e-8) {
+                                double eps = 0) {
   if (x.cols() != beta.size()) {
     stop("logisticGradientHessianCpp dimension mismatch: xMatrix has %d columns but weights has length %d",
          static_cast<int>(x.cols()), static_cast<int>(beta.size()));
@@ -272,10 +280,9 @@ List logisticGradientHessianCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& 
   }
   const int n = y.size();
   Eigen::VectorXd eta = x * beta;
-  Eigen::ArrayXd prob = clipped_probabilities(eta, eps);
-  Eigen::VectorXd residual = (prob - y.array()).matrix();
+  Eigen::VectorXd residual = logistic_residuals(eta, y, eps);
   Eigen::VectorXd gradient = (x.transpose() * residual) / static_cast<double>(n);
-  Eigen::VectorXd weights = (prob * (1.0 - prob)).matrix();
+  Eigen::VectorXd weights = logistic_curvature(eta, eps).matrix();
   Eigen::SparseMatrix<double> weightedX = x;
 
   for (int outer = 0; outer < weightedX.outerSize(); ++outer) {
@@ -310,10 +317,9 @@ static void logistic_gradient_hessian_full(
     Eigen::MatrixXd& hessian) {
   const int n = y.size();
   Eigen::VectorXd eta = x * beta;
-  Eigen::ArrayXd prob = clipped_probabilities(eta, eps);
-  Eigen::VectorXd residual = (prob - y.array()).matrix();
+  Eigen::VectorXd residual = logistic_residuals(eta, y, eps);
   gradient = (x.transpose() * residual) / static_cast<double>(n);
-  Eigen::VectorXd weights = (prob * (1.0 - prob)).matrix();
+  Eigen::VectorXd weights = logistic_curvature(eta, eps).matrix();
   Eigen::SparseMatrix<double> weightedX = x;
 
   for (int outer = 0; outer < weightedX.outerSize(); ++outer) {
@@ -335,10 +341,9 @@ static void logistic_gradient_hessian_diag(
   const int n = y.size();
   const int pDim = x.cols();
   Eigen::VectorXd eta = x * beta;
-  Eigen::ArrayXd prob = clipped_probabilities(eta, eps);
-  Eigen::VectorXd residual = (prob - y.array()).matrix();
+  Eigen::VectorXd residual = logistic_residuals(eta, y, eps);
   gradient = (x.transpose() * residual) / static_cast<double>(n);
-  Eigen::ArrayXd weights = prob * (1.0 - prob);
+  Eigen::ArrayXd weights = logistic_curvature(eta, eps);
   hessianDiag = Eigen::VectorXd::Zero(pDim);
 
   for (int outer = 0; outer < x.outerSize(); ++outer) {
@@ -685,7 +690,7 @@ List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                              int maxOuter = 100,
                              int maxInner = 100,
                              double tol = 1e-5,
-                             double eps = 1e-8,
+                             double eps = 0,
                              double initialStepBound = 1.0,
                              double minStep = 1e-8,
                              int maxBacktracks = 25) {
@@ -775,7 +780,7 @@ List adapFirstSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                               int maxOuter = 100,
                               int maxInner = 100,
                               double tol = 1e-5,
-                              double eps = 1e-8,
+                              double eps = 0,
                               double initialStepBound = 1.0,
                               double minStep = 1e-8,
                               int maxBacktracks = 25) {
@@ -854,7 +859,7 @@ List adapDiagSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
                              int maxOuter = 100,
                              int maxInner = 100,
                              double tol = 1e-5,
-                             double eps = 1e-8,
+                             double eps = 0,
                              double initialStepBound = 1.0,
                              double minStep = 1e-8,
                              int maxBacktracks = 25) {

@@ -914,6 +914,20 @@ test_that("comparison runner AUC handles large held-out sites", {
   expect_equal(runnerEnv$binaryAuc(y, preds), 1)
 })
 
+test_that("baseline and federated AUC use the same fixed event direction", {
+  runnerEnv <- new.env(parent = globalenv())
+  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  y <- c(0, 0, 1, 1)
+  for (eta in list(c(2, 1, -1, -2), c(-2, -1, 1, 2), rep(0, 4), c(0, 1, 1, 1))) {
+    preds <- plogis(eta)
+    reference <- runnerEnv$binaryAuc(y, preds)
+    worker <- FederatedLearning:::.evaluateBinaryMetrics(y, preds, 1)$auc
+    surrogate <- FederatedLearning:::.adapCvMetric(1, matrix(eta, ncol = 1), y, "auc")
+    expect_equal(worker, reference)
+    expect_equal(surrogate, reference)
+  }
+})
+
 test_that("comparison runner does not partial-match lambda-grid-len as fixed lambda", {
   runnerEnv <- new.env(parent = globalenv())
   sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)

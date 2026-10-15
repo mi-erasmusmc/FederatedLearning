@@ -26,6 +26,12 @@ inline Eigen::VectorXd logisticResiduals(const Eigen::VectorXd& eta,
   return residual;
 }
 
+inline double logisticCurvature(double eta) {
+  const double z = std::exp(-std::abs(eta));
+  const double denominator = 1.0 + z;
+  return z / (denominator * denominator);
+}
+
 } // namespace fl
 
 #endif

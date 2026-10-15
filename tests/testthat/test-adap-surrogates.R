@@ -1013,13 +1013,15 @@ test_that("ADAP lead CV can select lambda by AUC", {
     y = y,
     betaBar = betaBar,
     globalGrad = globalGrad,
-    globalHess = globalHess,
+    # A bounded control isolates AUC selection from indefinite-solver failures.
+    globalHess = globalHess + diag(1, ncol(x)),
     lambdaSeq = lambdaSeq,
     foldsK = 3L,
     seed = 22L,
     maxIter = 60L,
     tol = 1e-7,
-    selectionMetric = "auc"
+    selectionMetric = "auc",
+    collectDiagnostics = TRUE
   )
 
   expect_true(firstCv$lambda %in% lambdaSeq)
@@ -1037,6 +1039,7 @@ test_that("ADAP lead CV can select lambda by AUC", {
   expect_gt(max(firstCv$scores[firstCv$valid], na.rm = TRUE), 0.5)
   expect_gt(max(diagCv$scores[diagCv$valid], na.rm = TRUE), 0.5)
   expect_gt(max(pdaCv$scores, na.rm = TRUE), 0.5)
+  expect_true(all(pdaCv$diagnostics$converged == 1))
 })
 
 test_that("ADAP lead CV can use a stratified row cap for large lead sites", {
