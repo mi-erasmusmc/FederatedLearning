@@ -183,11 +183,15 @@ createClientMatrix <- function(plpData, config) {
   n <- nrow(xMatrix)
   moments <- .clientMatrixMoments(xMatrix, intercept = isTRUE(config$intercept))
 
-  list(
+  result <- list(
     xMatrix = xMatrix,
     xMeans = moments$xMeans,
     x2Means = moments$x2Means,
     yLabels = yLabels,
     n = n
   )
+  if (!is.null(config$surrogateCaptureDirectory)) {
+    result$rowId <- plpData$population$rowId[rows %||% seq_len(n)]
+  }
+  result
 }

@@ -1242,12 +1242,27 @@
                                  proxTau = 1e-8,
                                  kktTolerance = 1e-4,
                                  betaAbsThreshold = 1e4,
-                                 etaAbsThreshold = 1e4) {
+                                 etaAbsThreshold = 1e4,
+                                 capture = NULL) {
   strictCorrection <- match.arg(strictCorrection)
+  if (!is.null(capture) && (!identical(strictCorrection, "exact") || proxRho != 0)) {
+    stop("Private capture currently supports the exact, unstabilized ADAP surrogate only")
+  }
   beta <- if (is.null(betaInit)) betaLead else betaInit
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   hBar <- .logisticNegHessian(betaBar, xDesign)
   baseCorrection <- globalHess - leadWeight * hBar
+  captureExit <- .beginSurrogateCapture(capture, xDesign, y,
+    inputs = list(kind = "full", betaBar = betaBar, betaStart = beta, betaLead = betaLead,
+      globalGrad = globalGrad, globalHess = globalHess, leadGrad = gradBar, leadHess = hBar,
+      linearCorrection = globalGrad - leadWeight * gradBar, quadraticCorrection = baseCorrection,
+      lambda = lambda, leadWeight = leadWeight, linearTermCentered = TRUE),
+    settings = list(maxOuter = maxOuter, maxInner = maxInner, tol = tol,
+      cdStepBound = cdStepBound, cdMinStep = cdMinStep, cdMaxBacktracks = cdMaxBacktracks,
+      strictCorrection = strictCorrection, eigToleranceTau = eigToleranceTau,
+      kktTolerance = kktTolerance, betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold, traceDiagnostics = traceDiagnostics))
+  on.exit(.endSurrogateCapture(captureExit, returnValue()), add = TRUE)
   eig <- .adapEigenRange(baseCorrection)
   epsilonEig <- .adapEpsilonEig(globalHess, tau = eigToleranceTau)
   epsilonFloor <- NA_real_
@@ -1715,11 +1730,23 @@
                                            diagToleranceTau = 1e-10,
                                            kktTolerance = 1e-4,
                                            betaAbsThreshold = 1e4,
-                                           etaAbsThreshold = 1e4) {
+                                           etaAbsThreshold = 1e4,
+                                           capture = NULL) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   hBarDiag <- .logisticNegHessianDiag(betaBar, xDesign)
   correctionDiag <- globalHessDiag - hBarDiag
+  captureExit <- .beginSurrogateCapture(capture, xDesign, y,
+    inputs = list(kind = "diag", betaBar = betaBar, betaStart = beta, betaLead = betaLead,
+      globalGrad = globalGrad, globalHessDiag = globalHessDiag, leadGrad = gradBar,
+      leadHessDiag = hBarDiag, linearCorrection = globalGrad - gradBar,
+      quadraticCorrection = correctionDiag, lambda = lambda, leadWeight = 1, linearTermCentered = TRUE),
+    settings = list(maxOuter = maxOuter, maxInner = maxInner, tol = tol,
+      cdStepBound = cdStepBound, cdMinStep = cdMinStep, cdMaxBacktracks = cdMaxBacktracks,
+      diagToleranceTau = diagToleranceTau, kktTolerance = kktTolerance,
+      betaAbsThreshold = betaAbsThreshold, etaAbsThreshold = etaAbsThreshold,
+      traceDiagnostics = traceDiagnostics))
+  on.exit(.endSurrogateCapture(captureExit, returnValue()), add = TRUE)
   epsilonDiag <- diagToleranceTau * max(1, stats::median(abs(globalHessDiag[is.finite(globalHessDiag)]), na.rm = TRUE))
   if (!is.finite(epsilonDiag)) {
     epsilonDiag <- diagToleranceTau
@@ -1955,8 +1982,19 @@
                                            traceContext = list(),
                                            kktTolerance = 1e-4,
                                            betaAbsThreshold = 1e4,
-                                           etaAbsThreshold = 1e4) {
+                                           etaAbsThreshold = 1e4,
+                                           capture = NULL) {
   beta <- if (is.null(betaInit)) betaLead else betaInit
+  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
+  captureExit <- .beginSurrogateCapture(capture, xDesign, y,
+    inputs = list(kind = "first", betaBar = betaBar, betaStart = beta, betaLead = betaLead,
+      globalGrad = globalGrad, leadGrad = gradBar, linearCorrection = globalGrad - gradBar,
+      quadraticCorrection = NULL, lambda = lambda, leadWeight = 1, linearTermCentered = TRUE),
+    settings = list(maxOuter = maxOuter, maxInner = maxInner, tol = tol,
+      cdStepBound = cdStepBound, cdMinStep = cdMinStep, cdMaxBacktracks = cdMaxBacktracks,
+      kktTolerance = kktTolerance, betaAbsThreshold = betaAbsThreshold,
+      etaAbsThreshold = etaAbsThreshold, traceDiagnostics = traceDiagnostics))
+  on.exit(.endSurrogateCapture(captureExit, returnValue()), add = TRUE)
   if (isTRUE(traceDiagnostics)) {
     out <- .fitAdapTraceSurrogate(
       kind = "first",
@@ -1981,7 +2019,7 @@
       xDesign = xDesign,
       y = y,
       globalGrad = globalGrad,
-      gradBar = .logisticNegGradient(betaBar, xDesign, y)
+      gradBar = gradBar
     )
     penalize <- rep(TRUE, length(beta))
     penalize[1] <- FALSE
@@ -1998,7 +2036,6 @@
     return(as.numeric(out$beta))
   }
   if (inherits(xDesign, "sparseMatrix")) {
-    gradBar <- .logisticNegGradient(betaBar, xDesign, y)
     out <- adapFirstSurrogateFitCpp(
       x = .asDgCMatrix(xDesign),
       y = y,
@@ -2044,7 +2081,6 @@
   }
   penalize <- rep(TRUE, length(beta))
   penalize[1] <- FALSE
-  gradBar <- .logisticNegGradient(betaBar, xDesign, y)
   iterations <- 0L
   converged <- FALSE
   failureReason <- ""
@@ -2532,7 +2568,8 @@
                            maxConvTau = 1e-10,
                            kktTolerance = 1e-4,
                            betaAbsThreshold = 1e4,
-                           etaAbsThreshold = 1e4) {
+                           etaAbsThreshold = 1e4,
+                           capture = NULL) {
   globalAdjustment <- match.arg(globalAdjustment)
   surrogateVariant <- match.arg(surrogateVariant)
   surrogateLabel <- switch(surrogateVariant,
@@ -2627,6 +2664,7 @@
         cdMaxBacktracks = cdMaxBacktracks,
         traceDiagnostics = collectTrace,
         traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = surrogateLabel)),
+        capture = .surrogateCaptureSubset(capture, cvIdx[info$idxTr], cvIdx[info$idxVal], info$fold),
         leadWeight = info$leadWeightTrain,
         proxRho = info$proxRhoTrain,
         strictCorrection = surrogateVariant,
@@ -2684,7 +2722,8 @@
                                 cdMaxBacktracks = 25L,
                                 kktTolerance = 1e-4,
                                 betaAbsThreshold = 1e4,
-                                etaAbsThreshold = 1e4) {
+                                etaAbsThreshold = 1e4,
+                                capture = NULL) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -2743,6 +2782,7 @@
         cdMaxBacktracks = cdMaxBacktracks,
         traceDiagnostics = collectTrace,
         traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = "first")),
+        capture = .surrogateCaptureSubset(capture, cvIdx[info$idxTr], cvIdx[info$idxVal], info$fold),
         kktTolerance = kktTolerance,
         betaAbsThreshold = betaAbsThreshold,
         etaAbsThreshold = etaAbsThreshold
@@ -2799,7 +2839,8 @@
                                cdMaxBacktracks = 25L,
                                kktTolerance = 1e-4,
                                betaAbsThreshold = 1e4,
-                               etaAbsThreshold = 1e4) {
+                               etaAbsThreshold = 1e4,
+                               capture = NULL) {
   globalAdjustment <- match.arg(globalAdjustment)
   cvIdx <- .adapCvSubset(y, maxRows = cvMaxRows, seed = seed)
   xCv <- xDesign[cvIdx, , drop = FALSE]
@@ -2864,6 +2905,7 @@
         cdMaxBacktracks = cdMaxBacktracks,
         traceDiagnostics = collectTrace,
         traceContext = c(traceContext, list(innerFold = info$fold, surrogateKind = "diag")),
+        capture = .surrogateCaptureSubset(capture, cvIdx[info$idxTr], cvIdx[info$idxVal], info$fold),
         kktTolerance = kktTolerance,
         betaAbsThreshold = betaAbsThreshold,
         etaAbsThreshold = etaAbsThreshold
@@ -2960,6 +3002,7 @@
     if (!isTRUE(localId == serverBroadcast$leadIndex)) {
       return(NULL)
     }
+    capture <- .captureSurrogateLead(config, clientData, serverBroadcast)
     betaBar <- serverBroadcast$betaBar
     betaLead <- serverBroadcast$betaLead
     globalGrad <- serverBroadcast$globalGrad
@@ -3117,6 +3160,7 @@
         cdMinStep = config$adapCdMinStep %||% 1e-8,
         cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
         surrogateVariant = surrogateVariant,
+        capture = capture,
         leadWeight = leadWeight,
         leadWeightMin = leadWeightMin,
         proxTau = config$adapProxTau %||% 1e-8,
@@ -3151,6 +3195,7 @@
       traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda)),
       leadWeight = leadWeight,
       strictCorrection = surrogateVariant,
+      capture = capture,
       proxTau = config$adapProxTau %||% 1e-8,
       kktTolerance = config$adapKktTolerance %||% 1e-4,
       betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
@@ -3482,6 +3527,7 @@
     if (!isTRUE(localId == serverBroadcast$leadIndex)) {
       return(NULL)
     }
+    capture <- .captureSurrogateLead(config, clientData, serverBroadcast)
     betaBar <- serverBroadcast$betaBar
     betaLead <- serverBroadcast$betaLead
     globalGrad <- serverBroadcast$globalGrad
@@ -3521,6 +3567,7 @@
           )
         }
         cv <- .pdaAdapFirstLeadCv(
+          capture = capture,
           xDesign = xDesign,
           y = y,
           betaLead = betaLead,
@@ -3559,6 +3606,7 @@
         cvTrace <- cv$trace %||% NULL
       }
       fitObj <- .fitPdaAdapFirstOrderSurrogate(
+        capture = capture,
         xDesign = xDesign,
         y = y,
         betaLead = betaLead,
@@ -3676,6 +3724,7 @@
         )
       }
       cv <- .pdaAdapDiagLeadCv(
+        capture = capture,
         xDesign = xDesign,
         y = y,
         betaLead = betaLead,
@@ -3715,6 +3764,7 @@
       cvTrace <- cv$trace %||% NULL
     }
     fitObj <- .fitPdaAdapRemoteDiagSurrogate(
+      capture = capture,
       xDesign = xDesign,
       y = y,
       betaLead = betaLead,

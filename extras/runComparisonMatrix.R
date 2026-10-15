@@ -22,6 +22,10 @@
 # Matched filtering: --federated-preprocess=baseline (no extra normalization).
 # Audit without fitting: --preprocessing-audit-only=true
 # Verify saved pooled masks: --preprocessing-reference-directory=<previous results>
+# Private surrogate diagnostics, on a local ODAL1/2 or exact ADAP1/2/Diag-only run:
+# --surrogate-capture-directory=private/surrogate-captures
+# This saves patient-level lead data. Keep it in production, outside results.
+# It records a NEW fit, not the missing optimizer state of an old saved model.
 
 parseArgs <- function(args = commandArgs(trailingOnly = TRUE)) {
   out <- list()
@@ -293,6 +297,30 @@ isCompletedDiagnostic <- function(rows, task, fold, featureSet) {
   any(rows$task == task & rows$fold == fold & rows$featureSet == featureSet)
 }
 
+validateSurrogateCaptureArgs <- function(args, resultDirectory, methods, hosts) {
+  root <- argValue(args, "surrogate-capture-directory")
+  if (is.null(root)) return(args)
+  if (any(!methods %in% FederatedLearning:::.surrogateCaptureMethods)) {
+    stop("Private capture requires an ODAL1/2 or exact ADAP1/2/Diag-only diagnostic run")
+  }
+  if (any(!hosts %in% c("localhost", "127.0.0.1", "::1"))) {
+    stop("Private surrogate capture requires local workers")
+  }
+  if (!is.character(root) || length(root) != 1L || is.na(root) || !nzchar(root)) {
+    stop("--surrogate-capture-directory requires a directory path")
+  }
+  dir.create(root, recursive = TRUE, showWarnings = FALSE, mode = "0700")
+  root <- normalizePath(root, winslash = "/", mustWork = TRUE)
+  results <- normalizePath(resultDirectory, winslash = "/", mustWork = TRUE)
+  compareRoot <- if (.Platform$OS.type == "windows") tolower(root) else root
+  compareResults <- if (.Platform$OS.type == "windows") tolower(results) else results
+  if (compareRoot == compareResults || startsWith(compareRoot, paste0(compareResults, "/"))) {
+    stop("Private surrogate capture must be outside the shareable result directory")
+  }
+  args[["surrogate-capture-directory"]] <- root
+  args
+}
+
 methodConfig <- function(method, featureSet, args) {
   adapMethods <- c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")
   defaultLambdaSearch <- if (method %in% adapMethods) "optimize" else "grid"
@@ -337,6 +365,7 @@ methodConfig <- function(method, featureSet, args) {
     diagnosticDownsampleSeed = intArg(argValue(args, "diagnostic-downsample-seed"), 42L),
     adapCvDiagnostics = logicalArg(argValue(args, "adap-cv-diagnostics"), FALSE),
     adapTraceDiagnostics = logicalArg(argValue(args, "adap-trace-diagnostics"), FALSE),
+    surrogateCaptureDirectory = argValue(args, "surrogate-capture-directory"),
     adapProxTau = firstValue(numCsvArg(argValue(args, "adap-prox-tau"), 1e-8)),
     adapCurvatureTau = firstValue(numCsvArg(argValue(args, "adap-curvature-tau"), 1e-10)),
     adapMaxConvTau = firstValue(numCsvArg(argValue(args, "adap-maxconv-tau"), 1e-10)),
@@ -2022,6 +2051,7 @@ runComparison <- function(args) {
     hosts <- rep(hosts, nClients)
   }
   stopifnot(length(hosts) == nClients)
+  args <- validateSurrogateCaptureArgs(args, resultDirectory, methods, hosts)
   mirai <- logicalArg(args[["mirai"]], FALSE)
   verbose <- logicalArg(args[["verbose"]], TRUE)
   resume <- logicalArg(args[["resume"]], TRUE)
@@ -2212,6 +2242,11 @@ runComparison <- function(args) {
               configs <- methodConfigGrid(method, featureSet, args)
               configs <- lapply(configs, function(config) {
                 config$trainClientPaths <- trainPaths
+                if (!is.null(config$surrogateCaptureDirectory)) {
+                  config$surrogateCaptureContext <- list(task = task, fold = fold, featureSet = featureSet,
+                    method = method, populationSettings = popSettings,
+                    trainClientIds = clientIds[trainIds], testClientIds = clientIds[testIds])
+                }
                 if (!is.null(filtering)) {
                   config$mapping <- filtering$mapping
                   config$p <- nrow(filtering$mapping)
