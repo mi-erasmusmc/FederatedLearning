@@ -809,44 +809,55 @@ evaluateWeights <- function(clientData, w, clientId, clientIndex) {
     clientData$xMatrix,
     context = "baseline evaluation"
   )
-  preds <- stats::plogis(as.numeric(clientData$xMatrix %*% w))
+  lp <- as.numeric(clientData$xMatrix %*% w)
   evaluatePredictions(
     clientData = clientData,
-    preds = preds,
+    preds = stats::plogis(lp),
     density = mean(abs(w) > 1e-4),
     clientId = clientId,
-    clientIndex = clientIndex
+    clientIndex = clientIndex,
+    linearPredictor = lp
   )
 }
 
-evaluatePredictions <- function(clientData, preds, density, clientId, clientIndex) {
+# Held-out metrics of predicted probabilities. Single logistic models pass their
+# linear predictor; a probability ensemble has none, so its probabilities are
+# bounded away from 0 and 1 before taking logits for calibration.
+evaluatePredictions <- function(clientData, preds, density, clientId, clientIndex,
+                                linearPredictor = NULL) {
   y <- clientData$yLabels
   if (length(preds) != length(y)) {
     stop("Prediction length mismatch: got ", length(preds), " predictions for ", length(y), " labels")
   }
   auc <- binaryAuc(y, preds)
   eps <- 1e-15
-  pClip <- pmin(pmax(preds, eps), 1 - eps)
-  calFit <- if (length(unique(y)) == 2) {
-    suppressWarnings(tryCatch(
-      stats::glm(y ~ stats::qlogis(pClip), family = stats::binomial()),
-      error = function(e) NULL
-    ))
-  } else {
-    NULL
-  }
-  data.frame(
+  lp <- linearPredictor %||% stats::qlogis(pmin(pmax(preds, eps), 1 - eps))
+  calibration <- .calibrationMetrics(y, lp)
+  curve <- .calibrationCurve(y, lp)
+  out <- data.frame(
     client = clientIndex,
     auc = auc,
-    logLoss = logLoss(y, preds),
-    calibrationIntercept = if (!is.null(calFit)) unname(stats::coef(calFit)[[1]]) else NA_real_,
-    calibrationSlope = if (!is.null(calFit)) unname(stats::coef(calFit)[[2]]) else NA_real_,
+    logLoss = if (is.null(linearPredictor)) logLoss(y, preds) else binaryLogLoss(linearPredictor, y),
+    calibrationIci = curve$ici,
+    calibrationInTheLarge = calibration[["calibrationInTheLarge"]],
+    calibrationIntercept = calibration[["calibrationIntercept"]],
+    calibrationSlope = calibration[["calibrationSlope"]],
     density = density,
     n = length(y),
     outcomes = sum(y),
     clientId = clientId,
     stringsAsFactors = FALSE
   )
+  attr(out, "calibrationCurve") <- if (is.null(curve$curve)) NULL else cbind(clientId = clientId, curve$curve)
+  out
+}
+
+# rbind() drops attributes, so evaluation rows keep their calibration curves explicitly.
+bindEvaluations <- function(rows) {
+  curves <- do.call(rbind, lapply(rows, attr, "calibrationCurve"))
+  out <- do.call(rbind, rows)
+  attr(out, "calibrationCurve") <- curves
+  out
 }
 
 predictWithWeights <- function(clientData, w) {
@@ -1633,6 +1644,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     }
   }
 
+  calibrationCurves <- list()
   baselineRows <- lapply(fits, function(fit) {
     pooledDiag <- if (isTRUE(config$pooledDiagnostics %||% TRUE) && is.null(fit$localFits)) {
       pooledFitDiagnostics(
@@ -1647,7 +1659,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     }
 
     evalRows <- if (!is.null(fit$localFits)) {
-      do.call(rbind, Map(
+      bindEvaluations(Map(
         evaluateLocalEnsemble,
         clientData = testData,
         clientId = testClientIds,
@@ -1655,13 +1667,20 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         MoreArgs = list(localFits = fit$localFits, modelWeights = fit$localWeights)
       ))
     } else {
-      do.call(rbind, Map(
+      bindEvaluations(Map(
         evaluateWeights,
         clientData = testData,
         clientId = testClientIds,
         clientIndex = testClientIndexes,
         MoreArgs = list(w = fit$w)
       ))
+    }
+    lead <- fit$leadIndex %||% NA_integer_
+    fitCurves <- attr(evalRows, "calibrationCurve")
+    if (!is.null(fitCurves)) {
+      calibrationCurves[[length(calibrationCurves) + 1L]] <<- cbind(
+        sourceClientId = if (length(lead) == 1L && !is.na(lead)) trainClientIds[[lead]] else NA_character_,
+        fitCurves)
     }
 
     cbind(
@@ -1735,6 +1754,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
           client = clientIndex,
           auc = NA_real_,
           logLoss = NA_real_,
+          calibrationIci = NA_real_,
+          calibrationInTheLarge = NA_real_,
           calibrationIntercept = NA_real_,
           calibrationSlope = NA_real_,
           density = NA_real_,
@@ -1841,7 +1862,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       args = args,
       populationSettings = popSettings,
       trainPaths = trainPaths, testPaths = testPaths,
-      trainClientIds = trainClientIds, testClientIds = testClientIds
+      trainClientIds = trainClientIds, testClientIds = testClientIds,
+      calibrationCurves = if (length(calibrationCurves)) do.call(rbind, calibrationCurves) else NULL
     ), baselineRows, modelDirectory)
   }
   baselineRows
@@ -1862,6 +1884,8 @@ summarizeResults <- function(rows) {
       sdAuc = stats::sd(x$auc, na.rm = TRUE),
       meanLogLoss = mean(x$logLoss, na.rm = TRUE),
       sdLogLoss = stats::sd(x$logLoss, na.rm = TRUE),
+      meanCalIci = mean(x$calibrationIci, na.rm = TRUE),
+      meanCalInTheLarge = mean(x$calibrationInTheLarge, na.rm = TRUE),
       meanCalIntercept = mean(x$calibrationIntercept, na.rm = TRUE),
       meanCalSlope = mean(x$calibrationSlope, na.rm = TRUE),
       meanElapsed = mean(x$elapsedSeconds, na.rm = TRUE),
@@ -1946,6 +1970,10 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
   testConfig$p <- nrow(fit$config$mapping)
   FederatedLearning::clusterCreateMatrices(clTest, testConfig)
   evalRows <- FederatedLearning::clusterEvaluateModel(clTest, fit$w)
+  calibrationCurves <- attr(evalRows, "calibrationCurve")
+  if (!is.null(calibrationCurves)) {
+    calibrationCurves <- cbind(clientId = testClientIds[calibrationCurves$client], calibrationCurves)
+  }
   evalRows$clientId <- testClientIds[evalRows$client]
 
   if (!is.null(debugDirectory)) {
@@ -2177,7 +2205,8 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     cvValid = fit$cvValid,
     lambdaSelectionMetric = fit$lambdaSelectionMetric,
     adapCvDiagnostics = fit$adapCvDiagnostics,
-    adapFinalDiagnostics = fit$adapFinalDiagnostics
+    adapFinalDiagnostics = fit$adapFinalDiagnostics,
+    calibrationCurves = calibrationCurves
   ), resultRows, modelDirectory)
 }
 
@@ -2590,6 +2619,8 @@ runComparisonFromArgs <- function(args, populationSettings = NULL, clientPaths =
                     clientId = clientIds[testIds],
                     auc = NA_real_,
                     logLoss = NA_real_,
+                    calibrationIci = NA_real_,
+                    calibrationInTheLarge = NA_real_,
                     calibrationIntercept = NA_real_,
                     calibrationSlope = NA_real_,
                     density = NA_real_,

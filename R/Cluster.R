@@ -195,6 +195,58 @@ clusterCreateMatrices <- function(cl, config) {
   )
 }
 
+# Calibration against observed outcomes, from the linear predictor so extreme
+# risks are not distorted by probability clipping. Calibration-in-the-large is
+# the intercept of a logistic model with the linear predictor as an offset
+# (slope fixed at one); the slope and its intercept come from a model with both
+# free.
+.calibrationMetrics <- function(y, linearPredictor) {
+  out <- c(calibrationInTheLarge = NA_real_, calibrationIntercept = NA_real_, calibrationSlope = NA_real_)
+  if (length(unique(y)) != 2L || any(!is.finite(linearPredictor))) return(out)
+  fit <- function(formula) {
+    suppressWarnings(tryCatch(stats::glm(formula, family = stats::binomial()), error = function(e) NULL))
+  }
+  large <- fit(y ~ 1 + stats::offset(linearPredictor))
+  free <- fit(y ~ linearPredictor)
+  if (!is.null(large)) out[["calibrationInTheLarge"]] <- unname(stats::coef(large)[[1]])
+  if (!is.null(free)) out[c("calibrationIntercept", "calibrationSlope")] <- unname(stats::coef(free)[1:2])
+  out
+}
+
+# Smooth calibration curve: a binomial GAM of the outcome on a cubic regression
+# spline of the linear predictor, the estimator chosen for the PandemicPrediction
+# study. The curve is evaluated at percentiles of the predictions with pointwise
+# 95% intervals, so it describes the data without patient-level predictions.
+# The integrated calibration index (ICI) is the mean absolute difference between
+# predicted and smoothed observed risk over all patients.
+.calibrationCurve <- function(y, linearPredictor, points = 50L) {
+  none <- list(curve = NULL, ici = NA_real_)
+  events <- sum(y == 1)
+  distinct <- length(unique(linearPredictor))
+  if (length(y) < 20L || events == 0L || events == length(y) || distinct < 5L ||
+      any(!is.finite(linearPredictor))) {
+    return(none)
+  }
+  k <- min(max(12L, min(24L, ceiling(6 * log10(max(20, events))))), distinct - 1L)
+  data <- data.frame(y = as.numeric(y == 1), lp = linearPredictor)
+  fit <- tryCatch(suppressWarnings(mgcv::bam(y ~ s(lp, bs = "cr", k = k), data = data,
+    family = stats::binomial(), method = "fREML", discrete = TRUE, select = TRUE, gamma = 1.2)),
+    error = function(e) NULL)
+  if (is.null(fit)) return(none)
+  grid <- unique(stats::quantile(linearPredictor, seq(0.01, 0.99, length.out = points), names = FALSE))
+  smooth <- stats::predict(fit, newdata = data.frame(lp = grid), se.fit = TRUE)
+  observed <- as.numeric(stats::fitted(fit))
+  list(
+    curve = data.frame(
+      predicted = stats::plogis(grid),
+      observed = stats::plogis(as.numeric(smooth$fit)),
+      lower = stats::plogis(as.numeric(smooth$fit - 1.96 * smooth$se.fit)),
+      upper = stats::plogis(as.numeric(smooth$fit + 1.96 * smooth$se.fit))
+    ),
+    ici = mean(abs(stats::plogis(linearPredictor) - observed))
+  )
+}
+
 .evaluateBinaryMetrics <- function(y, preds, w, threshold = 1e-4, linearPredictor = NULL) {
   aucVal <- if (length(unique(y)) == 2) {
     as.numeric(pROC::roc(response = y, predictor = preds,
@@ -204,30 +256,25 @@ clusterCreateMatrices <- function(cl, config) {
   }
   # The linear predictor gives log loss without probability clipping.
   logLossVal <- if (is.null(linearPredictor)) logLoss(y, preds) else binaryLogLoss(linearPredictor, y)
+  # Without a linear predictor, probabilities are bounded away from 0 and 1.
   eps <- 1e-15
-  pClip <- pmin(pmax(preds, eps), 1 - eps)
-  calFit <- if (length(unique(y)) == 2) {
-    suppressWarnings(
-      tryCatch(
-        stats::glm(y ~ stats::qlogis(pClip), family = stats::binomial()),
-        error = function(e) NULL
-      )
-    )
-  } else {
-    NULL
-  }
-  calIntercept <- if (!is.null(calFit)) unname(stats::coef(calFit)[[1]]) else NA_real_
-  calSlope <- if (!is.null(calFit)) unname(stats::coef(calFit)[[2]]) else NA_real_
-  data.frame(
+  lp <- linearPredictor %||% stats::qlogis(pmin(pmax(preds, eps), 1 - eps))
+  calibration <- .calibrationMetrics(y, lp)
+  curve <- .calibrationCurve(y, lp)
+  out <- data.frame(
     auc = aucVal,
     logLoss = logLossVal,
-    calibrationIntercept = calIntercept,
-    calibrationSlope = calSlope,
+    calibrationIci = curve$ici,
+    calibrationInTheLarge = calibration[["calibrationInTheLarge"]],
+    calibrationIntercept = calibration[["calibrationIntercept"]],
+    calibrationSlope = calibration[["calibrationSlope"]],
     density = mean(abs(w) > threshold),
     n = length(y),
     outcomes = sum(y),
     stringsAsFactors = FALSE
   )
+  attr(out, "calibrationCurve") <- curve$curve
+  out
 }
 
 #' Collect basic per-client diagnostics for the current PLP data
@@ -309,7 +356,8 @@ clusterDiagnostics <- function(cl, config = list()) {
 clusterEvaluateModel <- function(cl, w, threshold = 1e-4) {
   parallel::clusterExport(
     cl,
-    c(".assertWorkerState", ".evaluateBinaryMetrics", "logLoss", "binaryLogLoss"),
+    c(".assertWorkerState", ".evaluateBinaryMetrics", ".calibrationMetrics", ".calibrationCurve",
+      "logLoss", "binaryLogLoss", "%||%"),
     envir = asNamespace("FederatedLearning")
   )
   rows <- parallel::clusterApply(
@@ -331,15 +379,22 @@ clusterEvaluateModel <- function(cl, w, threshold = 1e-4) {
       lin <- as.numeric(clientData$xMatrix %*% w)
       preds <- stats::plogis(lin)
       y <- clientData$yLabels
-      cbind(
-        data.frame(client = i),
-        .evaluateBinaryMetrics(y, preds, w, threshold = threshold, linearPredictor = lin)
-      )
+      metrics <- .evaluateBinaryMetrics(y, preds, w, threshold = threshold, linearPredictor = lin)
+      # cbind() drops attributes, so the calibration curve is carried over.
+      out <- cbind(data.frame(client = i), metrics)
+      attr(out, "calibrationCurve") <- attr(metrics, "calibrationCurve")
+      out
     },
     w = w,
     threshold = threshold
   )
-  do.call(rbind, rows)
+  curves <- do.call(rbind, lapply(seq_along(rows), function(i) {
+    curve <- attr(rows[[i]], "calibrationCurve")
+    if (is.null(curve)) NULL else cbind(client = i, curve)
+  }))
+  out <- do.call(rbind, rows)
+  attr(out, "calibrationCurve") <- curves
+  out
 }
 
 stopCluster <- function(cl) {

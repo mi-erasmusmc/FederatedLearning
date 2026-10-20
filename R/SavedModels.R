@@ -49,23 +49,25 @@ evaluateModel <- function(model, sitePath, taskSettings) {
   row <- match(covariates$rowId, population$rowId)
   covariateId <- as.character(covariates$covariateId)
 
-  probability <- function(table) {
+  linearPredictor <- function(table) {
     slopes <- table[!table$isIntercept, , drop = FALSE]
     coefficient <- slopes$coefficientSharedScale[match(covariateId, slopes$covariateId)]
     present <- !is.na(coefficient)
     eta <- rep(sum(table$coefficientSharedScale[table$isIntercept]), nrow(population))
     contribution <- rowsum(coefficient[present] * covariates$covariateValue[present], row[present])
     eta[as.integer(rownames(contribution))] <- eta[as.integer(rownames(contribution))] + contribution[, 1]
-    stats::plogis(eta)
+    eta
   }
   density <- function(table) mean(abs(table$coefficient) > 1e-4)
   weights <- if (length(model$models) > 1L) vapply(model$models, `[[`, numeric(1), "weight") else 1
-  preds <- Reduce(`+`, Map(function(m, w) w * probability(m$coefficients), model$models, weights))
+  etas <- lapply(model$models, function(m) linearPredictor(m$coefficients))
+  preds <- Reduce(`+`, Map(function(eta, w) w * stats::plogis(eta), etas, weights))
   evaluatePredictions(
     clientData = list(yLabels = as.integer(population$outcomeCount > 0)),
     preds = preds,
     density = sum(weights * vapply(model$models, function(m) density(m$coefficients), numeric(1))),
     clientId = basename(sitePath),
-    clientIndex = NA_integer_
+    clientIndex = NA_integer_,
+    linearPredictor = if (length(etas) == 1L) etas[[1]] else NULL
   )
 }

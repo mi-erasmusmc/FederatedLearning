@@ -16,6 +16,7 @@ Imports:
     rlang,
     dplyr,
     Matrix,
+    mgcv,
     parallelly,
     mirai,
     glmnet,
