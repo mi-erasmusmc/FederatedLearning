@@ -33,16 +33,16 @@ test_that("unimodal lambda search proposes positive lambdas around a peak", {
   expect_equal(search$bestY(), 10)
 })
 
-test_that("inner-CV scoring uses finite AUC only", {
+test_that("inner-CV scoring uses finite validation log likelihood only", {
   ev <- data.frame(
     auc = c(0.6, 0.7),
     logLoss = c(0.2, 0.4)
   )
 
-  expect_equal(FederatedLearning:::.innerCvScoreFromEvaluation(ev), 0.65)
-  expect_true(is.na(FederatedLearning:::.innerCvScoreFromEvaluation(data.frame(auc = NA_real_))))
-  expect_true(is.na(FederatedLearning:::.innerCvScoreFromEvaluation(data.frame(auc = c(0.7, NA_real_)))))
-  expect_true(is.na(FederatedLearning:::.innerCvScoreFromEvaluation(data.frame(logLoss = 0.2))))
+  expect_equal(FederatedLearning:::.innerCvScoreFromEvaluation(ev), -0.3)
+  expect_true(is.na(FederatedLearning:::.innerCvScoreFromEvaluation(data.frame(logLoss = NA_real_))))
+  expect_true(is.na(FederatedLearning:::.innerCvScoreFromEvaluation(data.frame(logLoss = c(0.2, NA_real_)))))
+  expect_true(is.na(FederatedLearning:::.innerCvScoreFromEvaluation(data.frame(auc = 0.7))))
   expect_true(is.na(FederatedLearning:::.innerCvScoreMean(c(0.7, NA_real_))))
   expect_true(is.na(FederatedLearning:::.innerCvScoreSd(c(0.7, NA_real_))))
 })
@@ -67,7 +67,7 @@ test_that("tuneLambda warm-starts DualAvg path fits with previous dual state", {
     invisible(NULL)
   }
   fakeClusterEvaluateModel <- function(cl, w) {
-    data.frame(auc = 10 - abs(log(w[[1]])))
+    data.frame(logLoss = abs(log(w[[1]])) - 10)
   }
 
   strategy <- list(
@@ -132,7 +132,7 @@ test_that("reset-clock path starts preserve coefficients within each validation 
         subsetCluster = function(cl, ids) list(ids = ids),
         fitFederated = fit,
         clusterCreateMatrices = function(cl, config) invisible(NULL),
-        clusterEvaluateModel = function(cl, w) data.frame(auc = 0.8 - abs(log(w[3])) / 10)
+        clusterEvaluateModel = function(cl, w) data.frame(logLoss = abs(log(w[3])) / 10 - 0.8)
       ),
       FederatedLearning:::tuneLambda(
         cl = list(1, 2), algorithm = "DualAvg",
@@ -159,7 +159,7 @@ test_that("reset-clock path starts preserve coefficients within each validation 
   }
 })
 
-test_that("tuneLambda errors when validation AUC is undefined", {
+test_that("tuneLambda errors when validation log likelihood is undefined", {
   fakeSubsetCluster <- function(cl, ids) {
     list(ids = ids)
   }
@@ -174,7 +174,7 @@ test_that("tuneLambda errors when validation AUC is undefined", {
     invisible(NULL)
   }
   fakeClusterEvaluateModel <- function(cl, w) {
-    data.frame(auc = NA_real_, logLoss = abs(log(w[[1]])))
+    data.frame(auc = 0.6, logLoss = NA_real_)
   }
 
   strategy <- list(
@@ -209,6 +209,6 @@ test_that("tuneLambda errors when validation AUC is undefined", {
         verbose = FALSE
       )
     ),
-    "finite inner-CV AUC"
+    "finite inner-CV log likelihood"
   )
 })

@@ -40,7 +40,7 @@ test_that("variance CV uses each training split's row count and preserves fold-l
         roundsCompleted = 3L, config = config)
     },
     clusterCreateMatrices = function(...) NULL,
-    clusterEvaluateModel = function(cl, w) data.frame(auc = 0.8 - 0.01 * abs(log(w[1] / 0.01))),
+    clusterEvaluateModel = function(cl, w) data.frame(logLoss = 0.01 * abs(log(w[1] / 0.01)) - 0.8),
     .package = "FederatedLearning"
   )
   for (sizes in list(c(10, 20, 70), c(50, 50, 50, 50), c(10, 30))) {
@@ -61,7 +61,7 @@ test_that("variance CV uses each training split's row count and preserves fold-l
     expect_equal(nrow(result$trace), length(calls))
     expect_equal(result$trace$fitLambda * result$trace$trainingRows,
       sqrt(2 / result$trace$searchValue))
-    expect_true(all(is.finite(result$trace$auc)))
+    expect_true(all(is.finite(result$trace$score)))
     expect_false(any(c("bestLambdaTrain", "bestFitLambdas") %in% names(result)))
     for (i in seq_along(calls)) {
       cfg <- calls[[i]]$config
@@ -105,12 +105,12 @@ test_that("runner passes the selected final lambda through without another conve
     list("dualavg-lambda" = "99"), FALSE), cfg)
 })
 
-test_that("flat AUC search reports its evaluation limit rather than convergence", {
+test_that("flat validation score search reports its evaluation limit rather than convergence", {
   testthat::local_mocked_bindings(
     subsetCluster = function(cl, ids) list(),
     fitFederated = function(cl, algorithm, config, verbose) list(w = 0, config = config),
     clusterCreateMatrices = function(...) NULL,
-    clusterEvaluateModel = function(...) data.frame(auc = 0.5),
+    clusterEvaluateModel = function(...) data.frame(logLoss = 0.5),
     .package = "FederatedLearning")
   expect_warning(out <- FederatedLearning:::tuneLambda(
     cl = list(), algorithm = "DualAvg", configBase = list(lambdaSearchMaxEvals = 2),

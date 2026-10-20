@@ -146,15 +146,17 @@ unimodalSearchInit <- function(stdStep = 2,
   stats::sd(x)
 }
 
+# Inner-CV score of one validation database: its mean held-out log likelihood
+# per patient, so higher is better and databases can be averaged equally.
 .innerCvScoreFromEvaluation <- function(ev) {
-  if (!"auc" %in% names(ev)) {
+  if (!"logLoss" %in% names(ev)) {
     return(NA_real_)
   }
-  auc <- as.numeric(ev$auc)
-  if (length(auc) == 0L || any(!is.finite(auc))) {
+  loss <- as.numeric(ev$logLoss)
+  if (length(loss) == 0L || any(!is.finite(loss))) {
     return(NA_real_)
   }
-  mean(auc)
+  -mean(loss)
 }
 
 .innerCvScoreMean <- function(scores) {
@@ -179,7 +181,7 @@ unimodalSearchInit <- function(stdStep = 2,
 # Now a little wrapper that
 #  - repeatedly calls step()
 #  - runs your inner-CV at each new lambda
-#  - calls try(lambda, mean_auc, sd_auc)
+#  - calls try(lambda, mean score, sd score)
 #  - returns final best lambda plus its CV mean
 tuneLambda <- function(cl, algorithm, configBase, trainIds,
                         rounds, clientFrac, epsilon,
@@ -289,7 +291,7 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
       converged = res$converged %||% NA,
       stopReason = res$stopReason %||% NA_character_,
       kktMaxAbs = res$kktMaxAbs %||% NA_real_,
-      kktChecks = res$kktChecks %||% NA_integer_, auc = NA_real_
+      kktChecks = res$kktChecks %||% NA_integer_, score = NA_real_
     )
     .requireDualAvgConvergence(res, cfg, paste0("inner CV (validation client ", valId, ")"),
       do.call(rbind, trace))
@@ -309,22 +311,22 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     clusterCreateMatrices(valCluster, res$config)
     ev <- clusterEvaluateModel(valCluster, res$w)
     score <- .innerCvScoreFromEvaluation(ev)
-    trace[[traceIndex]]$auc <<- score
+    trace[[traceIndex]]$score <<- score
     score
   }
 
-  aucs0 <- sapply(trainIds, function(valId) {
+  scores0 <- sapply(trainIds, function(valId) {
     fitValidationFold(initLambda, valId, iterLabel = 0L)
   })
 
-  m <- .innerCvScoreMean(aucs0)
-  s <- .innerCvScoreSd(aucs0)
+  m <- .innerCvScoreMean(scores0)
+  s <- .innerCvScoreSd(scores0)
   if (!is.finite(m)) {
-    stop("Unable to compute a finite inner-CV AUC for the initial lambda")
+    stop("Unable to compute a finite inner-CV log likelihood for the initial lambda")
   }
 
   if (verbose) {
-    message(sprintf("[iter %2d] initial %s = %.5g  (inner-CV AUC = %.5g)",
+    message(sprintf("[iter %2d] initial %s = %.5g  (inner-CV log likelihood = %.5g)",
            0, searchScale, initLambda, m))
   }
   search$try(initLambda, m, s)
@@ -350,21 +352,21 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
       stop("Lambda auto-search proposed a non-positive or non-finite candidate")
     }
     if (verbose) {
-      message(sprintf("[iter %2d] proposing %s = %.5g  (predicted auc = %.5g)",
+      message(sprintf("[iter %2d] proposing %s = %.5g  (predicted log likelihood = %.5g)",
              iter, searchScale, lambdaTry, s$expected))
     }
     # your inner CV over trainIds
-    aucs <- sapply(trainIds, function(valId) {
+    scores <- sapply(trainIds, function(valId) {
       fitValidationFold(lambdaTry, valId, iterLabel = iter)
     })
 
-    m <- .innerCvScoreMean(aucs)
-    s <- .innerCvScoreSd(aucs)
+    m <- .innerCvScoreMean(scores)
+    s <- .innerCvScoreSd(scores)
     if (!is.finite(m)) {
-      stop("Unable to compute a finite inner-CV AUC for lambda ", lambdaTry)
+      stop("Unable to compute a finite inner-CV log likelihood for lambda ", lambdaTry)
     }
     if (verbose) {
-      message(sprintf("[iter %2d] observed inner-CV AUC: mean = %.5g,  sd = %.5g",
+      message(sprintf("[iter %2d] observed inner-CV log likelihood: mean = %.5g,  sd = %.5g",
              iter, m, s))
     }
     search$try(lambdaTry, m, s)

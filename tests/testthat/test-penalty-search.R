@@ -65,3 +65,40 @@ test_that("local lasso tunes on stratified site folds and refits on all site row
   expect_null(fixed$fittingSettings$tuning)
   expect_identical(fixed$selectedLambda, 0.1)
 })
+
+test_that("pooled lasso holds out each training database and weights them equally", {
+  skip_if_not_installed("Cyclops")
+  skip_if_not_installed("PatientLevelPrediction")
+  population <- PatientLevelPrediction::createStudyPopulationSettings(requireTimeAtRisk = FALSE,
+    minTimeAtRisk = 1, riskWindowEnd = 365)
+  paths <- test_path("fixtures", "runner-golden", "data", "goldenTask", paste0("site", 1:3))
+  plp <- lapply(paths, function(p) suppressMessages(loadClientData(p, population)))
+  mapping <- createGlobalMap(lapply(plp, getClientFeatures), type = "intersection")
+  data <- lapply(plp, function(d) suppressMessages(createClientMatrix(d, list(mapping = mapping, intercept = TRUE))))
+  args <- list(`cyclops-cv` = "true")
+  fit <- suppressWarnings(fitBaselineWeights(data, args, seed = 3L))
+  tuning <- fit$fittingSettings$tuning
+  expect_identical(tuning$validation, "trainingDatabases")
+  expect_identical(tuning$databases, 3L)
+  expect_identical(tuning$databaseSizes, vapply(data, function(x) length(x$yLabels), integer(1)))
+  best <- tuning$trace$variance[which.max(tuning$trace$score)]
+  expect_identical(fit$selectedLambda, best)
+
+  # The score is the unweighted mean over databases of per-patient validation log likelihood.
+  perDatabase <- vapply(1:3, function(held) {
+    w <- fitCyclopsWeights(data[-held], args, 3L, variance = best)$w
+    -binaryLogLoss(as.numeric(data[[held]]$xMatrix %*% w), data[[held]]$yLabels)
+  }, numeric(1))
+  expect_equal(max(tuning$trace$score), mean(perDatabase), tolerance = 1e-10)
+  sizes <- vapply(data, `[[`, numeric(1), "n")
+  expect_false(isTRUE(all.equal(mean(perDatabase), sum(perDatabase * sizes) / sum(sizes), tolerance = 1e-10)))
+  expect_identical(fit$w, fitCyclopsWeights(data, args, 3L, variance = best)$w)
+})
+
+test_that("evaluation log loss uses the linear predictor without probability clipping", {
+  eta <- c(40, -40, 0.3)
+  y <- c(0, 1, 1)
+  metrics <- .evaluateBinaryMetrics(y, stats::plogis(eta), w = 1, linearPredictor = eta)
+  expect_equal(metrics$logLoss, binaryLogLoss(eta, y), tolerance = 1e-12)
+  expect_gt(metrics$logLoss, .evaluateBinaryMetrics(y, stats::plogis(eta), w = 1)$logLoss + 1)
+})

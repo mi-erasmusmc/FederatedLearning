@@ -697,7 +697,7 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
   config$innerCvScore <- tuned$perf %||% NA_real_
   if (isTRUE(verbose)) {
     message(sprintf(
-      "Selected %s penalty: prior variance = %.5g, mean-loss lambda = %.5g, inner-CV AUC = %.5g",
+      "Selected %s penalty: prior variance = %.5g, mean-loss lambda = %.5g, inner-CV log likelihood = %.5g",
       method,
       config$selectedVariance,
       config$lambda,
@@ -749,7 +749,7 @@ scoreFederatedConfigInnerCv <- function(method, clTrain, config, trainIds, verbo
 
   score <- .innerCvScoreMean(scores)
   if (!is.finite(score)) {
-    stop("Unable to compute a finite inner-CV AUC for method ", method)
+    stop("Unable to compute a finite inner-CV log likelihood for method ", method)
   }
   config$innerCvScore <- score
   config$innerCvScoreSd <- .innerCvScoreSd(scores)
@@ -794,7 +794,7 @@ selectMethodConfigForFold <- function(method, clTrain, configs, trainPopSizes, a
   }
   if (isTRUE(verbose)) {
     message(sprintf(
-      "Selected %s config by inner CV: %s (inner-CV AUC = %.5g)",
+      "Selected %s config by inner CV: %s (inner-CV log likelihood = %.5g)",
       method,
       tunedConfigs[[best]]$configLabel %||% "default",
       scores[[best]]
@@ -1263,8 +1263,9 @@ fitCyclopsWeights <- function(clientDataList, args, seed, intercept = TRUE, vari
 }
 
 fitBaselineWeights <- function(clientDataList, args, seed, intercept = TRUE) {
-  if (length(clientDataList) == 1L && logicalArg(argValue(args, "cyclops-cv"), TRUE)) {
-    return(tuneLocalCyclopsFit(clientDataList[[1]], args, seed, intercept))
+  if (logicalArg(argValue(args, "cyclops-cv"), TRUE)) {
+    if (length(clientDataList) == 1L) return(tuneLocalCyclopsFit(clientDataList[[1]], args, seed, intercept))
+    return(tunePooledCyclopsFit(clientDataList, args, seed, intercept))
   }
   fitCyclopsWeights(
     clientDataList = clientDataList,
@@ -1312,6 +1313,40 @@ tuneLocalCyclopsFit <- function(clientData, args, seed, intercept = TRUE) {
     validation = "stratifiedFolds", folds = k, seed = seed,
     foldSizes = tabulate(folds, k), foldOutcomes = tabulate(folds[y == 1], k),
     score = "pooled validation log likelihood per patient",
+    trace = search$trace, stopReason = search$stopReason)
+  fit$elapsedSeconds <- as.numeric(difftime(Sys.time(), start, units = "secs"))
+  fit
+}
+
+# Pooled lasso: the prior variance maximises the mean validation log likelihood
+# when each training database is held out in turn, weighting databases equally,
+# matching DualAvg tuning. The model is then refitted on all training databases.
+tunePooledCyclopsFit <- function(clientDataList, args, seed, intercept = TRUE) {
+  start <- Sys.time()
+  databases <- seq_along(clientDataList)
+  for (held in databases) {
+    if (length(unique(unlist(lapply(clientDataList[-held], `[[`, "yLabels")))) < 2L) {
+      stop("Pooled lasso tuning needs both outcome classes when each training database is held out")
+    }
+  }
+  scoreVariance <- function(variance) {
+    scores <- vapply(databases, function(held) {
+      fit <- fitCyclopsWeights(clientDataList[-held], args, seed, intercept, variance = variance)
+      data <- clientDataList[[held]]
+      -binaryLogLoss(as.numeric(data$xMatrix %*% fit$w), data$yLabels)
+    }, numeric(1))
+    c(mean(scores), stats::sd(scores))
+  }
+  search <- .searchPriorVariance(scoreVariance,
+    startingVariance = numArg(argValue(args, "cyclops-starting-variance"),
+      numArg(argValue(args, "baseline-starting-variance"), 0.01)),
+    maxEvals = intArg(argValue(args, "lambda-search-max-evals"), 25L))
+  fit <- fitCyclopsWeights(clientDataList, args, seed, intercept, variance = search$variance)
+  fit$fittingSettings$tuning <- list(
+    validation = "trainingDatabases", databases = length(databases),
+    databaseSizes = vapply(clientDataList, function(x) length(x$yLabels), integer(1)),
+    databaseOutcomes = vapply(clientDataList, function(x) as.integer(sum(x$yLabels == 1)), integer(1)),
+    score = "mean over databases of validation log likelihood per patient",
     trace = search$trace, stopReason = search$stopReason)
   fit$elapsedSeconds <- as.numeric(difftime(Sys.time(), start, units = "secs"))
   fit

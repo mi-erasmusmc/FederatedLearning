@@ -34,7 +34,7 @@ test_that("unconverged penalty candidates are saved but never scored", {
     clusterCreateMatrices = function(cl, config) NULL,
     clusterEvaluateModel = function(cl, w) {
       scoreCalls <<- scoreCalls + 1L
-      data.frame(auc = 0.7)
+      data.frame(auc = 0.7, logLoss = 0.3)
     }, .package = "FederatedLearning"
   )
   run <- function() tuneLambda(list(1, 2), "DualAvg", cfg, 1:2,
@@ -52,14 +52,14 @@ test_that("unconverged penalty candidates are saved but never scored", {
   expect_equal(d$kktMaxAbs, 0.01)
   expect_equal(d$coefficients, c(0, 0))
   expect_equal(d$lambdaSearchTrace$roundsCompleted, 1000L)
-  expect_true(is.na(d$lambdaSearchTrace$auc))
+  expect_true(is.na(d$lambdaSearchTrace$score))
   expect_false(d$lambdaSearchTrace$converged)
   converged <- TRUE
   result <- run()
   expect_gt(scoreCalls, 0L)
   expect_true(all(result$trace$converged))
   expect_true(all(result$trace$kktMaxAbs == 1e-8))
-  expect_true(all(result$trace$auc == 0.7))
+  expect_true(all(result$trace$score == -0.3))
 })
 
 test_that("final and config-CV guards reject before evaluating held-out data", {

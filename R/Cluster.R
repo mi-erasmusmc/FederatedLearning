@@ -195,14 +195,15 @@ clusterCreateMatrices <- function(cl, config) {
   )
 }
 
-.evaluateBinaryMetrics <- function(y, preds, w, threshold = 1e-4) {
+.evaluateBinaryMetrics <- function(y, preds, w, threshold = 1e-4, linearPredictor = NULL) {
   aucVal <- if (length(unique(y)) == 2) {
     as.numeric(pROC::roc(response = y, predictor = preds,
       levels = c(0, 1), direction = "<", quiet = TRUE)$auc)
   } else {
     NA_real_
   }
-  logLossVal <- logLoss(y, preds)
+  # The linear predictor gives log loss without probability clipping.
+  logLossVal <- if (is.null(linearPredictor)) logLoss(y, preds) else binaryLogLoss(linearPredictor, y)
   eps <- 1e-15
   pClip <- pmin(pmax(preds, eps), 1 - eps)
   calFit <- if (length(unique(y)) == 2) {
@@ -308,7 +309,7 @@ clusterDiagnostics <- function(cl, config = list()) {
 clusterEvaluateModel <- function(cl, w, threshold = 1e-4) {
   parallel::clusterExport(
     cl,
-    c(".assertWorkerState", ".evaluateBinaryMetrics", "logLoss"),
+    c(".assertWorkerState", ".evaluateBinaryMetrics", "logLoss", "binaryLogLoss"),
     envir = asNamespace("FederatedLearning")
   )
   rows <- parallel::clusterApply(
@@ -332,7 +333,7 @@ clusterEvaluateModel <- function(cl, w, threshold = 1e-4) {
       y <- clientData$yLabels
       cbind(
         data.frame(client = i),
-        .evaluateBinaryMetrics(y, preds, w, threshold = threshold)
+        .evaluateBinaryMetrics(y, preds, w, threshold = threshold, linearPredictor = lin)
       )
     },
     w = w,
