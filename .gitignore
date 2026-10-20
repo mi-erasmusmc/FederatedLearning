@@ -1,6 +1,8 @@
 .aider*
 results
 data
+# Simulated test fixture only; real study data stay ignored.
+!/tests/testthat/fixtures/runner-golden/data
 private/
 extras/fetch_study.yml
 extras/fetch_execution.yml
