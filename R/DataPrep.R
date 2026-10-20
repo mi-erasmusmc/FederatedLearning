@@ -64,7 +64,8 @@ createGlobalMap <- function(covRefList,
 
 #' Filter covariate references for a named experiment feature set
 #' @param covariateRef covariate reference data.frame
-#' @param featureSet one of "all", "ageSex", "phenotypes", "ageSexPhenotypes"
+#' @param featureSet one of "all", "ageSex", "phenotypes", "ageSexPhenotypes",
+#'   or a `featureSettings` object from [createFeatureSettings()]
 #' @param covariateIds optional explicit covariate ids to retain
 #' @param analysisIds optional explicit analysis ids to retain
 #' @return filtered covariateRef data.frame
@@ -80,7 +81,9 @@ filterCovariateRef <- function(covariateRef,
   keep <- rep(TRUE, nrow(covariateRef))
   ageSexIds <- c(1002, 8532001)
 
-  if (!identical(featureSet, "all")) {
+  if (inherits(featureSet, "featureSettings")) {
+    keep <- .selectFeatureSettings(covariateRef, featureSet)
+  } else if (!identical(featureSet, "all")) {
     if (identical(featureSet, "ageSex")) {
       keep <- covariateRef$covariateId %in% ageSexIds
     } else if (identical(featureSet, "phenotypes")) {

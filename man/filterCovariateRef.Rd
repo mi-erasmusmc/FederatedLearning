@@ -14,7 +14,8 @@ filterCovariateRef(
 \arguments{
 \item{covariateRef}{covariate reference data.frame}
 
-\item{featureSet}{one of "all", "ageSex", "phenotypes", "ageSexPhenotypes"}
+\item{featureSet}{one of "all", "ageSex", "phenotypes", "ageSexPhenotypes",
+or a \code{featureSettings} object from \code{\link[=createFeatureSettings]{createFeatureSettings()}}}
 
 \item{covariateIds}{optional explicit covariate ids to retain}
 
