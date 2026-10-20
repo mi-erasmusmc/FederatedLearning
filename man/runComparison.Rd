@@ -12,7 +12,7 @@ runComparison(
   outputDirectory,
   holdouts = names(sites),
   resume = TRUE,
-  executionSettings = createExecutionSettings()
+  runSettings = createRunSettings()
 )
 }
 \arguments{
@@ -32,7 +32,7 @@ with distinct methods.}
 
 \item{resume}{Reuse completed combinations in \code{outputDirectory}.}
 
-\item{executionSettings}{From \code{\link[=createExecutionSettings]{createExecutionSettings()}}.}
+\item{runSettings}{From \code{\link[=createRunSettings]{createRunSettings()}}.}
 }
 \value{
 The results table, invisibly.

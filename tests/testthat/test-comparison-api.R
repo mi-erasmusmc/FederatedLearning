@@ -21,8 +21,8 @@ test_that("task, method and execution settings validate their inputs", {
   expect_error(createMethodSettings("DualAvg", lambda = NA), "non-missing")
   expect_true(all(c("PooledLasso", "LocalEnsembleLasso", "DualAvg", "ODAL2", "ADAP2") %in% .comparisonMethods()))
 
-  expect_s3_class(createExecutionSettings(), "executionSettings")
-  expect_error(createExecutionSettings(mirai = "yes"), "mirai must be TRUE or FALSE")
+  expect_s3_class(createRunSettings(), "runSettings")
+  expect_error(createRunSettings(mirai = "yes"), "mirai must be TRUE or FALSE")
 })
 
 test_that("every runner option is either a method option or set by runComparison", {
@@ -63,7 +63,7 @@ test_that("runComparison passes one option set per runner call", {
     createMethodSettings("DualAvg", dualavgLambda = c(0.01, 0.001), dualavgTuneLambda = FALSE),
     createMethodSettings("LocalAvgLasso", cyclopsCv = FALSE, cyclopsVariance = 0.1))
   runComparison(task, sites, features, methods, "out", holdouts = c("JMDC", "MDCD"),
-    executionSettings = createExecutionSettings(hosts = "h1"))
+    runSettings = createRunSettings(hosts = "h1"))
 
   expect_length(calls, 2L)
   first <- calls[[1]]$args
@@ -118,7 +118,7 @@ test_that("the public API reproduces the runner's golden outputs", {
     sites = c(site1 = "data/goldenTask/site1", site2 = "data/goldenTask/site2", site3 = "data/goldenTask/site3"),
     featureSettings = list(all = createFeatureSettings(), ageSex = createFeatureSettings(covariateIds = c(1002, 8532001))),
     methodSettings = methods, outputDirectory = "out", holdouts = c("site1", "site3"),
-    executionSettings = createExecutionSettings(verbose = FALSE))
+    runSettings = createRunSettings(verbose = FALSE))
   actual <- goldenRunnerSnapshot("out")
 
   # Artifacts also record how the run was specified (arguments and configuration),

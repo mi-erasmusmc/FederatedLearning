@@ -19,12 +19,12 @@
 #' @param outputDirectory Result directory.
 #' @param holdouts Names of the sites to hold out, one outer fold each.
 #' @param resume Reuse completed combinations in `outputDirectory`.
-#' @param executionSettings From [createExecutionSettings()].
+#' @param runSettings From [createRunSettings()].
 #' @return The results table, invisibly.
 #' @export
 runComparison <- function(taskSettings, sites, featureSettings, methodSettings, outputDirectory,
                           holdouts = names(sites), resume = TRUE,
-                          executionSettings = createExecutionSettings()) {
+                          runSettings = createRunSettings()) {
   if (!inherits(taskSettings, "taskSettings")) stop("taskSettings must come from createTaskSettings()", call. = FALSE)
   if (!is.character(sites) || is.null(names(sites)) || anyDuplicated(names(sites)) || any(!nzchar(names(sites)))) {
     stop("sites must be a character vector with unique site names", call. = FALSE)
@@ -45,8 +45,8 @@ runComparison <- function(taskSettings, sites, featureSettings, methodSettings, 
   if (!length(holdouts) || !all(holdouts %in% names(sites))) {
     stop("holdouts must name sites in sites", call. = FALSE)
   }
-  if (!inherits(executionSettings, "executionSettings")) {
-    stop("executionSettings must come from createExecutionSettings()", call. = FALSE)
+  if (!inherits(runSettings, "runSettings")) {
+    stop("runSettings must come from createRunSettings()", call. = FALSE)
   }
 
   base <- list(
@@ -57,18 +57,18 @@ runComparison <- function(taskSettings, sites, featureSettings, methodSettings, 
     `result-directory` = outputDirectory,
     resume = .flagValue(resume),
     `federated-preprocess` = if (is.null(minFraction)) "none" else "baseline",
-    hosts = .flagValue(executionSettings$hosts),
-    mirai = .flagValue(executionSettings$mirai),
-    verbose = .flagValue(executionSettings$verbose),
-    `debug-diagnostics` = .flagValue(executionSettings$debug),
-    `preprocessing-audit-only` = .flagValue(executionSettings$auditOnly),
-    `rerun-errors` = .flagValue(executionSettings$rerunErrors),
-    `rerun-missing-models` = .flagValue(executionSettings$rerunMissingModels),
-    `save-models` = .flagValue(executionSettings$saveModels)
+    hosts = .flagValue(runSettings$hosts),
+    mirai = .flagValue(runSettings$mirai),
+    verbose = .flagValue(runSettings$verbose),
+    `debug-diagnostics` = .flagValue(runSettings$debug),
+    `preprocessing-audit-only` = .flagValue(runSettings$auditOnly),
+    `rerun-errors` = .flagValue(runSettings$rerunErrors),
+    `rerun-missing-models` = .flagValue(runSettings$rerunMissingModels),
+    `save-models` = .flagValue(runSettings$saveModels)
   )
   if (!is.null(minFraction)) base$`baseline-preprocess-min-fraction` <- .flagValue(minFraction)
-  base$`surrogate-capture-directory` <- executionSettings$surrogateCaptureDirectory
-  base$`preprocessing-reference-directory` <- executionSettings$preprocessingReferenceDirectory
+  base$`surrogate-capture-directory` <- runSettings$surrogateCaptureDirectory
+  base$`preprocessing-reference-directory` <- runSettings$preprocessingReferenceDirectory
 
   # One runner call per distinct option set, so options never cross methods.
   optionKeys <- vapply(methodSettings, function(m) paste(deparse(m$options), collapse = ""), "")

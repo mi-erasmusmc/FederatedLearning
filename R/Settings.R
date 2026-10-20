@@ -127,9 +127,9 @@ createMethodSettings <- function(method, ...) {
 #' @param rerunMissingModels Refit combinations whose model artifact is missing.
 #' @param saveModels Save a model artifact for each fit.
 #' @param verbose Print progress messages.
-#' @return An `executionSettings` object.
+#' @return An `runSettings` object.
 #' @export
-createExecutionSettings <- function(hosts = "localhost", mirai = FALSE, debug = FALSE,
+createRunSettings <- function(hosts = "localhost", mirai = FALSE, debug = FALSE,
                                     surrogateCaptureDirectory = NULL, auditOnly = FALSE,
                                     preprocessingReferenceDirectory = NULL, rerunErrors = FALSE,
                                     rerunMissingModels = FALSE, saveModels = TRUE, verbose = TRUE) {
@@ -142,7 +142,7 @@ createExecutionSettings <- function(hosts = "localhost", mirai = FALSE, debug = 
   }
   if (!is.character(hosts) || !length(hosts) || anyNA(hosts)) stop("hosts must be host names", call. = FALSE)
   structure(c(list(hosts = hosts, surrogateCaptureDirectory = surrogateCaptureDirectory,
-    preprocessingReferenceDirectory = preprocessingReferenceDirectory), flags), class = "executionSettings")
+    preprocessingReferenceDirectory = preprocessingReferenceDirectory), flags), class = "runSettings")
 }
 
 .comparisonMethods <- function() {
