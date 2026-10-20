@@ -77,12 +77,13 @@ test_that("ADAP initialization matches official PDA with matched standardization
   reference <- initialize(data.frame(status = y, cbind(1, x)), list(), list(site_id = "site1"))
   expect_gt(abs(reference$bhat_i[[1]]), 0.1)
   expect_true(any(reference$bhat_i[-1] != 0))
+  # A cvSeed equal to the session seed reproduces upstream's unseeded cv.glmnet fold draw.
   for (dense in c(TRUE, FALSE)) {
-    set.seed(104)
     ours <- .clientUpdatePdaAdap(
       list(xMatrix = Matrix::Matrix(cbind(1, x), sparse = TRUE), yLabels = y, n = length(y)),
       list(phase = 0L),
-      list(intercept = TRUE, standardize = TRUE, maxDenseInitCells = if (dense) Inf else 0)
+      list(intercept = TRUE, standardize = TRUE, maxDenseInitCells = if (dense) Inf else 0,
+        cvSeed = 104L)
     )
     expect_equal(ours$bhat, reference$bhat_i, tolerance = 1e-6)
     expect_equal(ours$n, reference$site_size)
@@ -97,8 +98,7 @@ test_that("ADAP local initialization defaults to unstandardized glmnet with ten 
   set.seed(112)
   expected <- glmnet::cv.glmnet(x, y, family = "binomial", alpha = 1,
     intercept = TRUE, standardize = FALSE, nfolds = 10)
-  set.seed(112)
-  actual <- .fitPdaStyleLocalLasso(x, cbind(1, x), y, list())
+  actual <- .fitPdaStyleLocalLasso(x, cbind(1, x), y, list(cvSeed = 112L))
   expect_equal(actual$beta, as.numeric(stats::coef(expected, s = "lambda.min")), tolerance = 1e-12)
   expect_equal(actual$lambda, expected$lambda.min, tolerance = 1e-12)
   expect_identical(formals(glmnet::glmnet)$standardize, TRUE)

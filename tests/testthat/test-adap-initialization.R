@@ -19,14 +19,12 @@ test_that("dense and sparse ADAP initialization use the same glmnet specificatio
   x <- sweep(matrix(rnorm(600), nrow = 200), 2, c(0.2, 1, 5), "*")
   y <- rbinom(200, 1, stats::plogis(-1.2 + 5 * x[, 1] - x[, 2]))
   for (standardize in c(FALSE, TRUE)) {
-    set.seed(212)
     reference <- glmnet::cv.glmnet(x, y, family = "binomial", intercept = TRUE,
-      standardize = standardize)
+      standardize = standardize, foldid = .adapLocalInitFoldId(length(y), 212L))
     for (dense in c(TRUE, FALSE)) {
-      set.seed(212)
       fit <- .fitPdaStyleLocalLasso(Matrix::Matrix(x, sparse = TRUE),
         Matrix::Matrix(cbind(1, x), sparse = TRUE), y,
-        list(standardize = standardize, maxDenseInitCells = if (dense) Inf else 0))
+        list(standardize = standardize, maxDenseInitCells = if (dense) Inf else 0, cvSeed = 212L))
       expect_equal(fit$lambda, reference$lambda.min, tolerance = 1e-8)
       expect_equal(fit$beta, as.numeric(stats::coef(reference, s = "lambda.min")), tolerance = 1e-6)
       expect_length(fit$beta, ncol(x) + 1L)
@@ -66,4 +64,27 @@ test_that("a single predictor still has an unpenalized ADAP initialization inter
     expect_true(all(is.finite(fit$beta)))
     expect_lt(abs(mean(stats::plogis(as.numeric(.addInterceptColumn(x) %*% fit$beta)) - y)), 1e-6)
   }
+})
+
+test_that("ADAP initialization is reproducible and leaves the caller's RNG untouched", {
+  set.seed(511)
+  x <- matrix(rnorm(900), nrow = 300)
+  y <- rbinom(300, 1, stats::plogis(-1 + x[, 1] - 0.5 * x[, 2]))
+  xRaw <- Matrix::Matrix(x, sparse = TRUE)
+  xDesign <- .addInterceptColumn(xRaw)
+  first <- .fitPdaStyleLocalLasso(xRaw, xDesign, y, list(cvSeed = 7L))
+  oldKind <- RNGkind()
+  on.exit(do.call(RNGkind, as.list(oldKind)), add = TRUE)
+  RNGkind("L'Ecuyer-CMRG")
+  set.seed(99)
+  before <- .Random.seed
+  second <- .fitPdaStyleLocalLasso(xRaw, xDesign, y, list(cvSeed = 7L))
+  expect_identical(second, first)
+  expect_identical(.Random.seed, before)
+  expect_identical(RNGkind()[1], "L'Ecuyer-CMRG")
+  expect_identical(.adapLocalInitFoldId(300, 7L), .adapLocalInitFoldId(300, 7L))
+  expect_false(identical(.adapLocalInitFoldId(300, 7L), .adapLocalInitFoldId(300, 8L)))
+  expect_identical(sort(unique(.adapLocalInitFoldId(300, 7L))), 1:10)
+  seeded <- .fitPdaStyleLocalLasso(xRaw, xDesign, y, list(cvSeed = 7L, adapInitSeed = 8L))
+  expect_equal(seeded$beta, .fitPdaStyleLocalLasso(xRaw, xDesign, y, list(cvSeed = 8L))$beta)
 })
