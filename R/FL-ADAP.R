@@ -785,6 +785,14 @@
   out
 }
 
+# Combines inner-fold scores. Log loss is pooled over held-out observations, so
+# each fold counts by its size; AUC is not additive, so fold AUCs are averaged.
+.adapCvScore <- function(foldScores, foldSizes, metric, na.rm = FALSE) {
+  if (!identical(metric, "deviance")) return(mean(foldScores, na.rm = na.rm))
+  keep <- if (na.rm) !is.na(foldScores) else rep(TRUE, length(foldScores))
+  sum(foldScores[keep] * foldSizes[keep]) / sum(foldSizes[keep])
+}
+
 .adapBestLambdaIndex <- function(scores, lambdaSeq, metric = c("deviance", "auc"),
                                  tieTolerance = 1e-8) {
   metric <- match.arg(metric)
@@ -1778,7 +1786,7 @@
         )
       }
     }
-    scores[li] <- mean(foldLoss)
+    scores[li] <- .adapCvScore(foldLoss, tabulate(folds, foldsK), selectionMetric)
   }
   idx <- .adapBestLambdaIndex(scores, lambdaSeq, selectionMetric, tieTolerance)
   if (is.na(idx)) {
@@ -2412,7 +2420,8 @@
         )))
       }
     }
-    score <- unname(mean(foldLoss, na.rm = TRUE))
+    score <- .adapCvScore(foldLoss, vapply(foldInfo, `[[`, numeric(1), "nVal"), selectionMetric,
+      na.rm = TRUE)
     assign(key, list(lambda = lambda, score = score, valid = !any(foldFailed)), envir = evalCache)
     score
   }

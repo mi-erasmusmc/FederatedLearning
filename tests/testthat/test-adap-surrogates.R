@@ -1705,3 +1705,39 @@ test_that("ODAL lead-site client update only solves on selected lead site", {
   expect_length(out$w, 2)
   expect_true(is.finite(out$value))
 })
+
+test_that("ADAP lead CV pools log loss over held-out observations", {
+  fixture <- make_adap_phase2_fixture(n = 32L, p = 3L, seed = 31L)
+  lambdaSeq <- c(0.1, 0.03, 0.01)
+  pooled <- function(diagnostics, lambdas) vapply(lambdas, function(lambda) {
+    rows <- diagnostics[abs(diagnostics$lambda - lambda) < 1e-12, ]
+    sum(rows$score * rows$nValidation) / sum(rows$nValidation)
+  }, numeric(1))
+  cv <- FederatedLearning:::.pdaAdapLeadCv(
+    xDesign = fixture$xDesign, y = fixture$y, betaLead = fixture$betaLead,
+    betaBar = fixture$betaBar, globalGrad = fixture$globalGrad,
+    globalHess = fixture$globalHess + diag(1, ncol(fixture$xDesign)), lambdaSeq = lambdaSeq,
+    totalN = fixture$totalN, foldsK = 5L, seed = 7L, maxOuter = 80L, maxInner = 100L,
+    tol = 1e-7, search = "grid", collectDiagnostics = TRUE)
+  sizes <- unique(cv$diagnostics$nValidation)
+  expect_gt(length(sizes), 1L)
+  expect_equal(cv$scores, pooled(cv$diagnostics, cv$lambdaSeq), tolerance = 1e-12)
+  equalWeights <- vapply(cv$lambdaSeq, function(lambda) {
+    mean(cv$diagnostics$score[abs(cv$diagnostics$lambda - lambda) < 1e-12])
+  }, numeric(1))
+  expect_false(isTRUE(all.equal(cv$scores, equalWeights, tolerance = 1e-12)))
+
+  pda <- FederatedLearning:::.pdaAdapPdaLeadCv(
+    xDesign = fixture$xDesign, y = fixture$y, betaBar = fixture$betaBar,
+    globalGrad = fixture$globalGrad, globalHess = fixture$globalHess + diag(1, ncol(fixture$xDesign)),
+    lambdaSeq = lambdaSeq, foldsK = 5L, seed = 7L, maxIter = 60L, tol = 1e-7,
+    collectDiagnostics = TRUE)
+  expect_equal(pda$scores, pooled(pda$diagnostics, lambdaSeq), tolerance = 1e-12)
+})
+
+test_that("ADAP CV scores average AUC but pool log loss", {
+  expect_equal(FederatedLearning:::.adapCvScore(c(1, 2), c(3, 1), "deviance"), 1.25)
+  expect_equal(FederatedLearning:::.adapCvScore(c(1, NA), c(3, 1), "deviance", na.rm = TRUE), 1)
+  expect_true(is.na(FederatedLearning:::.adapCvScore(c(1, NA), c(3, 1), "deviance")))
+  expect_equal(FederatedLearning:::.adapCvScore(c(0.6, 0.8), c(3, 1), "auc"), 0.7)
+})

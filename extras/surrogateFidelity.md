@@ -113,9 +113,10 @@ by any of these fitting steps.
 | Failure/selection | Inner failure stops the remaining path in that fold | A candidate requires valid fits in every fold. Score ties within `1e-8` favor stronger lambda. |
 
 `"deviance"` currently means **mean log loss**, not twice summed log loss.
-Current CV gives unequal-sized folds equal weight, as does the upstream
-criterion when every fold has a score. This differs from observation-weighted
-validation loss. Changing that weighting is a separate planned tuning change.
+Since 20 October 2026, current CV pools log loss over held-out observations,
+so unequal-sized folds count by their size. The upstream criterion gives each
+fold equal weight when every fold has a score. AUC selection still averages
+fold AUCs, which cannot be pooled.
 
 The automatic search descends from the upper lambda bound, then refines near the
 best evaluated value. It does not guarantee a global optimum or reproduce

@@ -109,7 +109,7 @@ test_that("exact CV freezes initialization and removes validation derivatives on
   expect_gt(max(abs(global$gradient - retained$gradient)), .01)
 })
 
-test_that("current ADAP deviance selection equally weights fold mean log losses", {
+test_that("ADAP deviance selection pools log loss over held-out observations", {
   x <- cbind(1, seq(-1, 1, length.out = 17))
   y <- rep(0:1, length.out = 17)
   losses <- sizes <- numeric(3)
@@ -123,7 +123,7 @@ test_that("current ADAP deviance selection equally weights fold mean log losses"
       sizes[info$fold] <<- length(info$idxVal)
       list(beta = beta, converged = TRUE)
     })
-  expect_equal(cv$scores, mean(losses), tolerance = 1e-12)
+  expect_equal(cv$scores, weighted.mean(losses, sizes), tolerance = 1e-12)
   expect_gt(abs(mean(losses) - weighted.mean(losses, sizes)), 1e-4)
 })
 
