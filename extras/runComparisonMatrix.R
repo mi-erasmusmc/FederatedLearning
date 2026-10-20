@@ -408,6 +408,9 @@ methodConfig <- function(method, featureSet, args) {
     ))
     cfg$odalRidgeLambda <- firstValue(numCsvArg(argValue(args, "odal-ridge-lambda"), 1e-8))
   }
+  if (method %in% c("ADAP", "ADAP2") && !is.null(argValue(args, "adap-curvature-action"))) {
+    cfg$adapCurvatureAction <- match.arg(argValue(args, "adap-curvature-action"), c("fail", "report"))
+  }
 
   if (identical(method, "ADAPDiag") && !is.null(argValue(args, "adapdiag-style"))) {
     cfg$adapDiagStyle <- firstValue(charCsvArg(argValue(args, "adapdiag-style"), "remote"))

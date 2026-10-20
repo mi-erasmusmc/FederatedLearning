@@ -165,7 +165,7 @@ test_that("ADAP client capture survives rejection of every CV candidate", {
   f <- captureFixture(directory)
   cfg <- .prepareSurrogateCapture(list(surrogateCaptureDirectory = directory,
     mapping = f$config$mapping, intercept = TRUE, foldsK = 3L, lambdaSearch = "grid",
-    lambdaCvMaxRows = 30L), "ADAP2")
+    lambdaCvMaxRows = 30L, adapCurvatureAction = "fail"), "ADAP2")
   state <- list(phase = 2L, leadIndex = 1L, betaBar = c(0, 0), betaLead = c(0, 0),
     globalGrad = .logisticNegGradient(c(0, 0), f$x, f$y), globalHess = matrix(0, 2, 2),
     totalN = length(f$y), lambdaSeq = c(0.2, 0.1), adapMethodName = "ADAP2")

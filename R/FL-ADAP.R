@@ -1243,8 +1243,20 @@
                                  kktTolerance = 1e-4,
                                  betaAbsThreshold = 1e4,
                                  etaAbsThreshold = 1e4,
-                                 capture = NULL) {
+                                 capture = NULL,
+                                 curvatureAction = c("fail", "report"),
+                                 outerLineSearch = c("none", "armijo")) {
   strictCorrection <- match.arg(strictCorrection)
+  curvatureAction <- match.arg(curvatureAction)
+  outerLineSearch <- match.arg(outerLineSearch)
+  backtracking <- identical(outerLineSearch, "armijo")
+  if (backtracking && (!identical(strictCorrection, "exact") || proxRho != 0 ||
+      isTRUE(traceDiagnostics))) {
+    stop("Outer backtracking requires exact ADAP without traceDiagnostics or proximal stabilization")
+  }
+  if (identical(curvatureAction, "report") && !identical(strictCorrection, "exact")) {
+    stop("Report-only curvature is supported only for the exact full ADAP surrogate")
+  }
   if (!is.null(capture) && (!identical(strictCorrection, "exact") || proxRho != 0)) {
     stop("Private capture currently supports the exact, unstabilized ADAP surrogate only")
   }
@@ -1259,7 +1271,8 @@
       lambda = lambda, leadWeight = leadWeight, linearTermCentered = TRUE),
     settings = list(maxOuter = maxOuter, maxInner = maxInner, tol = tol,
       cdStepBound = cdStepBound, cdMinStep = cdMinStep, cdMaxBacktracks = cdMaxBacktracks,
-      strictCorrection = strictCorrection, eigToleranceTau = eigToleranceTau,
+      strictCorrection = strictCorrection, curvatureAction = curvatureAction,
+      outerLineSearch = outerLineSearch, eigToleranceTau = eigToleranceTau,
       kktTolerance = kktTolerance, betaAbsThreshold = betaAbsThreshold,
       etaAbsThreshold = etaAbsThreshold, traceDiagnostics = traceDiagnostics))
   on.exit(.endSurrogateCapture(captureExit, returnValue()), add = TRUE)
@@ -1268,7 +1281,8 @@
   epsilonFloor <- NA_real_
   rhoOverGlobalEigenMax <- NA_real_
   C_eigen_min_after_shift <- NA_real_
-  if (identical(strictCorrection, "exact") && is.finite(eig$min) && eig$min < -epsilonEig) {
+  if (identical(strictCorrection, "exact") && identical(curvatureAction, "fail") &&
+      is.finite(eig$min) && eig$min < -epsilonEig) {
     fail <- .adapFailureResult(
       beta,
       "negative_C_eigenvalue",
@@ -1377,7 +1391,7 @@
     }
     return(as.numeric(out$beta))
   }
-  if (inherits(xDesign, "sparseMatrix")) {
+  if (inherits(xDesign, "sparseMatrix") && !backtracking) {
     out <- adapFullSurrogateFitCpp(
       x = .asDgCMatrix(xDesign),
       y = y,
@@ -1444,6 +1458,20 @@
   iterations <- 0L
   converged <- FALSE
   failureReason <- ""
+  outerTrace <- list()
+  if (backtracking) {
+    if (inherits(xDesign, "sparseMatrix")) xDesign <- .asDgCMatrix(xDesign)
+    objective <- function(b) {
+      loss <- if (inherits(xDesign, "sparseMatrix")) {
+        logisticObjectiveGradientCpp(xDesign, b, y, computeGradient = FALSE)$loss / length(y)
+      } else {
+        binaryLogLoss(as.numeric(xDesign %*% b), y, meanLoss = TRUE)
+      }
+      delta <- b - betaBar
+      leadWeight * loss + sum((globalGrad - leadWeight * gradBar) * delta) +
+        sum(delta * as.numeric(baseCorrection %*% delta)) / 2 + lambda * sum(abs(b[penalize]))
+    }
+  }
   cd <- list(
     iterations = NA_integer_,
     converged = NA,
@@ -1485,7 +1513,21 @@
       maxBacktracks = as.integer(cdMaxBacktracks),
       returnDetails = TRUE
     )
-    beta <- cd$beta
+    if (backtracking && identical(cd$failureReason, "")) {
+      step <- .surrogateArmijoStep(beta, cd$beta,
+        comp$aTilde + as.numeric(comp$B %*% beta), lambda, penalize, objective)
+      outerTrace[[length(outerTrace) + 1L]] <- data.frame(iteration = iter,
+        accepted = step$accepted, alpha = step$alpha, backtracks = step$backtracks,
+        objectiveBefore = step$objectiveBefore, objectiveAfter = step$objectiveAfter,
+        predictedDecrease = step$predictedDecrease, failureReason = step$failureReason)
+      beta <- step$beta
+      if (!step$accepted) {
+        failureReason <- step$failureReason
+        break
+      }
+    } else {
+      beta <- cd$beta
+    }
     if (!identical(cd$failureReason, "")) {
       failureReason <- cd$failureReason
       break
@@ -1531,6 +1573,10 @@
       correction_diag_min = min(diag(baseCorrection), na.rm = TRUE),
       correction_diag_max = max(diag(baseCorrection), na.rm = TRUE)
     )
+    if (backtracking) {
+      out$outerLineSearch <- outerLineSearch
+      out$outerTrace <- if (length(outerTrace)) do.call(rbind, outerTrace) else data.frame()
+    }
     finalComp <- .adapSurrogateComponents(
       betaEval = beta,
       betaBar = betaBar,
@@ -2569,9 +2615,13 @@
                            kktTolerance = 1e-4,
                            betaAbsThreshold = 1e4,
                            etaAbsThreshold = 1e4,
-                           capture = NULL) {
+                           capture = NULL,
+                           curvatureAction = c("fail", "report"),
+                           outerLineSearch = c("none", "armijo")) {
   globalAdjustment <- match.arg(globalAdjustment)
   surrogateVariant <- match.arg(surrogateVariant)
+  curvatureAction <- match.arg(curvatureAction)
+  outerLineSearch <- match.arg(outerLineSearch)
   surrogateLabel <- switch(surrogateVariant,
     exact = "full",
     prox = "prox",
@@ -2668,6 +2718,8 @@
         leadWeight = info$leadWeightTrain,
         proxRho = info$proxRhoTrain,
         strictCorrection = surrogateVariant,
+        curvatureAction = curvatureAction,
+        outerLineSearch = outerLineSearch,
         proxTau = proxTau,
         kktTolerance = kktTolerance,
         betaAbsThreshold = betaAbsThreshold,
@@ -3014,6 +3066,19 @@
       serverBroadcast$adapSurrogateVariant %||% config$adapSurrogateVariant %||% "exact",
       c("exact", "prox", "convex", "maxconv")
     )
+    # Exact full-quadratic ADAP reports correction curvature instead of rejecting before fitting.
+    defaultCurvatureAction <- if (identical(surrogateVariant, "exact") &&
+      identical(solveStyle, "fullQuadratic")) "report" else "fail"
+    curvatureAction <- match.arg(config$adapCurvatureAction %||% defaultCurvatureAction, c("fail", "report"))
+    outerLineSearch <- match.arg(config$adapOuterLineSearch %||% "none", c("none", "armijo"))
+    if (identical(outerLineSearch, "armijo") &&
+        (!identical(surrogateVariant, "exact") || !identical(solveStyle, "fullQuadratic"))) {
+      stop("adapOuterLineSearch = 'armijo' requires the exact full-quadratic ADAP solver")
+    }
+    if (identical(curvatureAction, "report") &&
+        (!identical(surrogateVariant, "exact") || !identical(solveStyle, "fullQuadratic"))) {
+      stop("adapCurvatureAction = 'report' requires the exact full-quadratic ADAP solver")
+    }
     methodName <- serverBroadcast$adapMethodName %||% config$adapMethodName %||%
       switch(surrogateVariant,
         exact = "ADAP",
@@ -3160,6 +3225,8 @@
         cdMinStep = config$adapCdMinStep %||% 1e-8,
         cdMaxBacktracks = config$adapCdMaxBacktracks %||% 25L,
         surrogateVariant = surrogateVariant,
+        curvatureAction = curvatureAction,
+        outerLineSearch = outerLineSearch,
         capture = capture,
         leadWeight = leadWeight,
         leadWeightMin = leadWeightMin,
@@ -3195,6 +3262,8 @@
       traceContext = c(baseTraceContext, list(method = methodName, phase = "final", selectedLambda = lambda)),
       leadWeight = leadWeight,
       strictCorrection = surrogateVariant,
+      curvatureAction = curvatureAction,
+      outerLineSearch = outerLineSearch,
       capture = capture,
       proxTau = config$adapProxTau %||% 1e-8,
       kktTolerance = config$adapKktTolerance %||% 1e-4,
