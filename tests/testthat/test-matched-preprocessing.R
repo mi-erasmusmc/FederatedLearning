@@ -231,12 +231,12 @@ test_that("audit-only runner never loads held-out data or invokes fitters", {
       f$mapping, env$baselinePreprocessSettings(args))
   }
   env$fitFederatedFold <- env$fitBaselineFold <- env$selectMethodConfigForFold <- function(...) stop("FIT CALLED")
-  expect_message(env$runComparison(args), "Preprocessing task")
+  expect_message(env$runComparisonFromArgs(args), "Preprocessing task")
   expect_identical(loaded, c("a", "b"))
   expect_false(file.exists(file.path(args[["result-directory"]], "comparison_results.csv")))
   expect_true(file.exists(file.path(args[["result-directory"]], "preprocessing", "task_fold3_all.rds")))
   args[["dualavg-map-type"]] <- "union"
-  expect_error(env$runComparison(args), "same matrix settings")
+  expect_error(env$runComparisonFromArgs(args), "same matrix settings")
 })
 
 test_that("no-op masks leave baseline transforms and DualAvg updates unchanged", {

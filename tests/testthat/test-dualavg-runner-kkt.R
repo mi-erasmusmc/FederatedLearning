@@ -111,7 +111,7 @@ test_that("the runner writes convergence failures and their diagnostics", {
     clusterDiagnostics = function(...) data.frame(client = 1L, n = 10),
     .package = "FederatedLearning"
   )
-  env$runComparison(args)
+  env$runComparisonFromArgs(args)
   rows <- read.csv(file.path(resultDir, "comparison_results.csv"))
   expect_false(rows$dualAvgConverged)
   expect_equal(rows$dualAvgStopReason, "roundLimit")

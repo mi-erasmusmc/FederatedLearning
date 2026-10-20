@@ -20,12 +20,11 @@ After installing this branch and restarting R, an existing production argument
 list can be reused without changing its tasks, population settings or folds:
 
 ```r
-source("extras/runComparisonMatrix.R")
 newArgs <- args
 newArgs[["methods"]] <- "SparseLocalAvgLasso,DebiasedLocalAvgLasso"
 newArgs[["resume"]] <- "true"
 newArgs[["save-models"]] <- "true"
-runComparison(newArgs)
+FederatedLearning:::runComparisonFromArgs(newArgs)
 ```
 
 This appends the new methods to the existing results directory; it does not

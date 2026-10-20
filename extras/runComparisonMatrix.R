@@ -30,5 +30,5 @@
 # The runner is implemented in R/ComparisonRunner.R; this file is its command-line entry point.
 
 if (sys.nframe() == 0L) {
-  FederatedLearning:::runComparison(FederatedLearning:::parseArgs())
+  FederatedLearning:::runComparisonFromArgs(FederatedLearning:::parseArgs())
 }

@@ -246,7 +246,7 @@ test_that("runner reruns only successful combinations with missing artifacts", {
   skip_if_not_installed("PatientLevelPrediction")
   # A failed artifact write must not turn the completed fit into an NA result.
   file.create(file.path(resultDir, "models"))
-  env$runComparison(args)
+  env$runComparisonFromArgs(args)
   expect_equal(calls, c("PooledLasso", "LocalAvgLasso"))
   failedSave <- read.csv(file.path(resultDir, "comparison_results.csv"))
   expect_equal(failedSave$auc, c(0.7, 0.7))
@@ -254,17 +254,17 @@ test_that("runner reruns only successful combinations with missing artifacts", {
   expect_true(all(!is.na(failedSave$modelSaveError)))
   expect_true(all(is.na(failedSave$modelFile)))
   unlink(file.path(resultDir, "models"))
-  env$runComparison(args)
+  env$runComparisonFromArgs(args)
   expect_equal(calls, rep(c("PooledLasso", "LocalAvgLasso"), 2))
-  env$runComparison(args)
+  env$runComparisonFromArgs(args)
   expect_equal(length(calls), 4L)
   current <- read.csv(file.path(resultDir, "comparison_results.csv"))
   expect_true(all(is.na(current$modelSaveError)))
   unlink(file.path(resultDir, current$modelFile[current$method == "LocalAvgLasso"]))
-  env$runComparison(args)
+  env$runComparisonFromArgs(args)
   expect_equal(calls, c(rep(c("PooledLasso", "LocalAvgLasso"), 2), "LocalAvgLasso"))
   args[["save-models"]] <- "false"
-  expect_error(env$runComparison(args), "requires --save-models")
+  expect_error(env$runComparisonFromArgs(args), "requires --save-models")
 })
 
 test_that("actual Cyclops coefficients round-trip with no support threshold", {

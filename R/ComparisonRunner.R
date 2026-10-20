@@ -289,13 +289,19 @@ validateSurrogateCaptureArgs <- function(args, resultDirectory, methods, hosts) 
   args
 }
 
+# The covariate selection behind a feature label: a featureSettings object
+# supplied through the API, otherwise the named feature set itself.
+featureSelection <- function(featureSet, args) {
+  args[["featureSettings"]][[featureSet]] %||% featureSet
+}
+
 methodConfig <- function(method, featureSet, args) {
   adapMethods <- c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")
   defaultLambdaSearch <- if (method %in% adapMethods) "optimize" else "grid"
   defaultLambdaMetric <- "deviance"
   cfg <- list(
     mapType = firstValue(charCsvArg(argValue(args, "map-type"), "intersection")),
-    featureSet = featureSet,
+    featureSet = featureSelection(featureSet, args),
     intercept = logicalArg(argValue(args, "intercept"), TRUE),
     profile = logicalArg(argValue(args, "profile"), FALSE),
     epsilon = firstValue(numCsvArg(argValue(args, "epsilon"), 1e-6)),
@@ -1395,7 +1401,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   trainMap <- FederatedLearning::createGlobalMap(
     lapply(trainPlp, FederatedLearning::getClientFeatures),
     type = config$mapType,
-    featureSet = featureSet,
+    featureSet = featureSelection(featureSet, args),
     covariateIds = config$covariateIds,
     analysisIds = config$analysisIds
   )
@@ -2099,7 +2105,23 @@ safeStopCluster <- function(cl) {
   invisible(NULL)
 }
 
-runComparison <- function(args) {
+# Population settings saved with a site's data must equal the task's settings,
+# so a run cannot silently use a different horizon from the extraction.
+checkSavedPopulationSettings <- function(clientPaths, populationSettings) {
+  for (path in clientPaths) {
+    saved <- file.path(path, "populationSettings.rds")
+    if (file.exists(saved) &&
+        !isTRUE(all.equal(readRDS(saved), populationSettings, tolerance = 0))) {
+      stop("Population settings saved in ", path, " differ from the task's population settings")
+    }
+  }
+  invisible(TRUE)
+}
+
+# Runs the comparison described by command-line style arguments. The public
+# runComparison() supplies explicit site paths and PLP population settings;
+# command-line runs build both from --data-root, --client-ids and flags.
+runComparisonFromArgs <- function(args, populationSettings = NULL, clientPaths = NULL) {
   if (!requireNamespace("FederatedLearning", quietly = TRUE)) {
     stop("FederatedLearning must be installed or loaded before running this script")
   }
@@ -2127,7 +2149,7 @@ runComparison <- function(args) {
     "DualAvg", "ODAL", "ODAL1", "ADAP2", "Prox-ADAP", "C-ADAP",
     "MaxConv-ADAP", "ADAP1", "ADAPDiag"
   ))
-  clientIds <- csvArg(args[["client-ids"]], character())
+  clientIds <- if (is.null(clientPaths)) csvArg(args[["client-ids"]], character()) else names(clientPaths)
   nClients <- intArg(args[["clients"]], if (length(clientIds) > 0L) length(clientIds) else 5L)
   if (length(clientIds) == 0L) {
     clientIds <- paste0("client", seq_len(nClients))
@@ -2177,13 +2199,18 @@ runComparison <- function(args) {
     ))
   }
 
+  if (!is.null(clientPaths) && length(tasks) != 1L) {
+    stop("Explicit site paths require exactly one task")
+  }
+  sitePaths <- clientPaths
   for (task in tasks) {
-    clientPaths <- file.path(dataRoot, task, clientIds)
+    clientPaths <- unname(sitePaths) %||% file.path(dataRoot, task, clientIds)
     if (!all(dir.exists(clientPaths))) {
       stop("Missing client paths for task ", task, ": ",
            paste(clientPaths[!dir.exists(clientPaths)], collapse = ", "))
     }
-    popSettings <- PatientLevelPrediction::createStudyPopulationSettings(
+    if (!is.null(populationSettings)) checkSavedPopulationSettings(clientPaths, populationSettings)
+    popSettings <- populationSettings %||% PatientLevelPrediction::createStudyPopulationSettings(
       requireTimeAtRisk = logicalArg(args[["require-time-at-risk"]], FALSE),
       minTimeAtRisk = intArg(args[["min-time-at-risk"]], 1L),
       riskWindowStart = intArg(args[[paste0(task, "-risk-window-start")]],
@@ -2277,7 +2304,7 @@ runComparison <- function(args) {
               featureDebugConfig$mapping <- FederatedLearning::clusterCollectCovRefs(
                 clTrain,
                 type = featureDebugConfig$mapType,
-                featureSet = featureSet,
+                featureSet = featureDebugConfig$featureSet,
                 covariateIds = featureDebugConfig$covariateIds,
                 analysisIds = featureDebugConfig$analysisIds
               )
@@ -2512,7 +2539,7 @@ runComparison <- function(args) {
             diagConfig$mapping <- FederatedLearning::clusterCollectCovRefs(
               clTrain,
               type = diagConfig$mapType,
-              featureSet = featureSet,
+              featureSet = diagConfig$featureSet,
               covariateIds = diagConfig$covariateIds,
               analysisIds = diagConfig$analysisIds
             )
