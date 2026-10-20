@@ -1,9 +1,5 @@
 kktRunner <- function() {
-  path <- test_path("..", "..", "extras", "runComparisonMatrix.R")
-  if (!file.exists(path)) skip("Extras scripts unavailable")
-  env <- new.env(parent = globalenv())
-  sys.source(path, env)
-  env
+  comparisonRunnerEnv()
 }
 
 test_that("comparison KKT flags are opt-in and restricted to DualAvg", {

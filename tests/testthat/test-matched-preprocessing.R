@@ -1,9 +1,5 @@
 preprocessingRunner <- function() {
-  path <- testthat::test_path("..", "..", "extras", "runComparisonMatrix.R")
-  if (!file.exists(path)) skip("Extras scripts unavailable")
-  env <- new.env(parent = globalenv())
-  sys.source(path, env)
-  env
+  comparisonRunnerEnv()
 }
 
 preprocessingFixture <- function() {

@@ -304,10 +304,7 @@ test_that("ODAL server rejection preserves lead data and the rejected objective"
 })
 
 test_that("comparison runner keeps private captures outside results and rejects remote workers", {
-  path <- test_path("..", "..", "extras", "runComparisonMatrix.R")
-  skip_if_not(file.exists(path), "Comparison script is not available")
-  runner <- new.env(parent = globalenv())
-  sys.source(path, runner)
+  runner <- comparisonRunnerEnv()
   directory <- tempfile()
   dir.create(directory)
   on.exit(unlink(directory, recursive = TRUE), add = TRUE)

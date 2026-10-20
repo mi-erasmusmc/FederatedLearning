@@ -80,10 +80,7 @@ test_that("exact ADAP2 reports curvature by default and captures the requested p
 })
 
 test_that("runner accepts an explicit policy without changing absent defaults", {
-  path <- test_path("..", "..", "extras", "runComparisonMatrix.R")
-  if (!file.exists(path)) skip("Extras scripts unavailable")
-  runner <- new.env(parent = globalenv())
-  sys.source(path, runner)
+  runner <- comparisonRunnerEnv()
   expect_null(runner$methodConfig("ADAP2", "ageSex", list())$adapCurvatureAction)
   args <- list("adap-curvature-action" = "report")
   expect_identical(runner$methodConfig("ADAP2", "ageSex", args)$adapCurvatureAction, "report")

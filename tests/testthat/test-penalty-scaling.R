@@ -1,10 +1,5 @@
 penaltyRunner <- function() {
-  paths <- file.path(c(getwd(), "../..", "../../.."), "extras", "runComparisonMatrix.R")
-  path <- paths[file.exists(paths)][1L]
-  if (is.na(path)) skip("Comparison runner is not in this test installation")
-  env <- new.env(parent = globalenv())
-  sys.source(path, env)
-  env
+  comparisonRunnerEnv()
 }
 
 test_that("Laplace prior variance converts to mean-loss lambda exactly once", {

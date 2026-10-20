@@ -5,9 +5,7 @@ coefficientExtrasPath <- function(file) {
 }
 
 coefficientRunner <- function() {
-  env <- new.env(parent = globalenv())
-  sys.source(coefficientExtrasPath("runComparisonMatrix.R"), env)
-  env
+  comparisonRunnerEnv()
 }
 
 test_that("exact support retains tiny coefficients and excludes the intercept", {

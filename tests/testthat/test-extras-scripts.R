@@ -628,8 +628,7 @@ test_that("fetchOne passes expected database and population settings to PLP", {
 })
 
 test_that("comparison runner helpers parse external comparison settings", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   args <- runnerEnv$parseArgs(c(
     "--tasks=taskA,taskB",
@@ -798,8 +797,7 @@ test_that("comparison runner helpers parse external comparison settings", {
 })
 
 test_that("comparison runner evaluates prediction ensembles", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   clientData <- list(
     xMatrix = cbind(1, c(-2, -1, 1, 2)),
@@ -831,8 +829,7 @@ test_that("comparison runner evaluates prediction ensembles", {
 })
 
 test_that("comparison runner records local baseline fit failures", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   runnerEnv$fitBaselineWeights <- function(clientDataList, args, seed, intercept = TRUE) {
     if (identical(seed, 2L)) {
@@ -870,8 +867,7 @@ test_that("comparison runner records local baseline fit failures", {
 })
 
 test_that("comparison runner preprocesses Cyclops baseline matrices", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   trainData <- list(
     list(
@@ -913,8 +909,7 @@ test_that("comparison runner preprocesses Cyclops baseline matrices", {
 })
 
 test_that("comparison runner AUC handles large held-out sites", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   y <- c(rep(0L, 50000L), rep(1L, 50000L))
   preds <- seq_along(y)
@@ -923,8 +918,7 @@ test_that("comparison runner AUC handles large held-out sites", {
 })
 
 test_that("baseline and federated AUC use the same fixed event direction", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
   y <- c(0, 0, 1, 1)
   for (eta in list(c(2, 1, -1, -2), c(-2, -1, 1, 2), rep(0, 4), c(0, 1, 1, 1))) {
     preds <- plogis(eta)
@@ -937,8 +931,7 @@ test_that("baseline and federated AUC use the same fixed event direction", {
 })
 
 test_that("comparison runner does not partial-match lambda-grid-len as fixed lambda", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   args <- runnerEnv$parseArgs(c(
     "--lambda-grid-len=100",
@@ -956,8 +949,7 @@ test_that("comparison runner does not partial-match lambda-grid-len as fixed lam
 })
 
 test_that("comparison runner resumes successful combinations and reruns errors", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   rows <- data.frame(
     task = c("taskA", "taskA", "taskA"),
@@ -1010,8 +1002,7 @@ test_that("comparison runner resumes successful combinations and reruns errors",
 })
 
 test_that("comparison runner elapsed time covers outer method work", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   rows <- data.frame(
     method = c("DualAvg", "DualAvg"),
@@ -1026,8 +1017,7 @@ test_that("comparison runner elapsed time covers outer method work", {
 })
 
 test_that("comparison runner reads existing result and diagnostic files", {
-  runnerEnv <- new.env(parent = globalenv())
-  sys.source(extrasPath("runComparisonMatrix.R"), runnerEnv)
+  runnerEnv <- comparisonRunnerEnv()
 
   tmp <- tempfile("comparison-resume-")
   dir.create(tmp)

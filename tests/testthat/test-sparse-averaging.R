@@ -1,9 +1,5 @@
 sparseRunner <- function() {
-  path <- testthat::test_path("..", "..", "extras", "runComparisonMatrix.R")
-  if (!file.exists(path)) skip("Extras scripts unavailable")
-  env <- new.env(parent = globalenv())
-  sys.source(path, env)
-  env
+  comparisonRunnerEnv()
 }
 
 test_that("soft thresholding solves the coefficient-distance L1 objective", {
