@@ -27,6 +27,9 @@ loadClientData <- function(path, popSettings) {
 #' @export
 getClientFeatures <- function(plpData) {
   covariateRef <- plpData$covariateData$covariateRef |> dplyr::collect()
+  # Lets covariate combinations tell an unobserved covariate from an unextracted one.
+  attr(covariateRef, "requestedCohortCovariates") <-
+    .requestedCohortCovariates(plpData$metaData$covariateSettings)
   covariateRef
 }
 
@@ -45,11 +48,13 @@ createGlobalMap <- function(covRefList,
                             covariateIds = NULL,
                             analysisIds = NULL) {
   type <- match.arg(type)
-  covRefList <- lapply(covRefList, filterCovariateRef,
-    featureSet = featureSet,
-    covariateIds = covariateIds,
-    analysisIds = analysisIds
-  )
+  covRefList <- lapply(seq_along(covRefList), function(i) {
+    tryCatch(filterCovariateRef(covRefList[[i]],
+      featureSet = featureSet,
+      covariateIds = covariateIds,
+      analysisIds = analysisIds
+    ), error = function(e) stop("Training site ", i, ": ", conditionMessage(e), call. = FALSE))
+  })
   idLists <- lapply(covRefList, `[[`, "covariateId")
   if (type == "union") {
     allIds <- sort(unique(unlist(idLists)))
@@ -82,6 +87,7 @@ filterCovariateRef <- function(covariateRef,
   ageSexIds <- c(1002, 8532001)
 
   if (inherits(featureSet, "featureSettings")) {
+    covariateRef <- .combineCovariateRef(covariateRef, .featureCombinations(featureSet))
     keep <- .selectFeatureSettings(covariateRef, featureSet)
   } else if (!identical(featureSet, "all")) {
     if (identical(featureSet, "ageSex")) {
@@ -162,11 +168,15 @@ filterCovariateRef <- function(covariateRef,
 #' @return list with `xMatrix`, summary vectors, labels, and row count
 #' @export
 createClientMatrix <- function(plpData, config) {
-  sp <- PatientLevelPrediction::toSparseM(plpData,
-    cohort = plpData$population,
-    map = config$mapping
-  )
-  xMatrix <- sp$dataMatrix
+  combinations <- .featureCombinations(config$featureSet)
+  xMatrix <- if (length(combinations)) {
+    .combinedClientMatrix(plpData, config$mapping, combinations)
+  } else {
+    PatientLevelPrediction::toSparseM(plpData,
+      cohort = plpData$population,
+      map = config$mapping
+    )$dataMatrix
+  }
   if (config$intercept) {
     xMatrix <- cbind(
       Matrix::Matrix(1, nrow(xMatrix), sparse = TRUE),

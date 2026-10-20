@@ -6,9 +6,20 @@
 #' extracted covariates are candidates. Selected covariates are aligned across
 #' training sites by intersection, and an intercept is always included.
 #'
+#' Combinations replace groups of binary covariates by one indicator that is 1
+#' when any component is nonzero (logical OR, not a sum). They are applied at
+#' every site before selection, intersection and filtering. FeatureExtraction
+#' omits covariates no patient has, so a component absent from a site's data is
+#' zero there. A component that the site's recorded extraction settings show
+#' was never requested stops the run instead of being treated as zero.
+#'
 #' @param covariateIds Covariate ids to include, or `NULL`.
 #' @param analysisIds FeatureExtraction analysis ids whose covariates to include,
 #'   or `NULL`.
+#' @param combinations List of combinations, each a list with `covariateId`
+#'   (a new id, distinct from every extracted covariate), `name` and
+#'   `components` (the covariate ids to combine). Selection applies to the
+#'   combined covariate, which takes its components' analysis id.
 #' @param minFraction Covariates with nonzero values in fewer than this fraction
 #'   of outer-training entries are removed, together with redundant and
 #'   near-constant columns. The filter is estimated from site summaries before
@@ -16,7 +27,8 @@
 #'   held-out site. `NULL` disables the shared filter.
 #' @return A `featureSettings` object.
 #' @export
-createFeatureSettings <- function(covariateIds = NULL, analysisIds = NULL, minFraction = 0.001) {
+createFeatureSettings <- function(covariateIds = NULL, analysisIds = NULL, minFraction = 0.001,
+                                  combinations = list()) {
   ids <- function(x, name) {
     if (is.null(x)) return(NULL)
     if (!is.numeric(x) || !length(x) || any(!is.finite(x)) || any(x < 0) || any(x != round(x))) {
@@ -28,11 +40,98 @@ createFeatureSettings <- function(covariateIds = NULL, analysisIds = NULL, minFr
       !is.finite(minFraction) || minFraction < 0 || minFraction > 1)) {
     stop("minFraction must be NULL or a single number between 0 and 1", call. = FALSE)
   }
+  if (!is.list(combinations)) stop("combinations must be a list", call. = FALSE)
+  combinations <- lapply(combinations, function(combination) {
+    if (!is.list(combination) || !setequal(names(combination), c("covariateId", "name", "components"))) {
+      stop("Each combination must be a list with covariateId, name and components", call. = FALSE)
+    }
+    if (!is.character(combination$name) || length(combination$name) != 1L || !nzchar(combination$name)) {
+      stop("Each combination needs a single non-empty name", call. = FALSE)
+    }
+    covariateId <- ids(combination$covariateId, "A combination covariateId")
+    components <- ids(combination$components, "Combination components")
+    if (length(covariateId) != 1L || length(components) < 2L || covariateId %in% components) {
+      stop("Each combination needs one new covariateId and at least two other components", call. = FALSE)
+    }
+    list(covariateId = covariateId, name = combination$name, components = components)
+  })
+  used <- unlist(lapply(combinations, function(x) c(x$covariateId, x$components)))
+  if (anyDuplicated(used)) stop("Combinations must not share covariate ids", call. = FALSE)
   structure(list(
     covariateIds = ids(covariateIds, "covariateIds"),
     analysisIds = ids(analysisIds, "analysisIds"),
-    minFraction = minFraction
+    minFraction = minFraction,
+    combinations = combinations
   ), class = "featureSettings")
+}
+
+.featureCombinations <- function(featureSet) {
+  if (inherits(featureSet, "featureSettings")) featureSet$combinations %||% list() else list()
+}
+
+# Cohort covariate ids requested by a site's FeatureExtraction settings, with the
+# analysis ids they use, or NULL when the settings record no cohort covariates.
+.requestedCohortCovariates <- function(covariateSettings) {
+  if (inherits(covariateSettings, "covariateSettings")) covariateSettings <- list(covariateSettings)
+  cohorts <- Filter(function(s) is.list(s) && !is.null(s$covariateCohorts), covariateSettings %||% list())
+  if (!length(cohorts)) return(NULL)
+  list(
+    covariateIds = unlist(lapply(cohorts, function(s) s$covariateCohorts$cohortId * 1000 + s$analysisId)),
+    analysisIds = unique(vapply(cohorts, function(s) as.numeric(s$analysisId), numeric(1)))
+  )
+}
+
+# Replaces each combination's component rows by one combined covariate row. A
+# component absent from the data is zero, unless the site's recorded extraction
+# settings show that its cohort covariate was never requested.
+.combineCovariateRef <- function(covariateRef, combinations) {
+  requested <- attr(covariateRef, "requestedCohortCovariates")
+  for (combination in combinations) {
+    missing <- setdiff(combination$components, covariateRef$covariateId)
+    if (!is.null(requested)) {
+      notExtracted <- missing[missing %% 1000 %in% requested$analysisIds &
+        !missing %in% requested$covariateIds]
+      if (length(notExtracted)) {
+        stop("Covariate combination '", combination$name, "' has component(s) ",
+          paste(notExtracted, collapse = ", "), " that this site's extraction did not request",
+          call. = FALSE)
+      }
+    }
+    if (combination$covariateId %in% covariateRef$covariateId) {
+      stop("Combined covariate id ", combination$covariateId, " is already an extracted covariate",
+        call. = FALSE)
+    }
+    parts <- covariateRef$covariateId %in% combination$components
+    if (!any(parts)) next
+    analysisId <- unique(covariateRef$analysisId[parts])
+    combined <- covariateRef[which(parts)[1], , drop = FALSE]
+    combined$covariateId <- combination$covariateId
+    if ("analysisId" %in% names(combined)) combined$analysisId <- if (length(analysisId) == 1L) analysisId else NA
+    if ("covariateName" %in% names(combined)) combined$covariateName <- combination$name
+    kept <- rbind(covariateRef[!parts, , drop = FALSE], combined)
+    attr(kept, "requestedCohortCovariates") <- requested
+    covariateRef <- kept
+  }
+  covariateRef
+}
+
+# Builds combined indicator columns from their components' columns: the mapping
+# has the combined ids, so components are mapped to temporary extra columns.
+.combinedClientMatrix <- function(plpData, mapping, combinations) {
+  combinedIds <- vapply(combinations, `[[`, numeric(1), "covariateId")
+  components <- unlist(lapply(combinations, `[[`, "components"))
+  extended <- rbind(
+    mapping[!mapping$covariateId %in% combinedIds, c("covariateId", "columnId"), drop = FALSE],
+    data.frame(covariateId = components, columnId = nrow(mapping) + seq_along(components))
+  )
+  x <- PatientLevelPrediction::toSparseM(plpData, cohort = plpData$population, map = extended)$dataMatrix
+  for (combination in combinations) {
+    column <- mapping$columnId[mapping$covariateId == combination$covariateId]
+    if (!length(column)) next
+    parts <- extended$columnId[extended$covariateId %in% combination$components]
+    x[, column] <- as.numeric(Matrix::rowSums(x[, parts, drop = FALSE] != 0) > 0)
+  }
+  x[, seq_len(nrow(mapping)), drop = FALSE]
 }
 
 .selectFeatureSettings <- function(covariateRef, settings) {

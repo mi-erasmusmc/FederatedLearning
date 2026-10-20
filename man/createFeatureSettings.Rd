@@ -7,7 +7,8 @@
 createFeatureSettings(
   covariateIds = NULL,
   analysisIds = NULL,
-  minFraction = 0.001
+  minFraction = 0.001,
+  combinations = list()
 )
 }
 \arguments{
@@ -21,6 +22,11 @@ of outer-training entries are removed, together with redundant and
 near-constant columns. The filter is estimated from site summaries before
 any penalty selection and applied unchanged to every method and the
 held-out site. \code{NULL} disables the shared filter.}
+
+\item{combinations}{List of combinations, each a list with \code{covariateId}
+(a new id, distinct from every extracted covariate), \code{name} and
+\code{components} (the covariate ids to combine). Selection applies to the
+combined covariate, which takes its components' analysis id.}
 }
 \value{
 A \code{featureSettings} object.
@@ -31,4 +37,12 @@ training-only filter. A covariate is selected when its id is in
 \code{covariateIds} or its analysis is in \code{analysisIds}. With both \code{NULL}, all
 extracted covariates are candidates. Selected covariates are aligned across
 training sites by intersection, and an intercept is always included.
+}
+\details{
+Combinations replace groups of binary covariates by one indicator that is 1
+when any component is nonzero (logical OR, not a sum). They are applied at
+every site before selection, intersection and filtering. FeatureExtraction
+omits covariates no patient has, so a component absent from a site's data is
+zero there. A component that the site's recorded extraction settings show
+was never requested stops the run instead of being treated as zero.
 }
