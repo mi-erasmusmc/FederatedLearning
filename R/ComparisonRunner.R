@@ -1175,7 +1175,9 @@ preprocessBaselineData <- function(trainData, testData = NULL, config, args) {
   list(trainData = trainData, testData = testData, preprocessor = preprocessor)
 }
 
-fitCyclopsWeights <- function(clientDataList, args, seed, intercept = TRUE) {
+# Fits a Cyclops lasso to the stacked rows of clientDataList. With a fixed
+# variance it skips Cyclops cross-validation and uses that prior variance.
+fitCyclopsWeights <- function(clientDataList, args, seed, intercept = TRUE, variance = NULL) {
   if (!requireNamespace("Cyclops", quietly = TRUE)) {
     stop("Cyclops is required for pooled/local baseline models")
   }
@@ -1193,8 +1195,9 @@ fitCyclopsWeights <- function(clientDataList, args, seed, intercept = TRUE) {
   cyclopsData <- Cyclops::createCyclopsData(y = y, sx = x, modelType = "lr")
   # A constant sparse column is not automatically recognized as an intercept.
   excluded <- if (isTRUE(intercept)) as.numeric(Cyclops::getCovariateIds(cyclopsData)[1L]) else NULL
-  useCv <- logicalArg(argValue(args, "cyclops-cv"), TRUE)
-  variance <- numArg(argValue(args, "cyclops-variance"), numArg(argValue(args, "baseline-variance"), 0.01))
+  useCv <- is.null(variance) && logicalArg(argValue(args, "cyclops-cv"), TRUE)
+  variance <- variance %||%
+    numArg(argValue(args, "cyclops-variance"), numArg(argValue(args, "baseline-variance"), 0.01))
   startingVariance <- numArg(
     argValue(args, "cyclops-starting-variance"),
     numArg(argValue(args, "baseline-starting-variance"), 0.01)
@@ -1260,12 +1263,58 @@ fitCyclopsWeights <- function(clientDataList, args, seed, intercept = TRUE) {
 }
 
 fitBaselineWeights <- function(clientDataList, args, seed, intercept = TRUE) {
+  if (length(clientDataList) == 1L && logicalArg(argValue(args, "cyclops-cv"), TRUE)) {
+    return(tuneLocalCyclopsFit(clientDataList[[1]], args, seed, intercept))
+  }
   fitCyclopsWeights(
     clientDataList = clientDataList,
     args = args,
     seed = seed,
     intercept = intercept
   )
+}
+
+clientRows <- function(clientData, rows) {
+  list(xMatrix = clientData$xMatrix[rows, , drop = FALSE], yLabels = clientData$yLabels[rows],
+    n = length(rows))
+}
+
+# Local lasso: the prior variance maximises the validation log likelihood of
+# outcome-stratified folds within the site, pooled over held-out patients, and
+# the model is then refitted on all of the site's training data.
+tuneLocalCyclopsFit <- function(clientData, args, seed, intercept = TRUE) {
+  start <- Sys.time()
+  k <- intArg(argValue(args, "local-cv-folds"), 3L)
+  y <- clientData$yLabels
+  folds <- .stratifiedFoldId(y, k, seed)
+  for (fold in seq_len(k)) {
+    if (length(unique(y[folds != fold])) < 2L || !any(folds == fold)) {
+      stop("Local lasso CV needs both outcome classes in every training fold and nonempty folds")
+    }
+  }
+  scoreVariance <- function(variance) {
+    loss <- vapply(seq_len(k), function(fold) {
+      fit <- fitCyclopsWeights(list(clientRows(clientData, which(folds != fold))), args, seed,
+        intercept, variance = variance)
+      held <- which(folds == fold)
+      binaryLogLoss(as.numeric(clientData$xMatrix[held, , drop = FALSE] %*% fit$w), y[held],
+        meanLoss = FALSE)
+    }, numeric(1))
+    sizes <- tabulate(folds, k)
+    c(-sum(loss) / sum(sizes), stats::sd(-loss / sizes))
+  }
+  search <- .searchPriorVariance(scoreVariance,
+    startingVariance = numArg(argValue(args, "cyclops-starting-variance"),
+      numArg(argValue(args, "baseline-starting-variance"), 0.01)),
+    maxEvals = intArg(argValue(args, "lambda-search-max-evals"), 25L))
+  fit <- fitCyclopsWeights(list(clientData), args, seed, intercept, variance = search$variance)
+  fit$fittingSettings$tuning <- list(
+    validation = "stratifiedFolds", folds = k, seed = seed,
+    foldSizes = tabulate(folds, k), foldOutcomes = tabulate(folds[y == 1], k),
+    score = "pooled validation log likelihood per patient",
+    trace = search$trace, stopReason = search$stopReason)
+  fit$elapsedSeconds <- as.numeric(difftime(Sys.time(), start, units = "secs"))
+  fit
 }
 
 fitLocalBaselineSafely <- function(trainData, localIndex, trainClientId, args, seed, intercept = TRUE) {

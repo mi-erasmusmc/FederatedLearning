@@ -886,24 +886,7 @@
 # cv.glmnet's default fold draw under a fixed RNG kind and seed, so the local
 # initializer is reproducible on unseeded workers. The caller's RNG state is restored.
 .adapLocalInitFoldId <- function(n, seed, nfolds = 10L) {
-  oldKind <- RNGkind()
-  oldSeed <- if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-    get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  } else {
-    NULL
-  }
-  on.exit({
-    do.call(RNGkind, as.list(oldKind))
-    if (is.null(oldSeed)) {
-      if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
-        rm(".Random.seed", envir = .GlobalEnv)
-      }
-    } else {
-      assign(".Random.seed", oldSeed, envir = .GlobalEnv)
-    }
-  }, add = TRUE)
-  set.seed(seed, kind = "Mersenne-Twister", normal.kind = "Inversion", sample.kind = "Rejection")
-  sample(rep(seq_len(nfolds), length.out = n))
+  .withFixedSeed(seed, sample(rep(seq_len(nfolds), length.out = n)))
 }
 
 .fitPdaStyleLocalLasso <- function(xRaw, xDesign, y, config) {

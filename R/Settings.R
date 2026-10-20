@@ -266,7 +266,7 @@ createRunSettings <- function(hosts = "localhost", mirai = FALSE, debug = FALSE,
   "eta-client", "eta-server", "inner-folds", "k", "lambda", "lambda-cv-global-adjustment",
   "lambda-cv-max-rows", "lambda-grid-len", "lambda-search", "lambda-search-max-evals", "lambda-search-tol",
   "lambda-selection-metric", "lambda-selection-tie-tolerance", "lead-index", "local-average-metric",
-  "local-average-threshold", "local-average-thresholds", "local-debias-max-features",
+  "local-average-threshold", "local-average-thresholds", "local-cv-folds", "local-debias-max-features",
   "local-debias-multiplier", "local-ensemble-weighting", "max-inner", "max-iter", "max-outer",
   "odal-curvature-action", "odal-curvature-tau", "odal-init", "odal-ridge-fallback", "odal-ridge-lambda",
   "pda-rounds", "pooled-diagnostics", "pooled-kkt-tolerance", "profile", "rounds"
