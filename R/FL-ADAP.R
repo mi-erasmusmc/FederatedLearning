@@ -329,6 +329,7 @@
   fit$kktMaxCoordinate <- NA_integer_
   fit$betaMaxAbs <- if (length(beta)) max(abs(beta), na.rm = TRUE) else NA_real_
   fit$etaMaxAbs <- NA_real_
+  fit$completeHessianEigenMin <- NA_real_
   fit$convergenceReason <- fit$convergenceReason %||% ""
 
   if (!length(beta) || any(!is.finite(beta))) {
@@ -362,6 +363,8 @@
   fit$kktMaxAbs <- kkt$maxViolation
   fit$kktViolating <- kkt$violating
   fit$kktMaxCoordinate <- kkt$maxCoordinate
+  # Complete smooth surrogate curvature at the returned point; reported, not used for acceptance.
+  fit$completeHessianEigenMin <- .adapEigenRange(comp$B)$min
   if (!is.finite(fit$kktMaxAbs)) {
     fit$failureReason <- "non_finite_kkt"
     fit$converged <- FALSE
@@ -771,7 +774,8 @@
     coordinateGradient = if (is.list(fit) && !is.null(fit$coordinateGradient)) fit$coordinateGradient else NA_real_,
     failureDiagMin = if (is.list(fit) && !is.null(fit$failureDiagMin)) fit$failureDiagMin else NA_real_,
     failureDiagMax = if (is.list(fit) && !is.null(fit$failureDiagMax)) fit$failureDiagMax else NA_real_,
-    failureDiagNonPositive = if (is.list(fit) && !is.null(fit$failureDiagNonPositive)) fit$failureDiagNonPositive else NA_real_
+    failureDiagNonPositive = if (is.list(fit) && !is.null(fit$failureDiagNonPositive)) fit$failureDiagNonPositive else NA_real_,
+    completeHessianEigenMin = if (is.list(fit) && !is.null(fit$completeHessianEigenMin)) fit$completeHessianEigenMin else NA_real_
   )
 }
 

@@ -12,6 +12,29 @@
   variant
 }
 
+# Stationarity and complete surrogate curvature at the returned point, for reporting only.
+# Names avoid a `beta` prefix so `value$beta` cannot partially match them.
+.odalReturnDiagnostics <- function(beta, betaBar, xDesign, y, linearCorrection,
+                                   quadraticCorrection = NULL) {
+  tryCatch({
+    gradient <- .logisticNegGradient(beta, xDesign, y) + linearCorrection
+    hessian <- .logisticNegHessian(beta, xDesign)
+    if (!is.null(quadraticCorrection)) {
+      gradient <- gradient + as.numeric(quadraticCorrection %*% (beta - betaBar))
+      hessian <- hessian + quadraticCorrection
+    }
+    list(
+      returnGradientMaxAbs = max(abs(gradient)),
+      returnHessianEigenMin = .adapEigenRange(hessian)$min,
+      returnBetaMaxAbs = max(abs(beta)),
+      returnEtaMaxAbs = max(abs(as.numeric(xDesign %*% beta)))
+    )
+  }, error = function(e) {
+    list(returnGradientMaxAbs = NA_real_, returnHessianEigenMin = NA_real_,
+      returnBetaMaxAbs = NA_real_, returnEtaMaxAbs = NA_real_)
+  })
+}
+
 .odalCorrectionDiagnostics <- function(globalHess, leadHess, tau = 1e-10) {
   correction <- globalHess - leadHess
   eig <- tryCatch(
@@ -257,12 +280,13 @@
       method = config$optimMethod %||% "BFGS",
       control = list(maxit = config$optimMaxit %||% 1000L)
     )
-    return(list(
+    return(c(list(
       w = fit$par,
       convergence = fit$convergence,
       value = fit$value,
       optimMessage = fit$message %||% NA_character_
-    ))
+    ), .odalReturnDiagnostics(fit$par, betaBar, xDesign, y, otherGrad - localGradBar,
+      if (identical(odalVariant, "second")) otherHess - localHessBar else NULL)))
   }
 
   list()
@@ -422,6 +446,10 @@
           optimConvergence = leadReport$convergence,
           optimMessage = leadReport$optimMessage %||% NA_character_,
           objective = leadReport$value,
+          odalGradientMaxAbs = leadReport[["returnGradientMaxAbs"]] %||% NA_real_,
+          odalCompleteHessianEigenMin = leadReport[["returnHessianEigenMin"]] %||% NA_real_,
+          odalBetaMaxAbs = leadReport[["returnBetaMaxAbs"]] %||% NA_real_,
+          odalEtaMaxAbs = leadReport[["returnEtaMaxAbs"]] %||% NA_real_,
           hessianDim = state$hessianDim %||% NA_character_,
           hessianDiagMin = state$hessianDiagMin %||% NA_real_,
           hessianDiagMax = state$hessianDiagMax %||% NA_real_,
