@@ -11,9 +11,18 @@ clusterInit <- function(clientHosts, clientPaths, mirai = TRUE) {
   } else {
     cl <- parallelly::makeClusterPSOCK(
       workers = clientHosts,
-      rscript_libs = .libPaths(), # TODO is this needed?
-      default_packages = c("PatientLevelPrediction", "FederatedLearning"),
+      rscript_libs = .libPaths(),
+      default_packages = c("datasets", "utils", "grDevices", "graphics", "stats", "methods")
     )
+    # Startup packages load before rscript_libs, so load study packages afterwards.
+    tryCatch(parallel::clusterCall(cl, function() {
+      suppressPackageStartupMessages(library(PatientLevelPrediction))
+      suppressPackageStartupMessages(library(FederatedLearning))
+      NULL
+    }), error = function(error) {
+      parallel::stopCluster(cl)
+      stop(error)
+    })
   }
   cl
 }
