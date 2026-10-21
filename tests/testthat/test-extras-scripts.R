@@ -741,21 +741,6 @@ test_that("comparison runner helpers parse external comparison settings", {
     verbose = FALSE
   )
   expect_equal(selectedFixed$etaClient, 1)
-  expect_equal(
-    runnerEnv$communicationMessages(
-      fit = list(roundsCompleted = 17L),
-      config = list(rounds = 100L, trainClientPaths = paste0("site", 1:4))
-    ),
-    68L
-  )
-  expect_equal(
-    runnerEnv$communicationMessages(
-      fit = list(),
-      config = list(rounds = 100L, trainClientPaths = paste0("site", 1:4))
-    ),
-    400L
-  )
-
   defaultArgs <- runnerEnv$parseArgs(character())
   expect_equal(runnerEnv$methodConfig("ADAP_PDA", "ageSex", defaultArgs)$lambdaSearch, "optimize")
   expect_equal(runnerEnv$methodConfig("ADAP", "ageSex", defaultArgs)$lambdaSearch, "optimize")

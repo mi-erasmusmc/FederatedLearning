@@ -211,6 +211,7 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     stop("lambdaSearchMaxEvals must be a positive finite integer")
   }
   trace <- list()
+  communication <- list()
   searchScale <- lambdaStrategy$scale %||% "lambda"
   stopReason <- "searchConverged"
   context <- list(
@@ -310,6 +311,8 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     }
     clusterCreateMatrices(valCluster, res$config)
     ev <- clusterEvaluateModel(valCluster, res$w)
+    communication[[length(communication) + 1L]] <<- .asTuningCommunication(res$communication)
+    communication[[length(communication) + 1L]] <<- .validationCommunication(res$w)
     score <- .innerCvScoreFromEvaluation(ev)
     trace[[traceIndex]]$score <<- score
     score
@@ -388,6 +391,7 @@ tuneLambda <- function(cl, algorithm, configBase, trainIds,
     searchScale = searchScale,
     trace = do.call(rbind, trace),
     stopReason = stopReason,
-    perf = bestPerf
+    perf = bestPerf,
+    communication = .combineCommunication(communication)
   )
 }

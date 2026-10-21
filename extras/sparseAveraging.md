@@ -98,9 +98,10 @@ and a threshold grid per validation site, so separate exchanges for every
 threshold are not inherently necessary. Inner preprocessing may also require
 additional training-site summaries.
 
-The current baseline runner simulates these operations locally and does not
-instrument protocol messages or payload sizes. Accordingly, `messages` and
-`numbers` are NA, not zero. Do not describe the default tuned workflow as having
+The baseline runner simulates these operations locally, so its communication
+is modeled (`communicationBasis = "modeled"`): `messages` and `numbers` count
+each site sending its coefficients once. Threshold selection is not modeled, so
+the `tuning*` columns are NA, not zero, when the threshold is tuned. Do not describe the default tuned workflow as having
 the same end-to-end communication as fixed-threshold one-shot averaging.
 
 ## Local real-data benchmark

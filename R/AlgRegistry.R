@@ -38,7 +38,8 @@
                                clientUpdate, 
                                serverRound,
                                lambdaStrategy = NULL,
-                               supportsClientSampling = FALSE) {
+                               supportsClientSampling = FALSE,
+                               protocol = NULL) {
   if (is.null(lambdaStrategy)) {
     lambdaStrategy <- .lambdaStrategyDefault()
   }
@@ -48,7 +49,8 @@
     clientUpdate = clientUpdate,
     serverRound = serverRound,
     lambdaStrategy = lambdaStrategy,
-    supportsClientSampling = supportsClientSampling
+    supportsClientSampling = supportsClientSampling,
+    protocol = protocol
   )
 }
 

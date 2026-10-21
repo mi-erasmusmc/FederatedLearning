@@ -115,8 +115,9 @@ test_that("worker summary exchange cannot reuse a previous feature map", {
   args <- list("baseline-preprocess-min-fraction" = "0.2")
   result <- env$fitFederatedPreprocessor(cl, cfg, args)
   expect_identical(result$mapping$covariateId, c(1002, 40, 50))
-  expect_equal(result$communication$messages, 2)
-  expect_equal(result$communication$numbers, 2 * (1 + 3 * 6))
+  totals <- .communicationTotals(result$communication)
+  expect_equal(c(totals$exchanges, totals$messages, totals$values), c(1, 2, 2 * (1 + 3 * 6)))
+  expect_equal(unique(result$communication$stage), "preprocessing")
   expect_gte(result$elapsedSeconds, 0)
   again <- env$fitFederatedPreprocessor(cl, cfg, list("baseline-preprocess-min-fraction" = "0"))
   expect_identical(again$mapping$covariateId, c(1002, 30, 40, 50))
@@ -267,7 +268,9 @@ test_that("filtered maps survive lambda tuning and artifact saving without doubl
   args <- list("baseline-preprocess-min-fraction" = "0.2")
   filtering <- preprocessorFromSummaries(lapply(f$clients, trainingFeatureSummary, intercept = TRUE),
     f$mapping, env$baselinePreprocessSettings(args))
-  filtering$communication <- list(messages = 2L, numbers = 38L)
+  filtering$communication <- data.frame(stage = "preprocessing", exchange = "feature summaries",
+    direction = "site to server", exchanges = 1, messages = 2, values = 38, bytes = 400,
+    maxMessageValues = 19)
   filtering$elapsedSeconds <- 0.5
   cfg <- env$methodConfig("DualAvg", "all", list("dualavg-rounds" = "3"))
   cfg$mapping <- filtering$mapping

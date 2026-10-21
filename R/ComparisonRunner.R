@@ -695,6 +695,8 @@ tuneDualAvgForFold <- function(method, clTrain, config, trainPopSizes, args, ver
   config$lambdaSearchTrace <- tuned$trace
   config$lambdaSearchStopReason <- tuned$stopReason
   config$innerCvScore <- tuned$perf %||% NA_real_
+  config$tuningCommunication <- .combineCommunication(list(config$tuningCommunication,
+    tuned$communication))
   if (isTRUE(verbose)) {
     message(sprintf(
       "Selected %s penalty: prior variance = %.5g, mean-loss lambda = %.5g, inner-CV log likelihood = %.5g",
@@ -721,6 +723,7 @@ scoreFederatedConfigInnerCv <- function(method, clTrain, config, trainIds, verbo
   config$mapping <- globalMap
   config$p <- nrow(globalMap)
 
+  communication <- list(config$tuningCommunication)
   scores <- vapply(trainIds, function(valId) {
     train2 <- setdiff(trainIds, valId)
     trainCluster <- subsetCluster(clTrain, train2)
@@ -744,8 +747,11 @@ scoreFederatedConfigInnerCv <- function(method, clTrain, config, trainIds, verbo
     valConfig$p <- nrow(fit$config$mapping)
     FederatedLearning::clusterCreateMatrices(valCluster, valConfig)
     ev <- FederatedLearning::clusterEvaluateModel(valCluster, fit$w)
+    communication[[length(communication) + 1L]] <<- .asTuningCommunication(fit$communication)
+    communication[[length(communication) + 1L]] <<- .validationCommunication(fit$w)
     .innerCvScoreFromEvaluation(ev)
   }, numeric(1))
+  config$tuningCommunication <- .combineCommunication(communication)
 
   score <- .innerCvScoreMean(scores)
   if (!is.finite(score)) {
@@ -792,6 +798,9 @@ selectMethodConfigForFold <- function(method, clTrain, configs, trainPopSizes, a
   } else {
     best <- which.max(scores)
   }
+  # Selection pays for tuning every candidate configuration.
+  tunedConfigs[[best]]$tuningCommunication <- .combineCommunication(
+    lapply(tunedConfigs, `[[`, "tuningCommunication"))
   if (isTRUE(verbose)) {
     message(sprintf(
       "Selected %s config by inner CV: %s (inner-CV log likelihood = %.5g)",
@@ -1487,6 +1496,33 @@ tuneSparseAverage <- function(trainData, method, args, config, seed) {
     trace = trace, splits = splits, settings = settings)
 }
 
+# Baselines run centrally, so their transfers are modeled: each site sends its
+# coefficients once, and LocalBestLasso scores each model at the other training
+# sites. Pooled data and a tuned sparse-averaging threshold are not counted.
+baselineCommunication <- function(method, p, nModels, nTrainSites, thresholdTuned = FALSE) {
+  if (identical(method, "PooledLasso")) {
+    return(list(fit = NA, tuning = NA, basis = "pooledData"))
+  }
+  if (identical(method, "LocalSiteLasso")) {
+    return(list(fit = NULL, tuning = NULL, basis = "none"))
+  }
+  model <- numeric(p)
+  log <- .newCommunicationLog()
+  if (identical(method, "BiggestSiteLasso")) {
+    .recordExchange(log, "site sizes", vector("list", nTrainSites), rep(list(0), nTrainSites))
+    .recordExchange(log, "local models", list(NULL), list(model))
+  } else {
+    .recordExchange(log, "local models", vector("list", nModels), rep(list(model), nModels))
+  }
+  tuning <- NULL
+  if (identical(method, "LocalBestLasso")) {
+    tuning <- .validationCommunication(model, nModels * (nTrainSites - 1L))
+  } else if (thresholdTuned) {
+    tuning <- NA
+  }
+  list(fit = .communicationTable(log), tuning = tuning, basis = "modeled")
+}
+
 fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
                             args, task, featureSet, fold, trainClientIds,
                             testClientIds, testClientIndexes, modelDirectory = NULL) {
@@ -1644,6 +1680,9 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     }
   }
 
+  communication <- baselineCommunication(method, length(fits[[1]]$w),
+    if (method %in% c("PooledLasso", "BiggestSiteLasso")) 1L else length(localFits),
+    length(trainData), method %in% sparseAverageMethods && !isTRUE(thresholdTuning$settings$fixed))
   calibrationCurves <- list()
   baselineRows <- lapply(fits, function(fit) {
     pooledDiag <- if (isTRUE(config$pooledDiagnostics %||% TRUE) && is.null(fit$localFits)) {
@@ -1735,9 +1774,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
         stringsAsFactors = FALSE
       ),
       evalRows,
+      communicationColumns(communication$fit, communication$tuning, communication$basis),
       data.frame(
-        messages = if (method %in% sparseAverageMethods) NA_real_ else 0,
-        numbers = if (method %in% sparseAverageMethods) NA_real_ else 0,
         task = task,
         error = NA_character_,
         stringsAsFactors = FALSE
@@ -1814,9 +1852,8 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
           stringsAsFactors = FALSE
         ),
         evalRows,
+        communicationColumns(NULL, NULL, "none"),
         data.frame(
-          messages = 0,
-          numbers = 0,
           task = task,
           error = paste0("local baseline fit failed for ", failure$trainClientId, ": ", failure$error),
           stringsAsFactors = FALSE
@@ -1863,7 +1900,9 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       populationSettings = popSettings,
       trainPaths = trainPaths, testPaths = testPaths,
       trainClientIds = trainClientIds, testClientIds = testClientIds,
-      calibrationCurves = if (length(calibrationCurves)) do.call(rbind, calibrationCurves) else NULL
+      calibrationCurves = if (length(calibrationCurves)) do.call(rbind, calibrationCurves) else NULL,
+      communication = .combineCommunication(list(.asTuningCommunication(
+        if (is.data.frame(communication$tuning)) communication$tuning), communication$fit))
     ), baselineRows, modelDirectory)
   }
   baselineRows
@@ -1891,6 +1930,8 @@ summarizeResults <- function(rows) {
       meanElapsed = mean(x$elapsedSeconds, na.rm = TRUE),
       messages = maxOrNa(x$messages),
       numbers = maxOrNa(x$numbers),
+      bytes = maxOrNa(x$bytes),
+      tuningNumbers = maxOrNa(x$tuningNumbers),
       stringsAsFactors = FALSE
     )
   })
@@ -1913,9 +1954,16 @@ addPooledObjectiveGap <- function(rows) {
   rows
 }
 
-communicationMessages <- function(fit, config) {
-  roundsCompleted <- fit$roundsCompleted %||% config$rounds
-  roundsCompleted * length(config$trainClientPaths)
+# Result columns for the final fit and penalty tuning; `basis` says how counts
+# were obtained. NA marks communication that is not counted.
+communicationColumns <- function(fit, tuning, basis) {
+  missing <- list(exchanges = NA_real_, messages = NA_real_, values = NA_real_, bytes = NA_real_)
+  final <- if (identical(fit, NA)) missing else .communicationTotals(fit)
+  tuned <- if (identical(tuning, NA)) missing else .communicationTotals(tuning)
+  data.frame(communicationBasis = basis, exchanges = final$exchanges,
+    messages = final$messages, numbers = final$values, bytes = final$bytes,
+    tuningExchanges = tuned$exchanges, tuningMessages = tuned$messages,
+    tuningNumbers = tuned$values, tuningBytes = tuned$bytes, stringsAsFactors = FALSE)
 }
 
 adapFinalDiagnostic <- function(fit, name, default = NA_real_) {
@@ -2168,9 +2216,9 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       stringsAsFactors = FALSE
     ),
     evalRows,
+    communicationColumns(fit$communication, config$tuningCommunication,
+      fit$communicationBasis %||% NA_character_),
     data.frame(
-      messages = communicationMessages(fit, config),
-      numbers = fit$communicationNumbers %||% NA_real_,
       task = task,
       error = NA_character_,
       stringsAsFactors = FALSE
@@ -2179,8 +2227,10 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
   filtering <- fit$config$featureFiltering
   if (!is.null(filtering)) {
     resultRows$preprocessFingerprint <- filtering$fingerprint
-    resultRows$preprocessMessages <- filtering$communication$messages
-    resultRows$preprocessNumbers <- filtering$communication$numbers
+    preprocessing <- .communicationTotals(filtering$communication)
+    resultRows$preprocessMessages <- preprocessing$messages
+    resultRows$preprocessNumbers <- preprocessing$values
+    resultRows$preprocessBytes <- preprocessing$bytes
     resultRows$preprocessElapsedSeconds <- filtering$elapsedSeconds
   }
   saveModelArtifact(list(
@@ -2206,7 +2256,9 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     lambdaSelectionMetric = fit$lambdaSelectionMetric,
     adapCvDiagnostics = fit$adapCvDiagnostics,
     adapFinalDiagnostics = fit$adapFinalDiagnostics,
-    calibrationCurves = calibrationCurves
+    calibrationCurves = calibrationCurves,
+    communication = .combineCommunication(list(filtering$communication,
+      config$tuningCommunication, fit$communication))
   ), resultRows, modelDirectory)
 }
 

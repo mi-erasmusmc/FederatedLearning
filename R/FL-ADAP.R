@@ -3339,8 +3339,7 @@
         leadIndex = leadIndex,
         leadWeight = state$leadWeight,
         leadWeightMin = state$leadWeightMin,
-        skipConvergence = TRUE,
-        communicationNumbers = length(betaBar) * length(clientReports)
+        skipConvergence = TRUE
       )
     ))
   }
@@ -3437,9 +3436,7 @@
         maxConvAlpha = state$maxConvAlpha %||% NA_real_,
         maxConvAlphaStatus = state$maxConvAlphaStatus %||% NA_character_,
         maxConvAlphaEigenMin = state$maxConvAlphaEigenMin %||% NA_real_,
-        maxConvAlphaLowerEigenMin = state$maxConvAlphaLowerEigenMin %||% NA_real_,
-        communicationNumbers = length(globalGrad) * length(clientReports) +
-          length(globalHess) * length(clientReports)
+        maxConvAlphaLowerEigenMin = state$maxConvAlphaLowerEigenMin %||% NA_real_
       )
     ))
   }
@@ -3487,8 +3484,7 @@
           maxConvAlpha = state$maxConvAlpha %||% NA_real_,
           maxConvAlphaStatus = state$maxConvAlphaStatus %||% NA_character_,
           maxConvAlphaEigenMin = state$maxConvAlphaEigenMin %||% NA_real_,
-          maxConvAlphaLowerEigenMin = state$maxConvAlphaLowerEigenMin %||% NA_real_,
-          communicationNumbers = length(leadReport$w)
+          maxConvAlphaLowerEigenMin = state$maxConvAlphaLowerEigenMin %||% NA_real_
         )
       ))
     }
@@ -3511,7 +3507,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdap,
   serverRound = .serverRoundPdaAdap,
-  lambdaStrategy = .lambdaStrategyPdaAdap()
+  lambdaStrategy = .lambdaStrategyPdaAdap(),
+  protocol = .adapProtocol
 )
 
 .registerAlgorithm(
@@ -3520,7 +3517,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdap,
   serverRound = .serverRoundPdaAdap,
-  lambdaStrategy = .lambdaStrategyPdaAdap()
+  lambdaStrategy = .lambdaStrategyPdaAdap(),
+  protocol = .adapProtocol
 )
 
 .registerAlgorithm(
@@ -3529,7 +3527,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdap,
   serverRound = .serverRoundPdaAdap,
-  lambdaStrategy = .lambdaStrategyPdaAdap()
+  lambdaStrategy = .lambdaStrategyPdaAdap(),
+  protocol = .adapProtocol
 )
 
 .registerAlgorithm(
@@ -3538,7 +3537,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdap,
   serverRound = .serverRoundPdaAdap,
-  lambdaStrategy = .lambdaStrategyPdaAdap()
+  lambdaStrategy = .lambdaStrategyPdaAdap(),
+  protocol = .adapProtocol
 )
 
 .registerAlgorithm(
@@ -3547,7 +3547,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdap,
   serverRound = .serverRoundPdaAdap,
-  lambdaStrategy = .lambdaStrategyPdaAdap()
+  lambdaStrategy = .lambdaStrategyPdaAdap(),
+  protocol = .adapProtocol
 )
 
 .registerAlgorithm(
@@ -3556,7 +3557,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdap,
   serverRound = .serverRoundPdaAdap,
-  lambdaStrategy = .lambdaStrategyPdaAdap()
+  lambdaStrategy = .lambdaStrategyPdaAdap(),
+  protocol = .adapProtocol
 )
 
 .serverInitPdaAdapReduced <- function(config, mode = c("first", "diag")) {
@@ -3921,8 +3923,7 @@
       report = list(
         w = betaBar,
         leadIndex = leadIndex,
-        skipConvergence = TRUE,
-        communicationNumbers = length(betaBar) * length(clientReports)
+        skipConvergence = TRUE
       )
     ))
   }
@@ -3939,7 +3940,6 @@
     hessianDim <- NA_character_
     hessianDiagMin <- NA_real_
     hessianDiagMax <- NA_real_
-    communicationNumbers <- length(globalGrad) * length(clientReports)
     if (identical(mode, "diag")) {
       hessDiags <- do.call(cbind, lapply(clientReports, `[[`, "HessDiag"))
       globalHessDiag <- as.numeric(hessDiags %*% weights)
@@ -3947,7 +3947,6 @@
       hessianDim <- paste0(length(globalHessDiag), " diagonal")
       hessianDiagMin <- min(globalHessDiag, na.rm = TRUE)
       hessianDiagMax <- max(globalHessDiag, na.rm = TRUE)
-      communicationNumbers <- communicationNumbers + length(globalHessDiag) * length(clientReports)
     }
     return(list(
       state = state,
@@ -3958,8 +3957,7 @@
         hessianDim = hessianDim,
         hessianDiagMin = hessianDiagMin,
         hessianDiagMax = hessianDiagMax,
-        hessianCondition = NA_real_,
-        communicationNumbers = communicationNumbers
+        hessianCondition = NA_real_
       )
     ))
   }
@@ -3990,8 +3988,7 @@
           hessianDim = if (identical(mode, "diag")) paste0(length(state$globalHessDiag), " diagonal") else NA_character_,
           hessianDiagMin = if (identical(mode, "diag")) min(state$globalHessDiag, na.rm = TRUE) else NA_real_,
           hessianDiagMax = if (identical(mode, "diag")) max(state$globalHessDiag, na.rm = TRUE) else NA_real_,
-          hessianCondition = NA_real_,
-          communicationNumbers = length(leadReport$w)
+          hessianCondition = NA_real_
         )
       ))
     }
@@ -4006,7 +4003,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdapReduced,
   serverRound = .serverRoundPdaAdapReduced,
-  lambdaStrategy = .lambdaStrategyPdaAdap()
+  lambdaStrategy = .lambdaStrategyPdaAdap(),
+  protocol = .adapProtocol
 )
 
 .registerAlgorithm(
@@ -4015,5 +4013,6 @@
   clientInit = NULL,
   clientUpdate = .clientUpdatePdaAdapReduced,
   serverRound = .serverRoundPdaAdapReduced,
-  lambdaStrategy = .lambdaStrategyPdaAdap()
+  lambdaStrategy = .lambdaStrategyPdaAdap(),
+  protocol = .adapProtocol
 )

@@ -5,7 +5,8 @@ utils::globalVariables(c("clientData", "plpData"))
   clientUpdate = clientUpdateDualAveragingCpp,
   clientInit = NULL,
   serverRound  = serverRoundDualAveragingCpp,
-  supportsClientSampling = TRUE
+  supportsClientSampling = TRUE,
+  protocol = .dualAvgProtocol
 )
 
 .registerAlgorithm("DualAvg",
@@ -13,5 +14,6 @@ utils::globalVariables(c("clientData", "plpData"))
   clientUpdate = clientUpdateDualAveragingCpp,
   clientInit = NULL,
   serverRound  = serverRoundDualAveragingCpp,
-  supportsClientSampling = TRUE
+  supportsClientSampling = TRUE,
+  protocol = .dualAvgProtocol
 )

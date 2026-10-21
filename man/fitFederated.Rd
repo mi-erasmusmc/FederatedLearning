@@ -32,7 +32,9 @@ No extra client exchanges or changes to solver acceptance are introduced.}
 \item{verbose}{if TRUE, print optimization progress}
 }
 \value{
-A fitted model list. KKT safeguarding adds \code{converged}, \code{stopReason},
+A fitted model list. \code{communication} sums the messages of each
+exchange by direction, counting only protocol fields when the algorithm
+declares them (\code{communicationBasis}). KKT safeguarding adds \code{converged}, \code{stopReason},
 \code{kktMaxAbs}, \code{kktChecks}, and a per-check \code{kktHistory} data frame.
 Duality-gap diagnostics add \code{primalObjective},
 \code{dualLowerBound}, \code{dualityGap}, \code{dualBoundRound}, \code{dualGapChecks}, and

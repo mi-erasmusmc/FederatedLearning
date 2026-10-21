@@ -74,9 +74,10 @@ collectTrainingFeatureFilter <- function(cl, config, settings) {
     summarize(get("clientData", envir = .GlobalEnv), intercept)
   }, summarize = trainingFeatureSummary, intercept = config$intercept)
   out <- preprocessorFromSummaries(summaries, config$mapping, settings)
-  # Counts cover the new summary replies, not cluster setup or feature-map transport.
-  out$communication <- list(messages = length(summaries),
-    numbers = length(summaries) * (1 + 3 * config$p))
+  # Counts cover the summary replies, not cluster setup or feature-map transport.
+  log <- .newCommunicationLog()
+  .recordExchange(log, "feature summaries", vector("list", length(summaries)), summaries)
+  out$communication <- .communicationTable(log, "preprocessing")
   out$elapsedSeconds <- as.numeric(difftime(Sys.time(), start, units = "secs"))
   out
 }

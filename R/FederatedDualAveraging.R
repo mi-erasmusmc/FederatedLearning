@@ -76,5 +76,6 @@ serverRoundDA <- function(serverState,
   clientInit     = NULL,
   clientUpdate   = clientUpdateDA,
   serverRound    = serverRoundDA,
-  supportsClientSampling = TRUE
+  supportsClientSampling = TRUE,
+  protocol = .dualAvgProtocol
 )

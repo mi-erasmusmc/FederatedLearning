@@ -20,7 +20,9 @@
 #'   environment, outside shared results. Intended for local-worker simulation.
 #'   No extra client exchanges or changes to solver acceptance are introduced.
 #' @param verbose      if TRUE, print optimization progress
-#' @return A fitted model list. KKT safeguarding adds `converged`, `stopReason`,
+#' @return A fitted model list. `communication` sums the messages of each
+#'   exchange by direction, counting only protocol fields when the algorithm
+#'   declares them (`communicationBasis`). KKT safeguarding adds `converged`, `stopReason`,
 #'   `kktMaxAbs`, `kktChecks`, and a per-check `kktHistory` data frame.
 #'   Duality-gap diagnostics add `primalObjective`,
 #'   `dualLowerBound`, `dualityGap`, `dualBoundRound`, `dualGapChecks`, and
@@ -301,6 +303,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   }
   roundOffset <- as.integer(roundOffset)
   roundsCompleted <- 0L
+  communication <- .newCommunicationLog()
   kktChecks <- 0L
   kktMaxAbs <- NA_real_
   converged <- FALSE
@@ -342,6 +345,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     )
     # step 2: server round
     .captureSurrogateRound(config, serverState, report, r)
+    .recordProtocolRound(communication, algo, serverState, activeClients, report)
     srv <- algo$serverRound(
       serverState = serverState,
       clientReports = report,
@@ -372,6 +376,13 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
           isTRUE(serverReport$prepareDualGap), serverReport$dualGapRequest,
           serverReport$dualGapRound)
       )
+      # The objective after a final phase only reports the fit; it does not decide stopping.
+      if (!isTRUE(serverReport$done)) {
+        broadcast <- serverReport[intersect(c("w", "checkKkt", "prepareDualGap",
+          "dualGapRequest", "dualGapRound"), names(serverReport))]
+        .recordExchange(communication, "objective check",
+          rep(list(broadcast), length(localObjectives)), localObjectives)
+      }
       lossVec <- vapply(localObjectives, `[[`, numeric(1), "objective")
       globalObjective <- sum(lossVec)
       kktPassed <- !kktEnabled
@@ -478,7 +489,9 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   result <- list(
     w = if (!is.null(serverReport$w)) serverReport$w else serverState$w,
     config = config,
-    roundsCompleted = roundsCompleted
+    roundsCompleted = roundsCompleted,
+    communication = .communicationTable(communication),
+    communicationBasis = if (is.function(algo$protocol)) "protocol" else "transport"
   )
   if (kktEnabled) {
     result$converged <- converged

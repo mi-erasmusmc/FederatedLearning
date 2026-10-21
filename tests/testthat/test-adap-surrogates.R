@@ -553,7 +553,7 @@ test_that("ODAL1 avoids Hessian communication and ODAL2 reports indefinite corre
 
   expect_equal(first$state$odalVariant, "first")
   expect_equal(first$state$curvatureStatus, "first_order")
-  expect_equal(first$report$communicationNumbers, 4)
+  expect_equal(FederatedLearning:::.odalProtocol(state1)$exchange, "gradients")
   expect_null(first$state$otherHess)
 
   state2 <- FederatedLearning:::.serverInitODAL2(list(p = 1))
@@ -675,10 +675,11 @@ test_that("ADAP reduced phase aggregation distinguishes first-order and diagonal
 
   expect_equal(first1$state$globalGrad, as.numeric(cbind(g1, g2) %*% weights))
   expect_null(first1$state$globalHessDiag)
-  expect_equal(first1$report$communicationNumbers, length(g1) * 2)
+  expect_equal(FederatedLearning:::.adapProtocol(first0$state)$exchange, "gradients")
   expect_equal(diag1$state$globalGrad, as.numeric(cbind(g1, g2) %*% weights))
   expect_equal(diag1$state$globalHessDiag, as.numeric(cbind(h1, h2) %*% weights))
-  expect_equal(diag1$report$communicationNumbers, length(g1) * 2 + length(h1) * 2)
+  expect_equal(FederatedLearning:::.adapProtocol(diag0$state)$exchange,
+    "gradients and Hessian diagonals")
 })
 
 test_that("ADAP full-quadratic solver uses its quadratic lambda range and coordinate descent", {
@@ -1669,7 +1670,6 @@ test_that("PDA-style ADAP methods complete simulated multi-site workflows", {
     expect_length(out$report$w, 5L)
     expect_true(all(is.finite(out$report$w)))
     expect_equal(out$report$leadIndex, 1L)
-    expect_true(is.finite(out$report$communicationNumbers))
   }
 
   diagPda <- runMethod("ADAPDiag", list(adapDiagStyle = "pda"))

@@ -339,8 +339,7 @@
         betaBarMaxAbs = state$betaBarMaxAbs,
         betaBarL2 = state$betaBarL2,
         odalInitDiagnostics = initDiagnostics,
-        skipConvergence = TRUE,
-        communicationNumbers = length(betaBar) * length(clientReports)
+        skipConvergence = TRUE
       )
     ))
   }
@@ -353,7 +352,6 @@
     state <- serverState
     state$phase <- 2L
     state$otherGrad <- globalGrad
-    communicationNumbers <- length(globalGrad) * length(clientReports)
     if (identical(state$odalVariant, "second")) {
       hessList <- lapply(clientReports, `[[`, "Hess")
       globalHess <- Reduce(`+`, Map(function(H, w) H * w, hessList, weights))
@@ -389,7 +387,6 @@
       state$hessianDiagMin <- min(hDiag, na.rm = TRUE)
       state$hessianDiagMax <- max(hDiag, na.rm = TRUE)
       state$hessianCondition <- hCond
-      communicationNumbers <- communicationNumbers + length(globalHess) * length(clientReports)
     } else {
       state$otherHess <- NULL
       state$curvatureStatus <- "first_order"
@@ -420,8 +417,7 @@
         globalHessianEigenMin = state$globalHessianEigenMin,
         leadHessianEigenMin = state$leadHessianEigenMin,
         siteHessianEigenMin = state$siteHessianEigenMin,
-        siteHessianNegative = state$siteHessianNegative,
-        communicationNumbers = communicationNumbers
+        siteHessianNegative = state$siteHessianNegative
       )
     ))
   }
@@ -465,8 +461,7 @@
           globalHessianEigenMin = state$globalHessianEigenMin %||% NA_real_,
           leadHessianEigenMin = state$leadHessianEigenMin %||% NA_real_,
           siteHessianEigenMin = state$siteHessianEigenMin %||% NA_real_,
-          siteHessianNegative = state$siteHessianNegative %||% NA_integer_,
-          communicationNumbers = length(leadReport$w)
+          siteHessianNegative = state$siteHessianNegative %||% NA_integer_
         )
       ))
     }
@@ -489,7 +484,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdateODAL,
   serverRound = .serverRoundODAL,
-  lambdaStrategy = .lambdaStrategyODAL()
+  lambdaStrategy = .lambdaStrategyODAL(),
+  protocol = .odalProtocol
 )
 
 .registerAlgorithm(
@@ -498,7 +494,8 @@
   clientInit = NULL,
   clientUpdate = .clientUpdateODAL,
   serverRound = .serverRoundODAL,
-  lambdaStrategy = .lambdaStrategyODAL()
+  lambdaStrategy = .lambdaStrategyODAL(),
+  protocol = .odalProtocol
 )
 
 .registerAlgorithm(
@@ -507,5 +504,6 @@
   clientInit = NULL,
   clientUpdate = .clientUpdateODAL,
   serverRound = .serverRoundODAL,
-  lambdaStrategy = .lambdaStrategyODAL()
+  lambdaStrategy = .lambdaStrategyODAL(),
+  protocol = .odalProtocol
 )
