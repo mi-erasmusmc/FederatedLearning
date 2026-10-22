@@ -35,7 +35,9 @@ with distinct methods.}
 \item{runSettings}{From \code{\link[=createRunSettings]{createRunSettings()}}.}
 }
 \value{
-The results table, invisibly.
+The results table, invisibly. With \code{runSettings$auditOnly}, the
+feature-filter summary instead: candidate, retained and removed
+predictors for each task, held-out site and feature setting.
 }
 \description{
 For each site in \code{holdouts}, trains every method on the other sites with

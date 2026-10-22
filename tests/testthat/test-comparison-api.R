@@ -90,6 +90,26 @@ test_that("runComparison passes one option set per runner call", {
   expect_error(runComparison(task, unname(sites), features, methods, "out"), "unique site names")
 })
 
+test_that("audit-only comparisons return the feature-filter summary", {
+  output <- tempfile("audit-")
+  on.exit(unlink(output, recursive = TRUE), add = TRUE)
+  local_mocked_bindings(
+    runComparisonFromArgs = function(args, populationSettings, clientPaths) {
+      expect_identical(args$`preprocessing-audit-only`, "true")
+      directory <- file.path(args$`result-directory`, "preprocessing")
+      dir.create(directory, recursive = TRUE)
+      utils::write.csv(data.frame(task = "dvt", fold = 1L, retainedPredictors = 3L),
+        file.path(directory, "summary.csv"), row.names = FALSE)
+      invisible(NULL)
+    },
+    .package = "FederatedLearning"
+  )
+  summary <- runComparison(createTaskSettings("dvt", 1, 2, apiPopulation()),
+    c(A = "d/A", B = "d/B"), list(all = createFeatureSettings()),
+    createMethodSettings("PooledLasso"), output, runSettings = createRunSettings(auditOnly = TRUE))
+  expect_identical(summary, data.frame(task = "dvt", fold = 1L, retainedPredictors = 3L))
+})
+
 test_that("the public API reproduces the runner's golden outputs", {
   if (!identical(Sys.getenv("FEDERATEDLEARNING_GOLDEN"), "true")) {
     skip("Set FEDERATEDLEARNING_GOLDEN=true after installing the package under test")

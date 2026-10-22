@@ -20,7 +20,9 @@
 #' @param holdouts Names of the sites to hold out, one outer fold each.
 #' @param resume Reuse completed combinations in `outputDirectory`.
 #' @param runSettings From [createRunSettings()].
-#' @return The results table, invisibly.
+#' @return The results table, invisibly. With `runSettings$auditOnly`, the
+#'   feature-filter summary instead: candidate, retained and removed
+#'   predictors for each task, held-out site and feature setting.
 #' @export
 runComparison <- function(taskSettings, sites, featureSettings, methodSettings, outputDirectory,
                           holdouts = names(sites), resume = TRUE,
@@ -79,6 +81,10 @@ runComparison <- function(taskSettings, sites, featureSettings, methodSettings, 
     args <- c(base, list(methods = paste(vapply(group, `[[`, "", "method"), collapse = ",")), flags)
     args$featureSettings <- featureSettings
     runComparisonFromArgs(args, populationSettings = taskSettings$populationSettings, clientPaths = sites)
+  }
+  if (isTRUE(runSettings$auditOnly)) {
+    return(invisible(utils::read.csv(file.path(outputDirectory, "preprocessing", "summary.csv"),
+      stringsAsFactors = FALSE)))
   }
   invisible(readComparisonResults(outputDirectory))
 }
