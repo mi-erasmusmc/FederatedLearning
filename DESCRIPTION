@@ -1,6 +1,6 @@
 Package: FederatedLearning
 Title: Federated Patient-Level Prediction for OMOP Common Data Model Data
-Version: 0.2.0.9000
+Version: 0.3.0
 Authors@R: 
     person("Egill", "Fridgeirsson", , "e.fridgeirsson@erasmusmc.nl", role = c("aut", "cre"))
 Author: Egill Fridgeirsson [aut, cre]
