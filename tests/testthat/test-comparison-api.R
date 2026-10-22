@@ -178,6 +178,41 @@ test_that("saved models reproduce their recorded held-out metrics without refitt
   expect_error(evaluateModel(golden$artifacts[[1]], fixture, task), "loadModel")
 })
 
+test_that("saved models are scored on combined covariates", {
+  skip_if_not_installed("PatientLevelPrediction")
+  site <- test_path("fixtures", "runner-golden", "data", "goldenTask", "site1")
+  task <- createTaskSettings("goldenTask", 1, 3, apiPopulation())
+  features <- createFeatureSettings(covariateIds = c(1002, 8532001, 999), combinations = list(
+    list(covariateId = 999, name = "Either condition", components = c(80180102, 1118084402))))
+  coefficients <- data.frame(matrixColumn = 4:1, covariateId = c("999", "8532001", "1002", NA),
+    isIntercept = c(FALSE, FALSE, FALSE, TRUE), coefficient = c(2, 0.2, 0.5, -1))
+  coefficients$coefficientSharedScale <- coefficients$coefficient
+  model <- structure(list(models = list(list(coefficients = coefficients)), config = list(
+    featureSet = features, intercept = TRUE, diagnosticControlsPerCase = 1,
+    mapping = data.frame(covariateId = c(1002, 8532001, 999), columnId = 1:3))),
+    class = c("comparisonModel", "list"))
+  predictions <- predictModel(model, site, task)
+
+  plpData <- loadClientData(site, task$populationSettings)
+  covariates <- as.data.frame(dplyr::collect(plpData$covariateData$covariates))
+  value <- function(id) {
+    x <- covariates[covariates$covariateId %in% id, ]
+    out <- tapply(x$covariateValue, x$rowId, max)[as.character(plpData$population$rowId)]
+    as.numeric(ifelse(is.na(out), 0, out))
+  }
+  either <- as.numeric(value(c(80180102, 1118084402)) > 0)
+  expect_gt(sum(either), 0)
+  # loadClientData() has already divided age by 100.
+  expected <- -1 + 0.5 * value(1002) + 0.2 * value(8532001) + 2 * either
+  expect_identical(nrow(predictions), nrow(plpData$population))
+  expect_equal(predictions$linearPredictor, expected)
+  expect_equal(predictions$probability, stats::plogis(expected))
+  expect_identical(predictions$outcome, as.integer(plpData$population$outcomeCount))
+
+  model$config$mapping <- NULL
+  expect_error(predictModel(model, site, task), "feature map")
+})
+
 test_that("loadModel finds a saved model by its held-out site", {
   directory <- tempfile()
   dir.create(file.path(directory, "models"), recursive = TRUE)

@@ -19,7 +19,5 @@ One row with AUC, log loss, calibration intercept and slope, the
 share of nonzero coefficients, patient and outcome counts.
 }
 \description{
-Applies the saved coefficients to the site's covariates on the shared
-matrix scale (age divided by 100). A probability ensemble averages its
-components' predicted probabilities with the saved weights.
+Scores the predictions of \code{\link[=predictModel]{predictModel()}}.
 }

@@ -26,48 +26,63 @@ loadModel <- function(outputDirectory, task, holdout, feature, method) {
   structure(artifact, class = c("comparisonModel", "list"))
 }
 
-#' Score a saved model on a site without refitting
+#' Predict with a saved model on a site
 #'
-#' Applies the saved coefficients to the site's covariates on the shared
-#' matrix scale (age divided by 100). A probability ensemble averages its
-#' components' predicted probabilities with the saved weights.
+#' Rebuilds the site's matrix the way the fit built it: the saved feature map,
+#' covariate combinations (such as a logical OR of indicators), age divided by
+#' 100 and an intercept column. The saved coefficients are then applied on
+#' that shared scale. A probability ensemble averages its components'
+#' predicted probabilities with the saved weights. The predictions are
+#' patient-level and must stay where the data are.
 #'
 #' @param model From [loadModel()].
 #' @param sitePath Site data directory.
 #' @param taskSettings From [createTaskSettings()]; its population settings
 #'   define the evaluated population and outcome.
+#' @return One row per patient: `rowId`, `outcome`, `linearPredictor` (`NA`
+#'   for a probability ensemble) and `probability`.
+#' @export
+predictModel <- function(model, sitePath, taskSettings) {
+  if (!inherits(model, "comparisonModel")) stop("model must come from loadModel()", call. = FALSE)
+  if (!inherits(taskSettings, "taskSettings")) stop("taskSettings must come from createTaskSettings()", call. = FALSE)
+  config <- model$config
+  if (is.null(config$mapping)) stop("The saved model lacks its feature map", call. = FALSE)
+  # Score every patient: no diagnostic downsampling or capture.
+  config$diagnosticControlsPerCase <- NULL
+  config$surrogateCaptureDirectory <- NULL
+  plpData <- loadClientData(sitePath, taskSettings$populationSettings)
+  data <- createClientMatrix(plpData, config)
+  etas <- lapply(model$models, function(m) {
+    coefficients <- m$coefficients[order(m$coefficients$matrixColumn), , drop = FALSE]
+    if (nrow(coefficients) != ncol(data$xMatrix)) {
+      stop("Saved coefficients do not match the rebuilt matrix", call. = FALSE)
+    }
+    as.numeric(data$xMatrix %*% coefficients$coefficientSharedScale)
+  })
+  weights <- if (length(model$models) > 1L) vapply(model$models, `[[`, numeric(1), "weight") else 1
+  data.frame(rowId = plpData$population$rowId, outcome = data$yLabels,
+    linearPredictor = if (length(etas) == 1L) etas[[1]] else NA_real_,
+    probability = Reduce(`+`, Map(function(eta, w) w * stats::plogis(eta), etas, weights)))
+}
+
+#' Score a saved model on a site without refitting
+#'
+#' Scores the predictions of [predictModel()].
+#'
+#' @inheritParams predictModel
 #' @return One row with AUC, log loss, calibration intercept and slope, the
 #'   share of nonzero coefficients, patient and outcome counts.
 #' @export
 evaluateModel <- function(model, sitePath, taskSettings) {
-  if (!inherits(model, "comparisonModel")) stop("model must come from loadModel()", call. = FALSE)
-  if (!inherits(taskSettings, "taskSettings")) stop("taskSettings must come from createTaskSettings()", call. = FALSE)
-  plpData <- loadClientData(sitePath, taskSettings$populationSettings)
-  population <- plpData$population
-  covariates <- as.data.frame(dplyr::collect(plpData$covariateData$covariates))
-  covariates <- covariates[covariates$rowId %in% population$rowId, , drop = FALSE]
-  row <- match(covariates$rowId, population$rowId)
-  covariateId <- as.character(covariates$covariateId)
-
-  linearPredictor <- function(table) {
-    slopes <- table[!table$isIntercept, , drop = FALSE]
-    coefficient <- slopes$coefficientSharedScale[match(covariateId, slopes$covariateId)]
-    present <- !is.na(coefficient)
-    eta <- rep(sum(table$coefficientSharedScale[table$isIntercept]), nrow(population))
-    contribution <- rowsum(coefficient[present] * covariates$covariateValue[present], row[present])
-    eta[as.integer(rownames(contribution))] <- eta[as.integer(rownames(contribution))] + contribution[, 1]
-    eta
-  }
+  predictions <- predictModel(model, sitePath, taskSettings)
   density <- function(table) mean(abs(table$coefficient) > 1e-4)
   weights <- if (length(model$models) > 1L) vapply(model$models, `[[`, numeric(1), "weight") else 1
-  etas <- lapply(model$models, function(m) linearPredictor(m$coefficients))
-  preds <- Reduce(`+`, Map(function(eta, w) w * stats::plogis(eta), etas, weights))
   evaluatePredictions(
-    clientData = list(yLabels = as.integer(population$outcomeCount > 0)),
-    preds = preds,
+    clientData = list(yLabels = predictions$outcome),
+    preds = predictions$probability,
     density = sum(weights * vapply(model$models, function(m) density(m$coefficients), numeric(1))),
     clientId = basename(sitePath),
     clientIndex = NA_integer_,
-    linearPredictor = if (length(etas) == 1L) etas[[1]] else NULL
+    linearPredictor = if (length(model$models) == 1L) predictions$linearPredictor else NULL
   )
 }
