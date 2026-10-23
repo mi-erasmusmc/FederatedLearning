@@ -120,7 +120,11 @@ fold AUCs, which cannot be pooled.
 
 The automatic search descends from the upper lambda bound, then refines near the
 best evaluated value. It does not guarantee a global optimum or reproduce
-Cyclops' search. A failed candidate can end the initial downward exploration.
+Cyclops' search. A failed candidate ends the initial downward exploration;
+since 23 October 2026, if the weakest working penalty still scores best, the
+search then bisects in log lambda towards the strongest failed one until they
+are within the search tolerance (on production DVT at 2,744 columns every
+ADAP2 inner fold diverged one tenfold step below the selected penalty).
 CV uses all lead rows by default (`lambdaCvMaxRows = Inf`). An explicit finite
 cap changes the tuning data and must be recorded.
 

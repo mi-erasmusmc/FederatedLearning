@@ -901,6 +901,80 @@ test_that("ADAP auto search does not warm-start from failed weaker fits", {
   expect_true(all(cv$valid[cv$lambdaSeq > 1e-5]))
 })
 
+test_that("ADAP auto search bisects towards the first failed penalty", {
+  x <- Matrix::Matrix(matrix(1, nrow = 12, ncol = 1), sparse = TRUE)
+  y <- rep(c(0, 1), 6)
+  calls <- numeric()
+  breakdown <- 2e-4
+
+  cv <- FederatedLearning:::.pdaAdapSurrogateLeadCv(
+    xDesign = x,
+    y = y,
+    betaInit = 0,
+    lambdaSeq = c(0.1, 0.001, 1e-6),
+    foldsK = 1L,
+    seed = 4L,
+    search = "optimize",
+    searchTol = log(1.5),
+    maxEvals = 25L,
+    selectionMetric = "deviance",
+    makeFoldInfo = function(info) list(),
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE, collectTrace = FALSE) {
+      calls <<- c(calls, lambda)
+      if (lambda < breakdown) {
+        return(list(beta = 999, converged = FALSE, failureReason = "beta_abs_too_large"))
+      }
+      # Validation loss falls monotonically towards weaker penalties.
+      list(beta = 2 * acosh(exp(1e-4 + 1e-3 * log(lambda / breakdown))), converged = TRUE,
+        failureReason = "")
+    }
+  )
+
+  expect_equal(calls[1:4], c(0.1, 0.01, 0.001, 1e-4), tolerance = 1e-12)
+  expect_gt(length(calls), 4L)
+  expect_true(all(calls[-(1:4)] < 1e-3 & calls[-(1:4)] > 1e-4))
+  weakestOk <- min(cv$lambdaSeq[cv$valid])
+  strongestFailed <- max(cv$lambdaSeq[!cv$valid])
+  expect_lte(log(weakestOk) - log(strongestFailed), log(1.5))
+  expect_equal(unname(cv$lambda), weakestOk)
+  expect_gte(cv$lambda, breakdown)
+})
+
+test_that("ADAP auto search stops bisecting once the optimum is bracketed", {
+  x <- Matrix::Matrix(matrix(1, nrow = 12, ncol = 1), sparse = TRUE)
+  y <- rep(c(0, 1), 6)
+  calls <- numeric()
+  target <- log(8e-4)
+
+  cv <- FederatedLearning:::.pdaAdapSurrogateLeadCv(
+    xDesign = x,
+    y = y,
+    betaInit = 0,
+    lambdaSeq = c(0.1, 0.001, 1e-6),
+    foldsK = 1L,
+    seed = 5L,
+    search = "optimize",
+    searchTol = log(1.5),
+    maxEvals = 25L,
+    selectionMetric = "deviance",
+    makeFoldInfo = function(info) list(),
+    fitFold = function(info, lambda, warmStart, collectDiagnostics = FALSE, collectTrace = FALSE) {
+      calls <<- c(calls, lambda)
+      if (lambda < 2e-4) {
+        return(list(beta = 999, converged = FALSE, failureReason = "beta_abs_too_large"))
+      }
+      list(beta = 2 * acosh(exp(1e-4 + (log(lambda) - target)^2)), converged = TRUE,
+        failureReason = "")
+    }
+  )
+
+  # 1e-4 fails and the first midpoint (3.2e-4) works but scores worse than
+  # 1e-3, so the quadratic refinement takes over above the midpoint.
+  expect_equal(calls[1:5], c(0.1, 0.01, 0.001, 1e-4, sqrt(1e-3 * 1e-4)), tolerance = 1e-8)
+  expect_false(any(calls[-(1:5)] < sqrt(1e-3 * 1e-4)))
+  expect_equal(unname(cv$lambda), 8e-4, tolerance = 0.2)
+})
+
 test_that("ADAP auto search uses strong-to-weak quadratic proposals", {
   x <- Matrix::Matrix(matrix(1, nrow = 12, ncol = 1), sparse = TRUE)
   y <- rep(c(0, 1), 6)

@@ -2548,6 +2548,34 @@
     lastLogLambda <- nextLogLambda
   }
 
+  # Fits that fail below some penalty (an indefinite surrogate escaping along a
+  # direction of negative curvature) cut the descent short. While the weakest
+  # working penalty still scores best, bisect towards the strongest failed one
+  # so the selection is not left a full search step above the breakdown.
+  repeat {
+    if (evaluatedCount() >= maxEvals) {
+      break
+    }
+    rows <- evaluatedRows()
+    ok <- rows$valid & is.finite(rows$score)
+    if (!any(ok)) {
+      break
+    }
+    weakestValid <- min(rows$lambda[ok])
+    failedBelow <- rows$lambda[!ok & rows$lambda < weakestValid]
+    if (length(failedBelow) == 0L) {
+      break
+    }
+    bestValid <- rows$lambda[ok][which.min(scoreForSearch(rows$score[ok]))]
+    gap <- log(weakestValid) - log(max(failedBelow))
+    if (bestValid != weakestValid || gap <= searchTol) {
+      break
+    }
+    if (!addLogLambda(log(weakestValid) - gap / 2)) {
+      break
+    }
+  }
+
   repeat {
     if (evaluatedCount() >= maxEvals) {
       break
