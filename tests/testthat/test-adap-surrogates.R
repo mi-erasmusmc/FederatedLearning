@@ -1741,3 +1741,43 @@ test_that("ADAP CV scores average AUC but pool log loss", {
   expect_true(is.na(FederatedLearning:::.adapCvScore(c(1, NA), c(3, 1), "deviance")))
   expect_equal(FederatedLearning:::.adapCvScore(c(0.6, 0.8), c(3, 1), "auc"), 0.7)
 })
+
+test_that("ADAP lead CV can stratify its folds by outcome", {
+  y <- rep(c(1, 0, 0, 0, 0, 0, 0, 0, 0, 0), 9)
+  stratified <- FederatedLearning:::.adapLeadFolds(y, 3L, 42L, stratify = TRUE)
+  expect_identical(sort(unique(stratified)), 1:3)
+  expect_identical(as.vector(table(stratified[y == 1])), c(3L, 3L, 3L))
+  # Without stratification, folds are the published package's shuffled row groups.
+  set.seed(42)
+  expected <- sample(rep_len(1:5, length(y)))
+  set.seed(42)
+  expect_identical(FederatedLearning:::.adapLeadFolds(y, 5L, 42L, stratify = FALSE), expected)
+
+  set.seed(13)
+  x <- Matrix::Matrix(cbind(1, matrix(rnorm(160), nrow = 40)), sparse = TRUE)
+  y <- rbinom(40, 1, stats::plogis(-0.5 + 0.6 * x[, 2]))
+  betaBar <- rep(0, ncol(x))
+  globalGrad <- FederatedLearning:::.logisticNegGradient(betaBar, x, y)
+  globalHess <- FederatedLearning:::.logisticNegHessian(betaBar, x)
+  seen <- logical()
+  folds <- FederatedLearning:::.adapLeadFolds
+  testthat::local_mocked_bindings(.adapLeadFolds = function(y, foldsK, seed, stratify) {
+    seen[length(seen) + 1L] <<- stratify
+    folds(y, foldsK, seed, stratify)
+  }, .package = "FederatedLearning")
+  for (stratify in c(TRUE, FALSE)) {
+    FederatedLearning:::.pdaAdapLeadCv(xDesign = x, y = y, betaLead = rep(0.01, ncol(x)),
+      betaBar = betaBar, globalGrad = globalGrad, globalHess = globalHess,
+      lambdaSeq = c(0.1, 0.01), totalN = length(y), foldsK = 3L, seed = 13L,
+      stratify = stratify, maxOuter = 20L, maxInner = 50L, tol = 1e-6)
+  }
+  expect_identical(seen, c(TRUE, FALSE))
+})
+
+test_that("the runner tunes ADAP with three stratified lead-site folds by default", {
+  runner <- comparisonRunnerEnv()
+  config <- runner$methodConfig("ADAP2", "all", list())
+  expect_identical(c(config$foldsK, config$cvStratify), c(3L, TRUE))
+  published <- runner$methodConfig("ADAP2", "all", list("inner-folds" = "5", "cv-stratify" = "false"))
+  expect_identical(c(published$foldsK, published$cvStratify), c(5L, FALSE))
+})

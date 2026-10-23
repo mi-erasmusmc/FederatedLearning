@@ -103,7 +103,7 @@ by any of these fitting steps.
 
 | Choice | Pinned upstream ADAP | Current exact ADAP, ADAP1 and default ADAPDiag |
 | --- | --- | --- |
-| Surrogate folds | Five shuffled row groups, with rounded chunk sizes | Five by default, shuffled balanced row labels, `cvSeed = 42` by default. Neither stratified nor person-grouped. |
+| Surrogate folds | Five shuffled row groups, with rounded chunk sizes | Direct fitter: five shuffled balanced row labels, `cvSeed = 42`. The comparison runner defaults to three outcome-stratified folds (`cvStratify`), as for local lasso, since 23 October 2026. Not person-grouped. |
 | Lambda range | 100 log-spaced values from maximum to minimum, maximum includes intercept score | 100 by default, excludes unpenalized intercept from maximum. First-order and diagonal paths use their corresponding quadratic. Minimum ratio is `0.02` if `n < p`, otherwise `1e-4`. |
 | Search | Entire descending grid, subject to solver failures | Direct fitter defaults to grid. `runComparisonMatrix.R` defaults to bounded log-lambda search (`"optimize"`), budget 25, tolerance `log(1.5)`. |
 | Initial CV model | First quadratic built at the full-lead estimate, first inner CD starts at zero | Starts at full-lead estimate and builds its quadratic there |

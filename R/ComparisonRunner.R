@@ -307,7 +307,9 @@ methodConfig <- function(method, featureSet, args) {
     epsilon = firstValue(numCsvArg(argValue(args, "epsilon"), 1e-6)),
     clientFrac = 1,
     rounds = methodRounds(method, args),
-    foldsK = firstValue(intCsvArg(argValue(args, "inner-folds"), 5L)),
+    # ADAP lead-site CV: three outcome-stratified folds, as for local lasso.
+    foldsK = firstValue(intCsvArg(argValue(args, "inner-folds"), 3L)),
+    cvStratify = logicalArg(argValue(args, "cv-stratify"), TRUE),
     cvSeed = intArg(argValue(args, "cv-seed"), 42L),
     maxIter = firstValue(intCsvArg(argValue(args, "max-iter"), 1000L)),
     maxOuter = firstValue(intCsvArg(argValue(args, "max-outer"), 500L)),

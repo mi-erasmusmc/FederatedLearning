@@ -1689,9 +1689,16 @@
   beta
 }
 
+# Lead-site CV folds: outcome-stratified, as for local lasso, or the published
+# package's shuffled row groups.
+.adapLeadFolds <- function(y, foldsK, seed, stratify) {
+  if (isTRUE(stratify)) return(.stratifiedFoldId(y, foldsK, seed))
+  sample(rep_len(seq_len(foldsK), length(y)))
+}
+
 .pdaAdapPdaLeadCv <- function(xDesign, y, betaBar, globalGrad, globalHess,
                               lambdaSeq, useFull = TRUE,
-                              foldsK = 5L, seed = 42L,
+                              foldsK = 5L, seed = 42L, stratify = FALSE,
                               maxIter = 1000L, tol = 1e-6,
                               ridge = 1e-4,
                               selectionMetric = c("deviance", "auc"),
@@ -1700,7 +1707,7 @@
   selectionMetric <- match.arg(selectionMetric)
   set.seed(seed)
   n <- length(y)
-  folds <- sample(rep_len(seq_len(foldsK), n))
+  folds <- .adapLeadFolds(y, foldsK, seed, stratify)
   scores <- rep(NA_real_, length(lambdaSeq))
   warmStarts <- rep(list(betaBar), foldsK)
   diagnosticRows <- list()
@@ -2271,7 +2278,7 @@
 }
 
 .pdaAdapSurrogateLeadCv <- function(xDesign, y, betaInit, lambdaSeq,
-                                    foldsK = 5L, seed = 42L,
+                                    foldsK = 5L, seed = 42L, stratify = FALSE,
                                     search = c("grid", "optimize"),
                                     searchTol = log(1.5),
                                     maxEvals = 25L,
@@ -2292,7 +2299,7 @@
   }
   set.seed(seed)
   n <- length(y)
-  folds <- sample(rep_len(seq_len(foldsK), n))
+  folds <- .adapLeadFolds(y, foldsK, seed, stratify)
   foldInfo <- lapply(seq_len(foldsK), function(fold) {
     idxVal <- which(folds == fold)
     info <- list(
@@ -2611,7 +2618,7 @@
 .pdaAdapLeadCv <- function(xDesign, y, betaLead, betaBar,
                            globalGrad, globalHess, lambdaSeq,
                            totalN,
-                           foldsK = 5L, seed = 42L,
+                           foldsK = 5L, seed = 42L, stratify = FALSE,
                            maxOuter = 100L, maxInner = 100L,
                            tol = 1e-5,
                            search = c("grid", "optimize"),
@@ -2659,6 +2666,7 @@
     lambdaSeq = lambdaSeq,
     foldsK = foldsK,
     seed = seed,
+    stratify = stratify,
     search = search,
     searchTol = searchTol,
     maxEvals = maxEvals,
@@ -2776,7 +2784,7 @@
 
 .pdaAdapFirstLeadCv <- function(xDesign, y, betaLead, betaBar,
                                 globalGrad, lambdaSeq, totalN,
-                                foldsK = 5L, seed = 42L,
+                                foldsK = 5L, seed = 42L, stratify = FALSE,
                                 maxOuter = 100L, maxInner = 100L,
                                 tol = 1e-5,
                                 search = c("grid", "optimize"),
@@ -2808,6 +2816,7 @@
     lambdaSeq = lambdaSeq,
     foldsK = foldsK,
     seed = seed,
+    stratify = stratify,
     search = search,
     searchTol = searchTol,
     maxEvals = maxEvals,
@@ -2893,7 +2902,7 @@
 .pdaAdapDiagLeadCv <- function(xDesign, y, betaLead, betaBar,
                                globalGrad, globalHessDiag = NULL,
                                lambdaSeq, totalN,
-                               foldsK = 5L, seed = 42L,
+                               foldsK = 5L, seed = 42L, stratify = FALSE,
                                maxOuter = 100L, maxInner = 100L,
                                tol = 1e-5,
                                search = c("grid", "optimize"),
@@ -2925,6 +2934,7 @@
     lambdaSeq = lambdaSeq,
     foldsK = foldsK,
     seed = seed,
+    stratify = stratify,
     search = search,
     searchTol = searchTol,
     maxEvals = maxEvals,
@@ -3148,6 +3158,7 @@
           useFull = TRUE,
           foldsK = config$foldsK %||% 5L,
           seed = config$cvSeed %||% 42L,
+          stratify = isTRUE(config$cvStratify),
           maxIter = config$maxIter %||% 1000L,
           tol = config$tol %||% 1e-6,
           ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4,
@@ -3228,6 +3239,7 @@
         totalN = serverBroadcast$totalN,
         foldsK = config$foldsK %||% 5L,
         seed = config$cvSeed %||% 42L,
+        stratify = isTRUE(config$cvStratify),
         maxOuter = config$maxOuter %||% 500L,
         maxInner = config$maxInner %||% 100L,
         tol = config$tol %||% 1e-5,
@@ -3669,6 +3681,7 @@
           totalN = serverBroadcast$totalN,
           foldsK = config$foldsK %||% 5L,
           seed = config$cvSeed %||% 42L,
+          stratify = isTRUE(config$cvStratify),
           maxOuter = config$maxOuter %||% 500L,
           maxInner = config$maxInner %||% 100L,
           tol = config$tol %||% 1e-5,
@@ -3761,6 +3774,7 @@
           useFull = FALSE,
           foldsK = config$foldsK %||% 5L,
           seed = config$cvSeed %||% 42L,
+          stratify = isTRUE(config$cvStratify),
           maxIter = config$maxIter %||% 1000L,
           tol = config$tol %||% 1e-6,
           ridge = config$hessianRidge %||% config$hessian_ridge %||% 1e-4,
@@ -3827,6 +3841,7 @@
         totalN = serverBroadcast$totalN,
         foldsK = config$foldsK %||% 5L,
         seed = config$cvSeed %||% 42L,
+        stratify = isTRUE(config$cvStratify),
         maxOuter = config$maxOuter %||% 500L,
         maxInner = config$maxInner %||% 100L,
         tol = config$tol %||% 1e-5,
