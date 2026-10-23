@@ -166,6 +166,12 @@ test_that("Cyclops baselines leave only the configured intercept unpenalized", {
     active <- fit$w[-1L] != 0
     expect_true(all(abs(g[-1L][!active]) <= 0.03 + 1e-7))
     expect_true(all(abs(g[-1L][active] + 0.03 * sign(fit$w[-1L][active])) < 1e-7))
+    if (intercept) {
+      # Pooled lasso's diagnostic needs its variance converted to the mean-loss penalty.
+      lambda <- .laplaceVarianceToLambda(fit$fittingSettings$selectedVariance, 800)
+      expect_lt(env$pooledFitDiagnostics(list(data), fit$w, lambda = lambda)$pooledKktMaxAbs, 1e-7)
+      expect_gt(env$pooledFitDiagnostics(list(data), fit$w, lambda = NA_real_)$pooledKktMaxAbs, 0.03 - 1e-7)
+    }
     local <- env$fitLocalBaselineSafely(list(data), 1L, "site", args, 42L, intercept = intercept)
     expect_true(local$ok)
     expect_equal(local$fit$w, fit$w, tolerance = 1e-10)

@@ -1686,10 +1686,18 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
   calibrationCurves <- list()
   baselineRows <- lapply(fits, function(fit) {
     pooledDiag <- if (isTRUE(config$pooledDiagnostics %||% TRUE) && is.null(fit$localFits)) {
+      # Pooled lasso is checked against its own penalty; the other baselines,
+      # which have no single pooled penalty, against the unpenalized likelihood.
+      pooledLambda <- if (identical(method, "PooledLasso")) {
+        .laplaceVarianceToLambda(fit$fittingSettings$selectedVariance,
+          sum(vapply(trainData, function(x) nrow(x$xMatrix), numeric(1))))
+      } else {
+        NA_real_
+      }
       pooledFitDiagnostics(
         trainData,
         fit$w,
-        lambda = NA_real_,
+        lambda = pooledLambda,
         intercept = config$intercept,
         tolerance = config$pooledKktTolerance %||% 1e-4
       )
