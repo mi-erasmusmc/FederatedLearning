@@ -308,29 +308,6 @@ static inline double soft_threshold_scalar(double value, double threshold) {
   return 0.0;
 }
 
-static void logistic_gradient_hessian_full(
-    const Eigen::Map<Eigen::SparseMatrix<double> >& x,
-    const Eigen::VectorXd& beta,
-    const Eigen::VectorXd& y,
-    double eps,
-    Eigen::VectorXd& gradient,
-    Eigen::MatrixXd& hessian) {
-  const int n = y.size();
-  Eigen::VectorXd eta = x * beta;
-  Eigen::VectorXd residual = logistic_residuals(eta, y, eps);
-  gradient = (x.transpose() * residual) / static_cast<double>(n);
-  Eigen::VectorXd weights = logistic_curvature(eta, eps).matrix();
-  Eigen::SparseMatrix<double> weightedX = x;
-
-  for (int outer = 0; outer < weightedX.outerSize(); ++outer) {
-    for (Eigen::SparseMatrix<double>::InnerIterator it(weightedX, outer); it; ++it) {
-      it.valueRef() *= weights[it.row()];
-    }
-  }
-  Eigen::SparseMatrix<double> hSparse = x.transpose() * weightedX;
-  hessian = Eigen::MatrixXd(hSparse) / static_cast<double>(n);
-}
-
 static void logistic_gradient_hessian_diag(
     const Eigen::Map<Eigen::SparseMatrix<double> >& x,
     const Eigen::VectorXd& beta,
@@ -420,9 +397,154 @@ static void set_cd_failure(QuadraticCdResult& result,
   result.coordinateGradient = gradient;
 }
 
+// Coordinate descent needs B through four operations; these give them for a
+// dense B, and LazySurrogateMatrix below gives them without forming B.
+static Eigen::VectorXd cd_times(const Eigen::MatrixXd& b, const Eigen::VectorXd& v) {
+  return b * v;
+}
+static Eigen::VectorXd cd_diagonal(const Eigen::MatrixXd& b) {
+  return b.diagonal();
+}
+static bool cd_all_finite(const Eigen::MatrixXd& b) {
+  return b.allFinite();
+}
+static void cd_add_column(const Eigen::MatrixXd& b, int j, double scale, Eigen::VectorXd& target) {
+  target.noalias() += b.col(j) * scale;
+}
+
+// B = scale * X'WX / n + C for the ADAP surrogates, where C is a dense
+// correction, a diagonal one or absent. Coordinate descent only reads the
+// columns of coordinates it moves, so a column of X'WX is formed the first time
+// it is needed after each reweighting instead of forming the dense p x p
+// product every outer iteration. Products with B use sparse passes over X.
+class LazySurrogateMatrix {
+public:
+  LazySurrogateMatrix(const Eigen::Map<Eigen::SparseMatrix<double> >& x, double scale,
+                      const Eigen::MatrixXd* denseCorrection,
+                      const Eigen::VectorXd* diagCorrection)
+    : x_(x), rows_(x), n_(static_cast<double>(x.rows())), p_(x.cols()), scale_(scale),
+      dense_(denseCorrection), diag_(diagCorrection),
+      hDiag_(Eigen::VectorXd::Zero(x.cols())), columns_(x.cols(), x.cols()),
+      formed_(x.cols(), 0) {
+    inputsFinite_ = R_finite(scale_);
+    for (int k = 0; k < x_.nonZeros() && inputsFinite_; ++k) {
+      inputsFinite_ = R_finite(x_.valuePtr()[k]);
+    }
+    if (dense_ != NULL) inputsFinite_ = inputsFinite_ && dense_->allFinite();
+    if (diag_ != NULL) inputsFinite_ = inputsFinite_ && diag_->allFinite();
+  }
+
+  void reweight(const Eigen::VectorXd& weights) {
+    weights_ = weights;
+    weightsFinite_ = weights_.allFinite();
+    std::fill(formed_.begin(), formed_.end(), 0);
+    hDiag_.setZero();
+    for (int j = 0; j < p_; ++j) {
+      for (Eigen::Map<Eigen::SparseMatrix<double> >::InnerIterator it(x_, j); it; ++it) {
+        hDiag_[j] += it.value() * it.value() * weights_[it.row()];
+      }
+    }
+    hDiag_ /= n_;
+  }
+
+  // X'WX v / n without forming X'WX.
+  Eigen::VectorXd hessianTimes(const Eigen::VectorXd& v) const {
+    Eigen::VectorXd weighted = (x_ * v).cwiseProduct(weights_);
+    return (x_.transpose() * weighted) / n_;
+  }
+
+  Eigen::VectorXd times(const Eigen::VectorXd& v) const {
+    Eigen::VectorXd out = scale_ * hessianTimes(v);
+    if (dense_ != NULL) out.noalias() += *dense_ * v;
+    if (diag_ != NULL) out += diag_->cwiseProduct(v);
+    return out;
+  }
+
+  Eigen::VectorXd diagonal() const {
+    Eigen::VectorXd out = scale_ * hDiag_;
+    if (dense_ != NULL) out += dense_->diagonal();
+    if (diag_ != NULL) out += *diag_;
+    return out;
+  }
+
+  bool allFinite() const {
+    return inputsFinite_ && weightsFinite_;
+  }
+
+  void addColumn(int j, double step, Eigen::VectorXd& target) {
+    target.noalias() += (scale_ * step) * hessianColumn(j);
+    if (dense_ != NULL) target.noalias() += dense_->col(j) * step;
+    if (diag_ != NULL) target[j] += (*diag_)[j] * step;
+  }
+
+private:
+  Eigen::Ref<const Eigen::VectorXd> hessianColumn(int j) {
+    if (!formed_[j]) {
+      double* column = columns_.col(j).data();
+      std::fill(column, column + p_, 0.0);
+      const int* rowStart = rows_.outerIndexPtr();
+      const int* rowColumns = rows_.innerIndexPtr();
+      const double* rowValues = rows_.valuePtr();
+      for (Eigen::Map<Eigen::SparseMatrix<double> >::InnerIterator it(x_, j); it; ++it) {
+        const int i = it.row();
+        const double a = it.value() * weights_[i];
+        for (int k = rowStart[i]; k < rowStart[i + 1]; ++k) {
+          column[rowColumns[k]] += a * rowValues[k];
+        }
+      }
+      for (int k = 0; k < p_; ++k) {
+        column[k] /= n_;
+      }
+      formed_[j] = 1;
+    }
+    return columns_.col(j);
+  }
+
+  const Eigen::Map<Eigen::SparseMatrix<double> >& x_;
+  const Eigen::SparseMatrix<double, Eigen::RowMajor> rows_;
+  const double n_;
+  const int p_;
+  const double scale_;
+  const Eigen::MatrixXd* dense_;
+  const Eigen::VectorXd* diag_;
+  Eigen::VectorXd weights_;
+  Eigen::VectorXd hDiag_;
+  Eigen::MatrixXd columns_;
+  std::vector<char> formed_;
+  bool inputsFinite_ = true;
+  bool weightsFinite_ = false;
+};
+
+static Eigen::VectorXd cd_times(const LazySurrogateMatrix& b, const Eigen::VectorXd& v) {
+  return b.times(v);
+}
+static Eigen::VectorXd cd_diagonal(const LazySurrogateMatrix& b) {
+  return b.diagonal();
+}
+static bool cd_all_finite(const LazySurrogateMatrix& b) {
+  return b.allFinite();
+}
+static void cd_add_column(LazySurrogateMatrix& b, int j, double scale, Eigen::VectorXd& target) {
+  b.addColumn(j, scale, target);
+}
+
+// Gradient and IRLS weights of the mean logistic loss at beta.
+static void logistic_gradient_weights(
+    const Eigen::Map<Eigen::SparseMatrix<double> >& x,
+    const Eigen::VectorXd& beta,
+    const Eigen::VectorXd& y,
+    double eps,
+    Eigen::VectorXd& gradient,
+    Eigen::VectorXd& weights) {
+  Eigen::VectorXd eta = x * beta;
+  gradient = (x.transpose() * logistic_residuals(eta, y, eps)) / static_cast<double>(y.size());
+  weights = logistic_curvature(eta, eps).matrix();
+}
+
+template <typename BMatrix>
 static QuadraticCdResult quadratic_lasso_cd_impl(
     const Eigen::VectorXd& aTilde,
-    const Eigen::MatrixXd& bMatrix,
+    BMatrix& bMatrix,
     const Eigen::VectorXd& betaInit,
     double lambda,
     int maxIter,
@@ -433,13 +555,13 @@ static QuadraticCdResult quadratic_lasso_cd_impl(
     int maxBacktracks) {
   const int p = betaInit.size();
   Eigen::VectorXd beta = betaInit;
-  Eigen::VectorXd bBeta = bMatrix * beta;
-  const Eigen::VectorXd diagB = bMatrix.diagonal();
+  Eigen::VectorXd bBeta = cd_times(bMatrix, beta);
+  const Eigen::VectorXd diagB = cd_diagonal(bMatrix);
   Eigen::VectorXd stepBounds = Eigen::VectorXd::Constant(p, initialStepBound);
   QuadraticCdResult result = make_cd_result(beta);
   const double curvatureTol = 1e-14;
 
-  if (!aTilde.allFinite() || !bMatrix.allFinite() || !beta.allFinite() || !bBeta.allFinite()) {
+  if (!aTilde.allFinite() || !cd_all_finite(bMatrix) || !beta.allFinite() || !bBeta.allFinite()) {
     return make_cd_result(beta, "non_finite_surrogate_input");
   }
   if (p > 0) {
@@ -506,7 +628,7 @@ static QuadraticCdResult quadratic_lasso_cd_impl(
             const double descentTol = 1e-12 * (std::abs(currentObjective) + 1.0);
             if (R_finite(trialObjective) && trialObjective <= currentObjective + descentTol) {
               beta[j] = 0.0;
-              bBeta.noalias() += bMatrix.col(j) * deltaToZero;
+              cd_add_column(bMatrix, j, deltaToZero, bBeta);
               currentObjective = trialObjective;
               maxAbsStepThisIter = std::max(maxAbsStepThisIter, std::abs(deltaToZero));
               continue;
@@ -578,7 +700,7 @@ static QuadraticCdResult quadratic_lasso_cd_impl(
       }
 
       beta[j] = oldBeta + acceptedDelta;
-      bBeta.noalias() += bMatrix.col(j) * acceptedDelta;
+      cd_add_column(bMatrix, j, acceptedDelta, bBeta);
       currentObjective = acceptedObjective;
       maxAbsStepThisIter = std::max(maxAbsStepThisIter, std::abs(acceptedDelta));
       stepBounds[j] = std::max(std::max(2.0 * std::abs(acceptedDelta), stepBounds[j] / 2.0), minStep);
@@ -722,15 +844,16 @@ List adapFullSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
   bool converged = false;
   std::string failureReason = "";
   QuadraticCdResult cdResult = make_cd_result(beta);
+  LazySurrogateMatrix bMatrix(x, leadWeight, &hCorrection, NULL);
 
   for (int iter = 0; iter < maxOuter; ++iter) {
     iterations = iter + 1;
     Eigen::VectorXd old = beta;
     Eigen::VectorXd grad;
-    Eigen::MatrixXd hEval;
-    logistic_gradient_hessian_full(x, beta, y, eps, grad, hEval);
-    Eigen::MatrixXd bMatrix = leadWeight * hEval + hCorrection;
-    Eigen::VectorXd aTilde = leadWeight * grad - leadWeight * hEval * beta + aCorrection;
+    Eigen::VectorXd weights;
+    logistic_gradient_weights(x, beta, y, eps, grad, weights);
+    bMatrix.reweight(weights);
+    Eigen::VectorXd aTilde = leadWeight * grad - leadWeight * bMatrix.hessianTimes(beta) + aCorrection;
     cdResult = quadratic_lasso_cd_impl(
       aTilde, bMatrix, beta, lambda, maxInner, tol, penalize,
       initialStepBound, minStep, maxBacktracks);
@@ -800,16 +923,18 @@ List adapFirstSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
   bool converged = false;
   std::string failureReason = "";
   QuadraticCdResult cdResult = make_cd_result(beta);
+  LazySurrogateMatrix bMatrix(x, 1.0, NULL, NULL);
 
   for (int iter = 0; iter < maxOuter; ++iter) {
     iterations = iter + 1;
     Eigen::VectorXd old = beta;
     Eigen::VectorXd grad;
-    Eigen::MatrixXd hEval;
-    logistic_gradient_hessian_full(x, beta, y, eps, grad, hEval);
-    Eigen::VectorXd aTilde = grad - hEval * beta + aCorrection;
+    Eigen::VectorXd weights;
+    logistic_gradient_weights(x, beta, y, eps, grad, weights);
+    bMatrix.reweight(weights);
+    Eigen::VectorXd aTilde = grad - bMatrix.hessianTimes(beta) + aCorrection;
     cdResult = quadratic_lasso_cd_impl(
-      aTilde, hEval, beta, lambda, maxInner, tol, penalize,
+      aTilde, bMatrix, beta, lambda, maxInner, tol, penalize,
       initialStepBound, minStep, maxBacktracks);
     beta = cdResult.beta;
     if (!cdResult.failureReason.empty()) {
@@ -881,16 +1006,16 @@ List adapDiagSurrogateFitCpp(const Eigen::Map<Eigen::SparseMatrix<double> >& x,
   bool converged = false;
   std::string failureReason = "";
   QuadraticCdResult cdResult = make_cd_result(beta);
+  LazySurrogateMatrix bMatrix(x, 1.0, NULL, &hCorrection);
 
   for (int iter = 0; iter < maxOuter; ++iter) {
     iterations = iter + 1;
     Eigen::VectorXd old = beta;
     Eigen::VectorXd grad;
-    Eigen::MatrixXd hEval;
-    logistic_gradient_hessian_full(x, beta, y, eps, grad, hEval);
-    Eigen::MatrixXd bMatrix = hEval;
-    bMatrix.diagonal() += hCorrection;
-    Eigen::VectorXd aTilde = grad - hEval * beta + aCorrection;
+    Eigen::VectorXd weights;
+    logistic_gradient_weights(x, beta, y, eps, grad, weights);
+    bMatrix.reweight(weights);
+    Eigen::VectorXd aTilde = grad - bMatrix.hessianTimes(beta) + aCorrection;
     cdResult = quadratic_lasso_cd_impl(
       aTilde, bMatrix, beta, lambda, maxInner, tol, penalize,
       initialStepBound, minStep, maxBacktracks);

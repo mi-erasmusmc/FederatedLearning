@@ -48,7 +48,9 @@ List clientUpdateDualAveragingCpp(List &clientData,
                                   List &serverBroadcast,
                                   List &config) {
 
-  Eigen::SparseMatrix<double> xMatrix = clientData["xMatrix"];
+  // Map the dgCMatrix in place; copying it cost more than the update itself.
+  const Eigen::Map<Eigen::SparseMatrix<double> > xMatrix =
+    as<Eigen::Map<Eigen::SparseMatrix<double> > >(clientData["xMatrix"]);
   Eigen::VectorXd yLabels = clientData["yLabels"];
 
   Eigen::VectorXd z = serverBroadcast["z"];

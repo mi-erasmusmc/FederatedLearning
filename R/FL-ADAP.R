@@ -119,7 +119,9 @@
   stats::setNames(out, paste0(prefix, suffix))
 }
 
-.adapMatrixStats <- function(B, prefix = "B") {
+# The condition number (a LINPACK QR estimate) takes longer than the full
+# eigendecomposition at thousands of columns, so callers can skip it.
+.adapMatrixStats <- function(B, prefix = "B", conditionNumber = TRUE) {
   B <- as.matrix(B)
   vals <- as.numeric(B)
   diagVals <- diag(B)
@@ -136,7 +138,8 @@
     stats::setNames(if (any(eigFinite)) min(eig[eigFinite]) else NA_real_, paste0(prefix, "EigenMin")),
     stats::setNames(if (any(eigFinite)) max(eig[eigFinite]) else NA_real_, paste0(prefix, "EigenMax")),
     stats::setNames(sum(is.finite(eig) & eig <= 0), paste0(prefix, "EigenNonPositive")),
-    stats::setNames(tryCatch(kappa(B), error = function(e) NA_real_), paste0(prefix, "Kappa"))
+    stats::setNames(if (isTRUE(conditionNumber)) tryCatch(kappa(B), error = function(e) NA_real_) else NA_real_,
+      paste0(prefix, "Kappa"))
   )
 }
 
@@ -634,7 +637,8 @@
 .adapSurrogateStats <- function(kind, xTrain, yTrain, betaLead, betaBar,
                                 globalGrad, globalHess = NULL,
                                 globalHessDiag = NULL,
-                                leadWeight = 1) {
+                                leadWeight = 1,
+                                conditionNumber = TRUE) {
   tryCatch({
     comp <- switch(kind,
       full = .adapSurrogateComponents(
@@ -666,7 +670,7 @@
     c(
       surrogateDiagnosticFailed = 0,
       .adapRangeStats(comp$aTilde, "aTilde"),
-      .adapMatrixStats(comp$B, "B")
+      .adapMatrixStats(comp$B, "B", conditionNumber = conditionNumber)
     )
   }, error = function(e) {
     c(
@@ -1265,7 +1269,9 @@
                                  etaAbsThreshold = 1e4,
                                  capture = NULL,
                                  curvatureAction = c("fail", "report"),
-                                 outerLineSearch = c("none", "armijo")) {
+                                 outerLineSearch = c("none", "armijo"),
+                                 leadHess = NULL,
+                                 correctionEigen = NULL) {
   strictCorrection <- match.arg(strictCorrection)
   curvatureAction <- match.arg(curvatureAction)
   outerLineSearch <- match.arg(outerLineSearch)
@@ -1282,7 +1288,7 @@
   }
   beta <- if (is.null(betaInit)) betaLead else betaInit
   gradBar <- .logisticNegGradient(betaBar, xDesign, y)
-  hBar <- .logisticNegHessian(betaBar, xDesign)
+  hBar <- leadHess %||% .logisticNegHessian(betaBar, xDesign)
   baseCorrection <- globalHess - leadWeight * hBar
   captureExit <- .beginSurrogateCapture(capture, xDesign, y,
     inputs = list(kind = "full", betaBar = betaBar, betaStart = beta, betaLead = betaLead,
@@ -1296,7 +1302,7 @@
       kktTolerance = kktTolerance, betaAbsThreshold = betaAbsThreshold,
       etaAbsThreshold = etaAbsThreshold, traceDiagnostics = traceDiagnostics))
   on.exit(.endSurrogateCapture(captureExit, returnValue()), add = TRUE)
-  eig <- .adapEigenRange(baseCorrection)
+  eig <- correctionEigen %||% .adapEigenRange(baseCorrection)
   epsilonEig <- .adapEpsilonEig(globalHess, tau = eigToleranceTau)
   epsilonFloor <- NA_real_
   rhoOverGlobalEigenMax <- NA_real_
@@ -2657,6 +2663,7 @@
                            cvMaxRows = Inf,
                            globalAdjustment = c("leaveValOut", "pda"),
                            collectDiagnostics = FALSE,
+                           conditionNumbers = FALSE,
                            collectTrace = FALSE,
                            traceContext = list(),
                            traceFile = NULL,
@@ -2726,6 +2733,8 @@
         )$alpha
       )
       baseCorrection <- hessTrainGlobal - leadWeightTrain * hBarTrain
+      # Fixed for the fold, so computed once instead of in every penalty's fit.
+      correctionEigen <- .adapEigenRange(baseCorrection)
       proxRhoTrain <- if (identical(surrogateVariant, "prox")) {
         .adapProxShift(hessTrainGlobal, baseCorrection, tau = proxTau)$rho
       } else {
@@ -2736,6 +2745,8 @@
         hessTrainGlobal = hessTrainGlobal,
         leadWeightTrain = leadWeightTrain,
         proxRhoTrain = proxRhoTrain,
+        hBarTrain = hBarTrain,
+        correctionEigen = correctionEigen,
         diagnostics = if (isTRUE(collectDiagnostics)) {
           .adapSurrogateStats(
             kind = "full",
@@ -2745,7 +2756,8 @@
             betaBar = betaBar,
             globalGrad = gradTrainGlobal,
             globalHess = hessTrainGlobal,
-            leadWeight = leadWeightTrain
+            leadWeight = leadWeightTrain,
+            conditionNumber = conditionNumbers
           )
         } else {
           NULL
@@ -2774,6 +2786,8 @@
         capture = .surrogateCaptureSubset(capture, cvIdx[info$idxTr], cvIdx[info$idxVal], info$fold),
         leadWeight = info$leadWeightTrain,
         proxRho = info$proxRhoTrain,
+        leadHess = info$hBarTrain,
+        correctionEigen = info$correctionEigen,
         strictCorrection = surrogateVariant,
         curvatureAction = curvatureAction,
         outerLineSearch = outerLineSearch,
@@ -2823,6 +2837,7 @@
                                 cvMaxRows = Inf,
                                 globalAdjustment = c("leaveValOut", "pda"),
                                 collectDiagnostics = FALSE,
+                                conditionNumbers = FALSE,
                                 collectTrace = FALSE,
                                 traceContext = list(),
                                 traceFile = NULL,
@@ -2867,7 +2882,8 @@
             yTrain = yCv[info$idxTr],
             betaLead = betaLead,
             betaBar = betaBar,
-            globalGrad = gradTrainGlobal
+            globalGrad = gradTrainGlobal,
+            conditionNumber = conditionNumbers
           )
         } else {
           NULL
@@ -2941,6 +2957,7 @@
                                cvMaxRows = Inf,
                                globalAdjustment = c("leaveValOut", "pda"),
                                collectDiagnostics = FALSE,
+                               conditionNumbers = FALSE,
                                collectTrace = FALSE,
                                traceContext = list(),
                                traceFile = NULL,
@@ -2990,7 +3007,8 @@
             betaLead = betaLead,
             betaBar = betaBar,
             globalGrad = gradTrainGlobal,
-            globalHessDiag = hessTrainGlobalDiag
+            globalHessDiag = hessTrainGlobalDiag,
+            conditionNumber = conditionNumbers
           )
         } else {
           NULL
@@ -3279,6 +3297,7 @@
         cvMaxRows = config$lambdaCvMaxRows %||% Inf,
         globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
         collectDiagnostics = isTRUE(config$adapCvDiagnostics),
+        conditionNumbers = isTRUE(config$adapConditionNumbers),
         collectTrace = traceEnabled,
         traceContext = c(baseTraceContext, list(method = methodName, phase = "cv")),
         traceFile = config$adapTraceFile %||% NULL,
@@ -3445,7 +3464,11 @@
     state$correctionDiagMax <- max(correctionDiag, na.rm = TRUE)
     state$correctionDiagNegative <- sum(is.finite(correctionDiag) & correctionDiag < -correctionEpsilon)
     hDiag <- diag(globalHess)
-    hCond <- tryCatch(kappa(globalHess), error = function(e) NA_real_)
+    hCond <- if (isTRUE(config$adapConditionNumbers)) {
+      tryCatch(kappa(globalHess), error = function(e) NA_real_)
+    } else {
+      NA_real_
+    }
     state$hessianDim <- paste(dim(globalHess), collapse = "x")
     state$hessianDiagMin <- min(hDiag, na.rm = TRUE)
     state$hessianDiagMax <- max(hDiag, na.rm = TRUE)
@@ -3721,6 +3744,7 @@
           cvMaxRows = config$lambdaCvMaxRows %||% Inf,
           globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
           collectDiagnostics = isTRUE(config$adapCvDiagnostics),
+          conditionNumbers = isTRUE(config$adapConditionNumbers),
           collectTrace = traceEnabled,
           traceContext = c(baseTraceContext, list(method = methodName, phase = "cv")),
           traceFile = config$adapTraceFile %||% NULL,
@@ -3881,6 +3905,7 @@
         cvMaxRows = config$lambdaCvMaxRows %||% Inf,
         globalAdjustment = config$lambdaCvGlobalAdjustment %||% "leaveValOut",
         collectDiagnostics = isTRUE(config$adapCvDiagnostics),
+        conditionNumbers = isTRUE(config$adapConditionNumbers),
         collectTrace = traceEnabled,
         traceContext = c(baseTraceContext, list(method = methodName, phase = "cv")),
         traceFile = config$adapTraceFile %||% NULL,

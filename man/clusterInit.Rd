@@ -11,7 +11,10 @@ clusterInit(clientHosts, clientPaths, mirai = TRUE)
 
 \item{clientPaths}{client data paths; used to define cluster size}
 
-\item{mirai}{if TRUE, use \code{mirai}; otherwise use PSOCK workers}
+\item{mirai}{if TRUE, use local \code{mirai} daemons; otherwise use PSOCK workers.
+Both give the same results. PSOCK workers stall on each message of a few
+kilobytes or more, which slows round-based methods at thousands of
+predictors.}
 }
 \value{
 cluster object

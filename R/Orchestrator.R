@@ -337,12 +337,11 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     clActive <- subsetCluster(cl, activeClients)
     serverState$r <- r + roundOffset
     serverState$activeClients <- activeClients
-    # update client state
-    parallel::clusterExport(clActive, "serverState", envir = environment())
-    report <- parallel::clusterEvalQ(
-      clActive,
+    # update client state; the broadcast travels with the call, saving a round trip
+    report <- parallel::clusterCall(clActive, eval, bquote({
+      serverState <- .(serverState)
       clientUpdate(serverBroadcast = serverState)
-    )
+    }), envir = .GlobalEnv)
     # step 2: server round
     .captureSurrogateRound(config, serverState, report, r)
     .recordProtocolRound(communication, algo, serverState, activeClients, report)
@@ -364,18 +363,20 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
         (roundsCompleted == 1L || roundsCompleted %% gapEvery == 0L)
       serverReport$dualGapRound <- roundsCompleted
     }
-    parallel::clusterExport(cl, c("serverReport"), envir = environment())
     hasWeights <- !is.null(serverReport$w) &&
       !isTRUE(serverReport$skipConvergence) &&
       !identical(config$convergenceObjective, "none")
     criteria <- NA_real_
+    if (!hasWeights) {
+      parallel::clusterExport(cl, c("serverReport"), envir = environment())
+    }
     if (hasWeights) {
-      localObjectives <- parallel::clusterEvalQ(
-        cl,
+      localObjectives <- parallel::clusterCall(cl, eval, bquote({
+        serverReport <- .(serverReport)
         getLocalConvergenceObjective(serverReport$w, isTRUE(serverReport$checkKkt),
           isTRUE(serverReport$prepareDualGap), serverReport$dualGapRequest,
           serverReport$dualGapRound)
-      )
+      }), envir = .GlobalEnv)
       # The objective after a final phase only reports the fit; it does not decide stopping.
       if (!isTRUE(serverReport$done)) {
         broadcast <- serverReport[intersect(c("w", "checkKkt", "prepareDualGap",

@@ -272,7 +272,8 @@ test_that("filtered maps survive lambda tuning and artifact saving without doubl
     direction = "site to server", exchanges = 1, messages = 2, values = 38, bytes = 400,
     maxMessageValues = 19)
   filtering$elapsedSeconds <- 0.5
-  cfg <- env$methodConfig("DualAvg", "all", list("dualavg-rounds" = "3"))
+  # The fit is mocked, so there is no training cluster for the pooled reference fit.
+  cfg <- env$methodConfig("DualAvg", "all", list("dualavg-rounds" = "3", "dualavg-reference-fit" = "false"))
   cfg$mapping <- filtering$mapping
   cfg$p <- nrow(cfg$mapping)
   cfg$featureFiltering <- filtering

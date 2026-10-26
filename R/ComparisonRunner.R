@@ -340,6 +340,8 @@ methodConfig <- function(method, featureSet, args) {
     )),
     diagnosticDownsampleSeed = intArg(argValue(args, "diagnostic-downsample-seed"), 42L),
     adapCvDiagnostics = logicalArg(argValue(args, "adap-cv-diagnostics"), TRUE),
+    # Condition-number estimates of dense Hessians are slow at thousands of columns.
+    adapConditionNumbers = logicalArg(argValue(args, "adap-condition-numbers"), FALSE),
     adapTraceDiagnostics = logicalArg(argValue(args, "adap-trace-diagnostics"), FALSE),
     surrogateCaptureDirectory = argValue(args, "surrogate-capture-directory"),
     adapProxTau = firstValue(numCsvArg(argValue(args, "adap-prox-tau"), 1e-8)),
@@ -360,6 +362,8 @@ methodConfig <- function(method, featureSet, args) {
       cfg$dualAvgKktTolerance <- numArg(kktTolerance, NA_real_)
       cfg$dualAvgKktCheckEvery <- numArg(argValue(args, "dualavg-kkt-check-every"), 100L)
     }
+    # Exact pooled optimum at the final penalty, for the distance of the fit from it.
+    cfg$dualavgReferenceFit <- logicalArg(argValue(args, "dualavg-reference-fit"), TRUE)
     cfg$etaClient <- firstValue(numCsvArg(argValue(args, "eta-client"), 1))
     cfg$etaServer <- firstValue(numCsvArg(argValue(args, "eta-server"), 1))
     cfg$k <- firstValue(intCsvArg(argValue(args, "k"), 10L))
@@ -1948,6 +1952,34 @@ summarizeResults <- function(rows) {
   do.call(rbind, summaries)
 }
 
+# Cyclops fitted to the pooled training rows at DualAvg's own penalty minimizes
+# the same penalized mean log loss, so its solution shows how far a round-limited
+# DualAvg fit stopped from the optimum.
+dualAvgReferenceDiagnostics <- function(clTrain, w, lambda, intercept, args) {
+  start <- Sys.time()
+  trainData <- parallel::clusterEvalQ(clTrain,
+    list(xMatrix = clientData$xMatrix, yLabels = clientData$yLabels))
+  n <- sum(vapply(trainData, function(x) nrow(x$xMatrix), numeric(1)))
+  referenceArgs <- args
+  referenceArgs[["cyclops-tolerance"]] <- argValue(args, "dualavg-reference-tolerance") %||% "1e-8"
+  reference <- fitCyclopsWeights(trainData, referenceArgs, seed = 42L, intercept = intercept,
+    variance = 2 / (lambda * n)^2)$w
+  penalized <- seq_along(w)
+  if (isTRUE(intercept)) penalized <- penalized[-1L]
+  objective <- function(beta) {
+    pooledFitDiagnostics(trainData, beta, intercept = intercept)$pooledMeanLogLoss +
+      lambda * sum(abs(beta[penalized]))
+  }
+  list(
+    dualAvgReferenceObjectiveGap = objective(w) - objective(reference),
+    dualAvgReferenceCoefficientMaxDiff = max(abs(w - reference)),
+    dualAvgReferenceSupportMismatch = sum((abs(w[penalized]) > 1e-8) != (abs(reference[penalized]) > 1e-8)),
+    dualAvgReferenceKktMaxAbs = pooledFitDiagnostics(trainData, reference, lambda = lambda,
+      intercept = intercept)$pooledKktMaxAbs,
+    dualAvgReferenceElapsedSeconds = as.numeric(difftime(Sys.time(), start, units = "secs"))
+  )
+}
+
 addPooledObjectiveGap <- function(rows) {
   if (!nonEmptyRows(rows) || !"pooledMeanLogLoss" %in% names(rows)) {
     return(rows)
@@ -2022,6 +2054,10 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
   elapsed <- as.numeric(difftime(Sys.time(), start, units = "secs"))
 
   .requireDualAvgConvergence(fit, config, "final fit", config$lambdaSearchTrace)
+  reference <- if (method %in% dualAvgMethods && isTRUE(config$dualavgReferenceFit)) {
+    dualAvgReferenceDiagnostics(clTrain, fit$w, config[["lambda", exact = TRUE]],
+      isTRUE(config$intercept), provenance$args %||% list())
+  }
 
   testConfig <- config
   testConfig$mapping <- fit$config$mapping
@@ -2234,6 +2270,9 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       stringsAsFactors = FALSE
     )
   )
+  for (name in names(reference)) {
+    resultRows[[name]] <- reference[[name]]
+  }
   filtering <- fit$config$featureFiltering
   if (!is.null(filtering)) {
     resultRows$preprocessFingerprint <- filtering$fingerprint

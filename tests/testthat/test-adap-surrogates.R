@@ -1591,6 +1591,57 @@ test_that("compiled sparse ADAP surrogate solvers match dense R fallback", {
   expect_equal(sparseFits$diag, denseFits$diag, tolerance = 1e-8)
 })
 
+test_that("compiled ADAP solvers match the dense fallback on a wide sparse design", {
+  # Most coordinates stay at zero, so the compiled solvers form only some
+  # Hessian columns and must form them afresh after each reweighting.
+  p <- 40L
+  twoSites <- function(leadDensity, otherDensity) {
+    set.seed(31)
+    binary <- function(n, density) {
+      cbind(1, Matrix::rsparsematrix(n, p, density = density, rand.x = function(k) rep(1, k)))
+    }
+    xLead <- binary(300L, leadDensity)
+    xOther <- binary(500L, otherDensity)
+    beta <- c(-1.5, stats::rnorm(6, 0, 0.8), rep(0, p - 6L))
+    yLead <- stats::rbinom(300L, 1, stats::plogis(as.numeric(xLead %*% beta)))
+    yOther <- stats::rbinom(500L, 1, stats::plogis(as.numeric(xOther %*% beta)))
+    betaBar <- c(-1.5, rep(0, p))
+    share <- c(300, 500) / 800
+    list(xLead = xLead, yLead = yLead, betaBar = betaBar, betaLead = c(-1.4, rep(0.01, p)),
+      globalGrad = share[1] * FederatedLearning:::.logisticNegGradient(betaBar, xLead, yLead) +
+        share[2] * FederatedLearning:::.logisticNegGradient(betaBar, xOther, yOther),
+      globalHess = share[1] * FederatedLearning:::.logisticNegHessian(betaBar, xLead) +
+        share[2] * FederatedLearning:::.logisticNegHessian(betaBar, xOther))
+  }
+  fitBoth <- function(d, fitter, ...) {
+    lapply(list(sparse = d$xLead, dense = as.matrix(d$xLead)), function(x) {
+      fitter(x, d$yLead, d$betaLead, d$betaBar, d$globalGrad, ...,
+        maxOuter = 100L, maxInner = 200L, tol = 1e-10, returnDetails = TRUE)
+    })
+  }
+  # A denser other site keeps the diagonal correction positive; ADAP1 has no
+  # curvature correction and converges only on the milder design.
+  dense <- twoSites(0.06, 0.25)
+  mild <- twoSites(0.08, 0.12)
+  fits <- list(
+    full = fitBoth(dense, FederatedLearning:::.fitPdaAdapSurrogate, dense$globalHess, 0.005,
+      curvatureAction = "report"),
+    diag = fitBoth(dense, FederatedLearning:::.fitPdaAdapRemoteDiagSurrogate, diag(dense$globalHess), 0.005),
+    first = fitBoth(mild, FederatedLearning:::.fitPdaAdapFirstOrderSurrogate, 0.003)
+  )
+
+  for (kind in names(fits)) {
+    sparse <- fits[[kind]]$sparse
+    reference <- fits[[kind]]$dense
+    expect_equal(sparse$failureReason, "", label = kind)
+    expect_equal(reference$failureReason, "", label = kind)
+    expect_equal(sparse$outerIterations, reference$outerIterations, label = kind)
+    expect_equal(as.numeric(sparse$beta), as.numeric(reference$beta), tolerance = 1e-9, label = kind)
+    nonzero <- sum(as.numeric(sparse$beta)[-1] != 0)
+    expect_true(nonzero > 5 && nonzero < p, label = kind)
+  }
+})
+
 test_that("ADAP optimizers satisfy quadratic KKT checks on well-conditioned data", {
   fixture <- make_adap_phase2_fixture(n = 34L, p = 4L, seed = 20L)
   lambda <- 0.04
@@ -1854,4 +1905,28 @@ test_that("the runner tunes ADAP with three stratified lead-site folds by defaul
   expect_identical(c(config$foldsK, config$cvStratify), c(3L, TRUE))
   published <- runner$methodConfig("ADAP2", "all", list("inner-folds" = "5", "cv-stratify" = "false"))
   expect_identical(c(published$foldsK, published$cvStratify), c(5L, FALSE))
+})
+
+test_that("ADAP condition numbers are skipped unless requested", {
+  B <- crossprod(matrix(stats::rnorm(20), 5)) + diag(4)
+  expect_true(is.na(FederatedLearning:::.adapMatrixStats(B, "B", conditionNumber = FALSE)[["BKappa"]]))
+  expect_equal(FederatedLearning:::.adapMatrixStats(B, "B")[["BKappa"]], kappa(B))
+  runner <- comparisonRunnerEnv()
+  expect_false(runner$methodConfig("ADAP2", "all", list())$adapConditionNumbers)
+  expect_true(runner$methodConfig("ADAP2", "all",
+    list("adap-condition-numbers" = "true"))$adapConditionNumbers)
+})
+
+test_that("ADAP fits reuse a fold's lead Hessian and correction spectrum unchanged", {
+  fixture <- make_adap_phase2_fixture(n = 40L, p = 5L, seed = 23L)
+  hBar <- FederatedLearning:::.logisticNegHessian(fixture$betaBar, fixture$xDesign)
+  fit <- function(...) {
+    FederatedLearning:::.fitPdaAdapSurrogate(fixture$xDesign, fixture$y, fixture$betaLead,
+      fixture$betaBar, fixture$globalGrad, fixture$globalHess, 0.02, maxOuter = 40L,
+      maxInner = 80L, tol = 1e-9, returnDetails = TRUE, curvatureAction = "report", ...)
+  }
+  expect_identical(
+    fit(leadHess = hBar,
+      correctionEigen = FederatedLearning:::.adapEigenRange(fixture$globalHess - hBar)),
+    fit())
 })

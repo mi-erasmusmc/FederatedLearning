@@ -1,31 +1,55 @@
 #' Initialize a worker cluster for client execution
 #' @param clientHosts worker host names or addresses
 #' @param clientPaths client data paths; used to define cluster size
-#' @param mirai if TRUE, use `mirai`; otherwise use PSOCK workers
+#' @param mirai if TRUE, use local `mirai` daemons; otherwise use PSOCK workers.
+#'   Both give the same results. PSOCK workers stall on each message of a few
+#'   kilobytes or more, which slows round-based methods at thousands of
+#'   predictors.
 #' @return cluster object
 #' @export
 clusterInit <- function(clientHosts, clientPaths, mirai = TRUE) {
   stopifnot(length(clientHosts) == length(clientPaths))
   if (mirai) {
-    cl <- mirai::make_cluster(n = length(clientHosts))
+    # A mirai cluster's nodes share its daemons, so successive calls to a node
+    # can reach different processes. Workers hold their site's data between
+    # calls, so each node gets a profile with a single daemon of its own.
+    profiles <- lapply(seq_along(clientHosts), function(i) mirai::make_cluster(1L))
+    cl <- structure(lapply(profiles, `[[`, 1L), class = c("pinnedMiraiCluster", "cluster"),
+      profiles = profiles)
+    libraries <- .libPaths()
+    tryCatch(parallel::clusterCall(cl, function(paths) {
+      .libPaths(paths)
+      NULL
+    }, libraries), error = function(error) {
+      parallel::stopCluster(cl)
+      stop(error)
+    })
   } else {
     cl <- parallelly::makeClusterPSOCK(
       workers = clientHosts,
       rscript_libs = .libPaths(),
       default_packages = c("datasets", "utils", "grDevices", "graphics", "stats", "methods")
     )
-    # Startup packages load before rscript_libs, so load study packages afterwards.
-    tryCatch(parallel::clusterCall(cl, function(packages) {
-      for (package in packages) {
-        suppressPackageStartupMessages(library(package, character.only = TRUE))
-      }
-      NULL
-    }, c("PatientLevelPrediction", "FederatedLearning")), error = function(error) {
-      parallel::stopCluster(cl)
-      stop(error)
-    })
   }
+  # Startup packages load before rscript_libs, so load study packages afterwards.
+  tryCatch(parallel::clusterCall(cl, function(packages) {
+    for (package in packages) {
+      suppressPackageStartupMessages(library(package, character.only = TRUE))
+    }
+    NULL
+  }, c("PatientLevelPrediction", "FederatedLearning")), error = function(error) {
+    parallel::stopCluster(cl)
+    stop(error)
+  })
   cl
+}
+
+#' @exportS3Method parallel::stopCluster
+stopCluster.pinnedMiraiCluster <- function(cl = NULL) {
+  for (profile in attr(cl, "profiles")) {
+    parallel::stopCluster(profile)
+  }
+  invisible(NULL)
 }
 
 .workerStateNames <- c(

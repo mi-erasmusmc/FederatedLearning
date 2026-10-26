@@ -212,15 +212,13 @@ test_that("real workers preserve ODAL results and communication accounting with 
     NULL
   })
   local_mocked_bindings(clusterCreateMatrices = function(...) NULL, .package = "FederatedLearning")
-  calls <- c(evaluate = 0L, export = 0L)
-  originalEval <- parallel::clusterEvalQ
+  calls <- c(call = 0L, export = 0L)
+  originalCall <- parallel::clusterCall
   originalExport <- parallel::clusterExport
   local_mocked_bindings(
-    clusterEvalQ = function(cl, expr) {
-      calls[["evaluate"]] <<- calls[["evaluate"]] + 1L
-      call <- match.call()
-      call[[1]] <- originalEval
-      eval(call, parent.frame())
+    clusterCall = function(cl = NULL, fun, ...) {
+      calls[["call"]] <<- calls[["call"]] + 1L
+      originalCall(cl, fun, ...)
     },
     clusterExport = function(cl, varlist, envir = .GlobalEnv) {
       calls[["export"]] <<- calls[["export"]] + 1L
@@ -234,7 +232,7 @@ test_that("real workers preserve ODAL results and communication accounting with 
   on <- fitFederated(cl, "ODAL2", c(cfg, list(surrogateCaptureDirectory = directory)), verbose = FALSE)
   expect_identical(on[setdiff(names(on), "config")], off[setdiff(names(off), "config")])
   expect_identical(calls, offCalls)
-  expect_gt(calls[["evaluate"]], 0)
+  expect_gt(calls[["call"]], 0)
   root <- on$config$surrogateCaptureDirectory
   expect_length(list.files(root, "^round-"), 3L)
   round <- readRDS(file.path(root, "round-1.rds"))
