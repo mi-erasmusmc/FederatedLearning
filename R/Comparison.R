@@ -6,6 +6,11 @@
 #' `outputDirectory`. Combinations already completed there are reused when
 #' `resume` is `TRUE`.
 #'
+#' Each call adds a row to `run_manifest.csv` in `outputDirectory`, with the
+#' framework and study package versions, R, the BLAS, a hash of the settings
+#' and start and finish times; `manifest/` keeps the full settings and session.
+#' Resuming with other code or settings gives a warning.
+#'
 #' Methods with identical options run together. Methods with different
 #' options run separately, so an option given to one method never reaches
 #' another.
@@ -72,6 +77,12 @@ runComparison <- function(taskSettings, sites, featureSettings, methodSettings, 
   base$`surrogate-capture-directory` <- runSettings$surrogateCaptureDirectory
   base$`preprocessing-reference-directory` <- runSettings$preprocessingReferenceDirectory
 
+  manifestId <- if (!isTRUE(runSettings$auditOnly)) {
+    .startRunManifest(outputDirectory, list(taskSettings = taskSettings, sites = sites,
+      featureSettings = featureSettings, methodSettings = methodSettings, holdouts = holdouts,
+      resume = resume, runSettings = runSettings))
+  }
+
   # One runner call per distinct option set, so options never cross methods.
   optionKeys <- vapply(methodSettings, function(m) paste(deparse(m$options), collapse = ""), "")
   for (key in unique(optionKeys)) {
@@ -86,6 +97,7 @@ runComparison <- function(taskSettings, sites, featureSettings, methodSettings, 
     return(invisible(utils::read.csv(file.path(outputDirectory, "preprocessing", "summary.csv"),
       stringsAsFactors = FALSE)))
   }
+  .finishRunManifest(outputDirectory, manifestId)
   invisible(readComparisonResults(outputDirectory))
 }
 

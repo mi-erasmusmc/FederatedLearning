@@ -47,6 +47,11 @@ artifacts and the shared feature-filter audit are written to
 \code{resume} is \code{TRUE}.
 }
 \details{
+Each call adds a row to \code{run_manifest.csv} in \code{outputDirectory}, with the
+framework and study package versions, R, the BLAS, a hash of the settings
+and start and finish times; \verb{manifest/} keeps the full settings and session.
+Resuming with other code or settings gives a warning.
+
 Methods with identical options run together. Methods with different
 options run separately, so an option given to one method never reaches
 another.
