@@ -215,6 +215,30 @@ stampMethodElapsed <- function(rows, startTime) {
   rows
 }
 
+# Peak memory so far, in MB, of the main R process (whole session) and of the
+# largest site worker (workers are started afresh for each fold).
+stampPeakMemory <- function(rows, clusters) {
+  workers <- unlist(lapply(Filter(Negate(is.null), clusters), function(cl) tryCatch(
+    unlist(parallel::clusterCall(cl, peakMemoryMbCpp)), error = function(e) NA_real_)))
+  rows$peakMemoryMbMain <- peakMemoryMbCpp()
+  rows$peakMemoryMbWorkers <- if (any(is.finite(workers))) max(workers, na.rm = TRUE) else NA_real_
+  rows
+}
+
+# "site+server" seconds per round, for fits with a handful of rounds such as
+# ODAL and ADAP; NA for iterative fits.
+roundSecondsLabel <- function(siteSeconds, serverSeconds, maxRounds = 10L) {
+  if (!length(siteSeconds) || length(siteSeconds) > maxRounds) return(NA_character_)
+  paste(sprintf("%.1f+%.1f", siteSeconds, serverSeconds), collapse = "; ")
+}
+
+formatDuration <- function(seconds) {
+  if (!is.finite(seconds)) return("NA")
+  if (seconds < 60) return(sprintf("%.0f s", seconds))
+  if (seconds < 3600) return(sprintf("%.1f min", seconds / 60))
+  sprintf("%.2f h", seconds / 3600)
+}
+
 debugPath <- function(debugDirectory, task, fold, featureSet, method = NULL,
                       suffix = "debug", extension = "rds") {
   parts <- c(
@@ -2204,6 +2228,9 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
       fold = fold,
       p = length(fit$w),
       roundsCompleted = fit$roundsCompleted %||% NA_integer_,
+      siteElapsedSeconds = sum(fit$siteSeconds %||% NA_real_),
+      serverElapsedSeconds = sum(fit$serverSeconds %||% NA_real_),
+      roundElapsedSeconds = roundSecondsLabel(fit$siteSeconds, fit$serverSeconds),
       nonzeroPredictors = exactNonzero(fit$w, config$intercept),
       penaltyScale = if (method %in% c("ODAL", "ODAL1", "ODAL2")) "none (unpenalized surrogate)" else "mean negative log-likelihood L1 multiplier",
       selectedLambda = fit$selectedLambda %||% config[["lambda", exact = TRUE]] %||% NA_real_,
@@ -2343,6 +2370,7 @@ runComparisonFromArgs <- function(args, populationSettings = NULL, clientPaths =
     stop("PatientLevelPrediction is required to load PLP data")
   }
 
+  runStart <- Sys.time()
   dataRoot <- args[["data-root"]] %||% "data"
   resultDirectory <- args[["result-directory"]] %||% "results/comparisonMatrix"
   dir.create(resultDirectory, recursive = TRUE, showWarnings = FALSE)
@@ -2736,6 +2764,13 @@ runComparisonFromArgs <- function(args, populationSettings = NULL, clientPaths =
                 }
               )
               res <- stampMethodElapsed(res, methodStart)
+              res <- stampPeakMemory(res, list(clTrain, clTest))
+              message(sprintf(
+                "[%s] done task=%s fold=%s featureSet=%s method=%s in %s; peak memory main %.1f GB, largest worker %.1f GB",
+                format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method,
+                formatDuration(res$elapsedSeconds[[1]]), res$peakMemoryMbMain[[1]] / 1024,
+                res$peakMemoryMbWorkers[[1]] / 1024
+              ))
               rows <- appendCombinationRows(rows, res, task, fold, featureSet, method)
               utils::write.csv(
                 rows,
@@ -2790,5 +2825,11 @@ runComparisonFromArgs <- function(args, populationSettings = NULL, clientPaths =
   summaryRows <- summarizeResults(allRows)
   utils::write.csv(allRows, resultFile, row.names = FALSE)
   utils::write.csv(summaryRows, summaryFile, row.names = FALSE)
+  message(sprintf(
+    "[%s] finished %s in %s; peak memory main %.1f GB",
+    format(Sys.time(), "%H:%M:%S"), resultDirectory,
+    formatDuration(as.numeric(difftime(Sys.time(), runStart, units = "secs"))),
+    peakMemoryMbCpp() / 1024
+  ))
   invisible(list(results = allRows, summary = summaryRows))
 }

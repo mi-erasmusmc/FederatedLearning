@@ -255,6 +255,16 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// peakMemoryMbCpp
+double peakMemoryMbCpp();
+RcppExport SEXP _FederatedLearning_peakMemoryMbCpp() {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    rcpp_result_gen = Rcpp::wrap(peakMemoryMbCpp());
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_FederatedLearning_serverInitDualAveragingCpp", (DL_FUNC) &_FederatedLearning_serverInitDualAveragingCpp, 1},
@@ -272,6 +282,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_FederatedLearning_adapFullSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapFullSurrogateFitCpp, 18},
     {"_FederatedLearning_adapFirstSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapFirstSurrogateFitCpp, 14},
     {"_FederatedLearning_adapDiagSurrogateFitCpp", (DL_FUNC) &_FederatedLearning_adapDiagSurrogateFitCpp, 16},
+    {"_FederatedLearning_peakMemoryMbCpp", (DL_FUNC) &_FederatedLearning_peakMemoryMbCpp, 0},
     {NULL, NULL, 0}
 };
 

@@ -50,10 +50,10 @@ dropGoldenTimings <- function(x) {
   out
 }
 
-# Deterministic content of a result directory: timings, temporary file names,
+# Deterministic content of a result directory: timings, memory, temporary file names,
 # session information and code provenance are excluded.
 goldenRunnerSnapshot <- function(directory) {
-  volatile <- function(names) grepl("lapsed|^modelFile$|^modelId$", names)
+  volatile <- function(names) grepl("lapsed|^peakMemory|^modelFile$|^modelId$", names)
   stable <- function(rows) {
     rows <- rows[, !volatile(names(rows)), drop = FALSE]
     if ("lambdaPathFile" %in% names(rows)) {

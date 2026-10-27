@@ -230,7 +230,8 @@ test_that("real workers preserve ODAL results and communication accounting with 
   offCalls <- calls
   calls[] <- 0L
   on <- fitFederated(cl, "ODAL2", c(cfg, list(surrogateCaptureDirectory = directory)), verbose = FALSE)
-  expect_identical(on[setdiff(names(on), "config")], off[setdiff(names(off), "config")])
+  timing <- c("config", "siteSeconds", "serverSeconds")
+  expect_identical(on[setdiff(names(on), timing)], off[setdiff(names(off), timing)])
   expect_identical(calls, offCalls)
   expect_gt(calls[["call"]], 0)
   root <- on$config$surrogateCaptureDirectory

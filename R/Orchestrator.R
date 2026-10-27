@@ -331,7 +331,16 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     }, add = TRUE)
   }
 
+  # Seconds spent waiting on the sites (updates, objective and KKT calls) and
+  # in the server step, per round.
+  siteSeconds <- numeric(config$rounds)
+  serverSeconds <- numeric(config$rounds)
   for (r in 0:(config$rounds - 1)) {
+    roundStart <- proc.time()[["elapsed"]]
+    # The previous round's objective and KKT calls ran after its server step.
+    if (roundsCompleted > 0L) {
+      siteSeconds[[roundsCompleted]] <- siteSeconds[[roundsCompleted]] + roundStart - serverEnd
+    }
     roundsCompleted <- r + 1L
     activeClients <- selectActiveClients(length(cl), config$clientFrac)
     clActive <- subsetCluster(cl, activeClients)
@@ -342,6 +351,7 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
       serverState <- .(serverState)
       clientUpdate(serverBroadcast = serverState)
     }), envir = .GlobalEnv)
+    serverStart <- proc.time()[["elapsed"]]
     # step 2: server round
     .captureSurrogateRound(config, serverState, report, r)
     .recordProtocolRound(communication, algo, serverState, activeClients, report)
@@ -350,6 +360,9 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
       clientReports = report,
       config = config
     )
+    serverEnd <- proc.time()[["elapsed"]]
+    serverSeconds[[roundsCompleted]] <- serverEnd - serverStart
+    siteSeconds[[roundsCompleted]] <- serverStart - roundStart
     serverState <- srv$state
     serverReport <- srv$report
     serverReport$activeClients <- activeClients
@@ -484,6 +497,9 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
       break
     }
   }
+  if (roundsCompleted > 0L) {
+    siteSeconds[[roundsCompleted]] <- siteSeconds[[roundsCompleted]] + proc.time()[["elapsed"]] - serverEnd
+  }
   if (!is.null(globalObjective)) {
     message("Final objective value: ", globalObjective, "\n")
   }
@@ -491,6 +507,8 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     w = if (!is.null(serverReport$w)) serverReport$w else serverState$w,
     config = config,
     roundsCompleted = roundsCompleted,
+    siteSeconds = siteSeconds[seq_len(roundsCompleted)],
+    serverSeconds = serverSeconds[seq_len(roundsCompleted)],
     communication = .communicationTable(communication),
     communicationBasis = if (is.function(algo$protocol)) "protocol" else "transport"
   )

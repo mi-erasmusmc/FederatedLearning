@@ -64,3 +64,7 @@ adapDiagSurrogateFitCpp <- function(x, y, betaStart, betaBar, globalGrad, global
     .Call(`_FederatedLearning_adapDiagSurrogateFitCpp`, x, y, betaStart, betaBar, globalGrad, globalHessDiag, gradBar, hBarDiag, lambda, maxOuter, maxInner, tol, eps, initialStepBound, minStep, maxBacktracks)
 }
 
+peakMemoryMbCpp <- function() {
+    .Call(`_FederatedLearning_peakMemoryMbCpp`)
+}
+
