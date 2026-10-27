@@ -21,4 +21,20 @@ example \code{createMethodSettings("DualAvg", dualavgLambda = 0.01)} or
 \code{createMethodSettings("PooledLasso", cyclopsFolds = 4)}. A vector value
 defines a grid of configurations. Options a method does not use are ignored
 by that method.
+
+ADAP methods use glmnet for local initialization by default. Set
+\code{adapInitBackend = "glmnet_sparse"} to use the same glmnet CV with sparse
+input. Set \code{adapInitBackend = "cyclops"} for an experimental site-local
+Cyclops lasso with automatic penalty search. Both backends default to ten
+unstratified folds; use \code{adapInitFolds = 3} and \code{adapInitStratify = TRUE}
+for three outcome-stratified folds. It may select
+different local penalties and change the ADAP surrogate. Cyclops requires
+unstandardized features and is an optional dependency. Its initialization
+fits must satisfy an independent mean-loss KKT check, and its initialization
+trace is stored in the model artifact. \code{adapInitTolerance} (default 1e-12)
+controls Cyclops convergence, and \code{adapInitKktTolerance} (default 1e-6)
+controls the independent check. Diagnostics travel with the existing reply
+and are excluded from protocol-only communication totals. Resume checks the
+saved initializer settings. Use a new result
+directory when they change or when an earlier result has no model artifact.
 }

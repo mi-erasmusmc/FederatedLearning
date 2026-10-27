@@ -163,6 +163,48 @@ isCompletedCombination <- function(rows, task, fold, featureSet, method,
   TRUE
 }
 
+guardAdapInitializerResume <- function(rows, task, fold, featureSet, method, args, resultDirectory) {
+  adapMethods <- c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")
+  if (!method %in% adapMethods) return(invisible(NULL))
+  requested <- methodConfig(method, featureSet, args)
+  requestedBackend <- requested$adapInitBackend %||% "glmnet"
+  foldSettings <- function(config) list(
+    folds = config$adapInitFolds %||% 10L,
+    stratify = config$adapInitStratify %||% FALSE,
+    seed = config$adapInitSeed %||% config$cvSeed %||% 42L
+  )
+  selected <- rows[matchingCombination(rows, task, fold, featureSet, method) & successfulRows(rows), , drop = FALSE]
+  artifact <- readModelArtifact(selected, resultDirectory, task, fold, featureSet, method)
+  if (is.null(artifact)) {
+    if (!identical(requestedBackend, "glmnet") ||
+        !identical(foldSettings(requested), list(folds = 10L, stratify = FALSE, seed = 42L))) {
+      stop("Cannot verify the ADAP initializer for an existing result; use a new result directory")
+    }
+    return(invisible(NULL))
+  }
+  saved <- artifact$config %||% list()
+  savedBackend <- saved$adapInitBackend %||% "glmnet"
+  if (!identical(savedBackend, requestedBackend)) {
+    stop("The existing ADAP result uses a different initializer; use a new result directory")
+  }
+  if (!identical(foldSettings(saved), foldSettings(requested))) {
+    stop("The existing ADAP result uses different initializer folds or seed; use a new result directory")
+  }
+  if (identical(requestedBackend, "cyclops")) {
+    settings <- function(config) list(
+      seed = config$adapInitSeed %||% config$cvSeed %||% 42L,
+      maxEvals = config$adapInitMaxEvals %||% 25L,
+      tolerance = config$adapInitTolerance %||% 1e-12,
+      kktTolerance = config$adapInitKktTolerance %||% 1e-6,
+      maxIterations = config$adapInitMaxIterations %||% 3000L
+    )
+    if (!isTRUE(all.equal(settings(saved), settings(requested)))) {
+      stop("The existing ADAP result uses different initializer settings; use a new result directory")
+    }
+  }
+  invisible(NULL)
+}
+
 binaryAuc <- function(y, preds) {
   if (length(unique(y)) != 2L) {
     return(NA_real_)
@@ -414,6 +456,25 @@ methodConfig <- function(method, featureSet, args) {
   }
   if (method %in% c("ADAP", "ADAP2") && !is.null(argValue(args, "adap-curvature-action"))) {
     cfg$adapCurvatureAction <- match.arg(argValue(args, "adap-curvature-action"), c("fail", "report"))
+  }
+  if (method %in% adapMethods && !is.null(argValue(args, "adap-init-backend"))) {
+    cfg$adapInitBackend <- match.arg(argValue(args, "adap-init-backend"), c("glmnet", "glmnet_sparse", "cyclops"))
+  }
+  if (method %in% adapMethods) {
+    if (!is.null(argValue(args, "adap-init-folds")))
+      cfg$adapInitFolds <- intArg(argValue(args, "adap-init-folds"), NA_integer_)
+    if (!is.null(argValue(args, "adap-init-stratify")))
+      cfg$adapInitStratify <- logicalArg(argValue(args, "adap-init-stratify"), FALSE)
+    if (!is.null(argValue(args, "adap-init-max-evals")))
+      cfg$adapInitMaxEvals <- numArg(argValue(args, "adap-init-max-evals"), NA_real_)
+    if (!is.null(argValue(args, "adap-init-max-iterations")))
+      cfg$adapInitMaxIterations <- numArg(argValue(args, "adap-init-max-iterations"), NA_real_)
+    if (!is.null(argValue(args, "adap-init-seed")))
+      cfg$adapInitSeed <- intArg(argValue(args, "adap-init-seed"), NA_integer_)
+    if (!is.null(argValue(args, "adap-init-tolerance")))
+      cfg$adapInitTolerance <- numArg(argValue(args, "adap-init-tolerance"), NA_real_)
+    if (!is.null(argValue(args, "adap-init-kkt-tolerance")))
+      cfg$adapInitKktTolerance <- numArg(argValue(args, "adap-init-kkt-tolerance"), NA_real_)
   }
 
   if (identical(method, "ADAPDiag") && !is.null(argValue(args, "adapdiag-style"))) {
@@ -2115,6 +2176,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
         betaBarMaxAbs = fit$betaBarMaxAbs %||% NA_real_,
         betaBarL2 = fit$betaBarL2 %||% NA_real_,
         odalInitDiagnostics = fit$odalInitDiagnostics %||% NULL,
+        adapInitDiagnostics = fit$adapInitDiagnostics %||% NULL,
         hessianDim = fit$hessianDim %||% NA_character_,
         hessianDiagMin = fit$hessianDiagMin %||% NA_real_,
         hessianDiagMax = fit$hessianDiagMax %||% NA_real_,
@@ -2309,7 +2371,7 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     resultRows$preprocessBytes <- preprocessing$bytes
     resultRows$preprocessElapsedSeconds <- filtering$elapsedSeconds
   }
-  saveModelArtifact(list(
+  artifact <- list(
     task = task, fold = fold, featureSet = featureSet, method = method,
     models = list(list(
       sourceClientId = NA_character_,
@@ -2335,7 +2397,9 @@ fitFederatedFold <- function(method, clTrain, clTest, config, resultDirectory,
     calibrationCurves = calibrationCurves,
     communication = .combineCommunication(list(filtering$communication,
       config$tuningCommunication, fit$communication))
-  ), resultRows, modelDirectory)
+  )
+  if (!is.null(fit$adapInitDiagnostics)) artifact$adapInitDiagnostics <- fit$adapInitDiagnostics
+  saveModelArtifact(artifact, resultRows, modelDirectory)
 }
 
 safeStopCluster <- function(cl) {
@@ -2585,6 +2649,7 @@ runComparisonFromArgs <- function(args, populationSettings = NULL, clientPaths =
               if (isCompletedCombination(rows, task, fold, featureSet, method,
                   rerunErrors = rerunErrors, rerunMissingModels = rerunMissingModels,
                   resultDirectory = resultDirectory)) {
+                guardAdapInitializerResume(rows, task, fold, featureSet, method, args, resultDirectory)
                 message(sprintf(
                   "[%s] skip task=%s fold=%s featureSet=%s method=%s: existing successful result",
                   format(Sys.time(), "%H:%M:%S"), task, fold, featureSet, method

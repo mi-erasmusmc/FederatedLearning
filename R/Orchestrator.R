@@ -512,6 +512,9 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
     communication = .communicationTable(communication),
     communicationBasis = if (is.function(algo$protocol)) "protocol" else "transport"
   )
+  if (!is.null(serverState$adapInitDiagnostics)) {
+    result$adapInitDiagnostics <- serverState$adapInitDiagnostics
+  }
   if (kktEnabled) {
     result$converged <- converged
     result$stopReason <- if (converged) "converged" else "roundLimit"

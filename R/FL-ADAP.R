@@ -893,15 +893,134 @@
   .withFixedSeed(seed, sample(rep(seq_len(nfolds), length.out = n)))
 }
 
+.adapLocalInitFolds <- function(y, config) {
+  nfolds <- config$adapInitFolds %||% 10L
+  stratify <- config$adapInitStratify %||% FALSE
+  if (length(nfolds) != 1L || !is.numeric(nfolds) || !is.finite(nfolds) ||
+      nfolds < 3L || nfolds != floor(nfolds) || nfolds > length(y)) {
+    stop("ADAP initialization needs an integer fold count between 3 and the number of rows")
+  }
+  if (!is.logical(stratify) || length(stratify) != 1L || is.na(stratify)) {
+    stop("adapInitStratify must be TRUE or FALSE")
+  }
+  seed <- config$adapInitSeed %||% config$cvSeed %||% 42L
+  if (!stratify) return(.adapLocalInitFoldId(length(y), seed, nfolds))
+  if (anyNA(y) || !all(y %in% c(0, 1)) || length(unique(y)) != 2L) {
+    stop("Stratified ADAP initialization requires binary outcomes with both classes")
+  }
+  folds <- .stratifiedFoldId(y, nfolds, seed)
+  if (any(tabulate(folds, nfolds) == 0L) || any(vapply(seq_len(nfolds), function(fold) {
+    length(unique(y[folds != fold])) != 2L
+  }, logical(1)))) {
+    stop("Stratified ADAP initialization requires nonempty folds and both outcome classes in each training fold")
+  }
+  folds
+}
+
+.fitCyclopsLocalLasso <- function(xDesign, y, config) {
+  if (!requireNamespace("Cyclops", quietly = TRUE)) {
+    stop("Please install Cyclops for the Cyclops ADAP initializer")
+  }
+  if (isTRUE(config$standardize)) {
+    stop("The Cyclops ADAP initializer requires standardize = FALSE")
+  }
+  if (nrow(xDesign) != length(y) || anyNA(y) || !all(y %in% c(0, 1))) {
+    stop("Cyclops ADAP initialization requires conformable binary outcomes")
+  }
+  xDesign <- .asDgCMatrix(xDesign)
+  tolerance <- config$adapInitTolerance %||% 1e-12
+  kktTolerance <- config$adapInitKktTolerance %||% 1e-6
+  maxIterations <- config$adapInitMaxIterations %||% 3000L
+  maxEvals <- config$adapInitMaxEvals %||% 25L
+  if (length(tolerance) != 1L || !is.numeric(tolerance) || !is.finite(tolerance) || tolerance <= 0 ||
+      length(kktTolerance) != 1L || !is.numeric(kktTolerance) || !is.finite(kktTolerance) || kktTolerance <= 0 ||
+      length(maxIterations) != 1L || !is.numeric(maxIterations) || !is.finite(maxIterations) ||
+      maxIterations < 1 || maxIterations != floor(maxIterations) ||
+      length(maxEvals) != 1L || !is.numeric(maxEvals) || !is.finite(maxEvals) ||
+      maxEvals < 1 || maxEvals != floor(maxEvals)) {
+    stop("Cyclops ADAP initialization needs positive tolerances and positive integer iteration and evaluation limits")
+  }
+  n <- length(y)
+  seed <- config$adapInitSeed %||% config$cvSeed %||% 42L
+  folds <- .adapLocalInitFolds(y, config)
+  nfolds <- config$adapInitFolds %||% 10L
+  sizes <- tabulate(folds, nfolds)
+  if (any(sizes == 0L) || any(vapply(seq_len(nfolds), function(fold) {
+    length(unique(y[folds != fold])) != 2L
+  }, logical(1)))) {
+    stop("Cyclops ADAP initialization needs nonempty folds and both outcome classes in each training fold")
+  }
+  args <- list(
+    `cyclops-tolerance` = tolerance,
+    `cyclops-max-iterations` = maxIterations,
+    `cyclops-noise-level` = "silent",
+    `cyclops-threads` = 1L
+  )
+  data <- list(xMatrix = xDesign, yLabels = y, n = n)
+  start <- proc.time()[["elapsed"]]
+  .withFixedSeed(seed, {
+    fitAtLambda <- function(localData, lambda, context) {
+      variance <- (sqrt(2) / (localData$n * lambda))^2
+      fit <- fitCyclopsWeights(list(localData), args, seed, intercept = TRUE, variance = variance)
+      if (!identical(fit$fittingSettings$returnFlag, "SUCCESS") || any(!is.finite(fit$w))) {
+        stop("Cyclops ADAP initializer failed ", context, ": ", fit$fittingSettings$returnFlag)
+      }
+      kkt <- max(.lassoKktResidual(fit$w, gradLogistic(fit$w, localData$xMatrix, localData$yLabels), lambda))
+      if (!is.finite(kkt) || kkt > kktTolerance) {
+        stop(sprintf("Cyclops ADAP initializer %s at lambda %.9g has KKT residual %.6g above %.6g",
+          context, lambda, kkt, kktTolerance))
+      }
+      list(w = fit$w, kkt = kkt, returnFlag = fit$fittingSettings$returnFlag)
+    }
+    cvKkt <- numeric()
+    scoreVariance <- function(variance) {
+      lambda <- .laplaceVarianceToLambda(variance, n)
+      foldStats <- vapply(seq_len(nfolds), function(fold) {
+        train <- which(folds != fold)
+        held <- which(folds == fold)
+        fit <- fitAtLambda(clientRows(data, train), lambda, paste("in fold", fold))
+        c(loss = binaryLogLoss(as.numeric(xDesign[held, , drop = FALSE] %*% fit$w), y[held],
+          meanLoss = FALSE), kkt = fit$kkt)
+      }, numeric(2))
+      loss <- foldStats["loss", ]
+      cvKkt <<- c(cvKkt, max(foldStats["kkt", ]))
+      c(-sum(loss) / n, stats::sd(-loss / sizes))
+    }
+    search <- .searchPriorVariance(scoreVariance, startingVariance = 0.01, maxEvals = maxEvals)
+    lambda <- .laplaceVarianceToLambda(search$variance, n)
+    fit <- fitAtLambda(data, lambda, "in the final fit")
+    search$trace$kktMax <- cvKkt
+    list(beta = fit$w, lambda = lambda, usedDensePdaPath = FALSE,
+      diagnostics = list(backend = "cyclops", lambda = lambda, variance = search$variance,
+        seed = seed, foldSizes = sizes, foldOutcomes = tabulate(folds[y == 1], nfolds),
+        score = "pooled validation log likelihood per patient", trace = search$trace,
+        stopReason = search$stopReason, returnFlag = fit$returnFlag, kktMax = fit$kkt,
+        kktTolerance = kktTolerance,
+        tolerance = args$`cyclops-tolerance`, maxIterations = args$`cyclops-max-iterations`,
+        elapsedSeconds = proc.time()[["elapsed"]] - start))
+  })
+}
+
 .fitPdaStyleLocalLasso <- function(xRaw, xDesign, y, config) {
+  backend <- match.arg(config$adapInitBackend %||% "glmnet", c("glmnet", "glmnet_sparse", "cyclops"))
+  if (identical(backend, "cyclops")) {
+    return(.fitCyclopsLocalLasso(xDesign, y, config))
+  }
   if (!requireNamespace("glmnet", quietly = TRUE)) {
     stop("Please install glmnet for ADAP")
   }
-  foldid <- .adapLocalInitFoldId(length(y), config$adapInitSeed %||% config$cvSeed %||% 42L)
+  foldid <- .adapLocalInitFolds(y, config)
   maxDenseCells <- config$maxDenseInitCells %||% 5e7
-  useDensePdaPath <- isTRUE((nrow(xDesign) * ncol(xDesign)) <= maxDenseCells)
+  useDensePdaPath <- !identical(backend, "glmnet_sparse") &&
+    isTRUE((nrow(xDesign) * ncol(xDesign)) <= maxDenseCells)
 
-  xFit <- if (useDensePdaPath) as.matrix(xRaw) else xRaw
+  xFit <- if (useDensePdaPath) {
+    as.matrix(xRaw)
+  } else if (identical(backend, "glmnet_sparse") && !inherits(xRaw, "sparseMatrix")) {
+    Matrix::Matrix(xRaw, sparse = TRUE)
+  } else {
+    xRaw
+  }
   # glmnet requires two predictor columns; a zero column does not affect the fit.
   if (ncol(xFit) == 1L) xFit <- cbind(xFit, 0)
   fit <- glmnet::cv.glmnet(
@@ -3114,7 +3233,9 @@
 
   if (phase == 0L) {
     init <- .fitPdaStyleLocalLasso(xRaw, xDesign, y, config)
-    return(list(bhat = init$beta, n = clientData$n, lambdaLocal = init$lambda))
+    report <- list(bhat = init$beta, n = clientData$n, lambdaLocal = init$lambda)
+    if (!is.null(init$diagnostics)) report$initDiagnostics <- init$diagnostics
+    return(report)
   }
 
   if (phase == 1L) {
@@ -3390,6 +3511,9 @@
     state$leadWeightMin <- weights[[leadIndex]]
     state$leadWeight <- 1
     state$totalN <- sum(ns)
+    if (any(vapply(clientReports, function(report) !is.null(report$initDiagnostics), logical(1)))) {
+      state$adapInitDiagnostics <- lapply(clientReports, `[[`, "initDiagnostics")
+    }
     state$w <- betaBar
     return(list(
       state = state,
@@ -3662,7 +3786,9 @@
 
   if (phase == 0L) {
     init <- .fitPdaStyleLocalLasso(xRaw, xDesign, y, config)
-    return(list(bhat = init$beta, n = clientData$n, lambdaLocal = init$lambda))
+    report <- list(bhat = init$beta, n = clientData$n, lambdaLocal = init$lambda)
+    if (!is.null(init$diagnostics)) report$initDiagnostics <- init$diagnostics
+    return(report)
   }
 
   if (phase == 1L) {
@@ -3985,6 +4111,9 @@
     state$betaLead <- betaLead
     state$leadIndex <- leadIndex
     state$totalN <- sum(ns)
+    if (any(vapply(clientReports, function(report) !is.null(report$initDiagnostics), logical(1)))) {
+      state$adapInitDiagnostics <- lapply(clientReports, `[[`, "initDiagnostics")
+    }
     state$w <- betaBar
     return(list(
       state = state,

@@ -183,6 +183,22 @@ createTaskSettings <- function(name, targetId, outcomeId, populationSettings) {
 #' defines a grid of configurations. Options a method does not use are ignored
 #' by that method.
 #'
+#' ADAP methods use glmnet for local initialization by default. Set
+#' `adapInitBackend = "glmnet_sparse"` to use the same glmnet CV with sparse
+#' input. Set `adapInitBackend = "cyclops"` for an experimental site-local
+#' Cyclops lasso with automatic penalty search. Both backends default to ten
+#' unstratified folds; use `adapInitFolds = 3` and `adapInitStratify = TRUE`
+#' for three outcome-stratified folds. It may select
+#' different local penalties and change the ADAP surrogate. Cyclops requires
+#' unstandardized features and is an optional dependency. Its initialization
+#' fits must satisfy an independent mean-loss KKT check, and its initialization
+#' trace is stored in the model artifact. `adapInitTolerance` (default 1e-12)
+#' controls Cyclops convergence, and `adapInitKktTolerance` (default 1e-6)
+#' controls the independent check. Diagnostics travel with the existing reply
+#' and are excluded from protocol-only communication totals. Resume checks the
+#' saved initializer settings. Use a new result
+#' directory when they change or when an earlier result has no model artifact.
+#'
 #' @param method Method name; an error lists the valid names.
 #' @param ... Named method options; an error lists the valid names.
 #' @return A `methodSettings` object.
@@ -252,7 +268,8 @@ createRunSettings <- function(hosts = "localhost", mirai = FALSE, debug = FALSE,
 # sites, feature settings and execution settings instead.
 .methodOptionFlags <- c(
   "adap-beta-abs-threshold", "adap-condition-numbers", "adap-curvature-action", "adap-curvature-tau",
-  "adap-cv-diagnostics",
+  "adap-cv-diagnostics", "adap-init-backend", "adap-init-folds", "adap-init-kkt-tolerance", "adap-init-max-evals", "adap-init-max-iterations",
+  "adap-init-seed", "adap-init-stratify", "adap-init-tolerance",
   "adapdiag-style", "adap-eta-abs-threshold", "adap-final-max-outer", "adap-kkt-tolerance",
   "adap-lambda-cv-global-adjustment", "adap-lambda-cv-max-rows", "adap-lambda-selection-metric",
   "adap-lambda-selection-tie-tolerance", "adap-maxconv-tau", "adap-prox-tau", "adap-trace-diagnostics",
