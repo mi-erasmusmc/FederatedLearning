@@ -446,7 +446,7 @@ methodConfig <- function(method, featureSet, args) {
     cfg$adapCurvatureAction <- match.arg(argValue(args, "adap-curvature-action"), c("fail", "report"))
   }
   if (method %in% adapMethods && !is.null(argValue(args, "adap-init-backend"))) {
-    cfg$adapInitBackend <- match.arg(argValue(args, "adap-init-backend"), c("glmnet", "glmnet_sparse"))
+    cfg$adapInitBackend <- match.arg(argValue(args, "adap-init-backend"), c("glmnet", "glmnet_sparse", "localCyclops"))
   }
   if (method %in% adapMethods) {
     if (!is.null(argValue(args, "adap-init-folds")))
@@ -462,6 +462,9 @@ methodConfig <- function(method, featureSet, args) {
   }
   if (method %in% c("ODAL", "ODAL1", "ODAL2", adapMethods) && !is.null(argValue(args, "lead-index"))) {
     cfg$leadIndex <- firstValue(intCsvArg(argValue(args, "lead-index"), NA_integer_))
+  }
+  if (method %in% c("ODAL", "ODAL1", "ODAL2", adapMethods) && !is.null(argValue(args, "lead-rank"))) {
+    cfg$leadRank <- intArg(argValue(args, "lead-rank"), NA_integer_)
   }
   cfg
 }
@@ -960,6 +963,10 @@ localModelWeights <- function(trainN, args) {
   stop("--local-ensemble-weighting must be one of: sampleSize, equalClient")
 }
 
+localAverageWeighting <- function(args) {
+  match.arg(argValue(args, "local-average-weighting") %||% "sampleSize", c("sampleSize", "equalClient"))
+}
+
 evaluateLocalEnsemble <- function(clientData, localFits, modelWeights,
                                   clientId, clientIndex) {
   predMat <- do.call(cbind, lapply(localFits, function(fit) {
@@ -1356,6 +1363,14 @@ fitCyclopsWeights <- function(clientDataList, args, seed, intercept = TRUE, vari
 fitBaselineWeights <- function(clientDataList, args, seed, intercept = TRUE) {
   if (logicalArg(argValue(args, "cyclops-cv"), TRUE)) {
     if (length(clientDataList) == 1L) return(tuneLocalCyclopsFit(clientDataList[[1]], args, seed, intercept))
+    tuning <- match.arg(argValue(args, "pooled-tuning") %||% "databases", c("databases", "rows"))
+    if (identical(tuning, "rows")) {
+      # Stratified folds over the pooled training rows, as for a local model.
+      stacked <- list(xMatrix = do.call(rbind, lapply(clientDataList, `[[`, "xMatrix")),
+        yLabels = unlist(lapply(clientDataList, `[[`, "yLabels"), use.names = FALSE))
+      stacked$n <- length(stacked$yLabels)
+      return(tuneLocalCyclopsFit(stacked, args, seed, intercept))
+    }
     return(tunePooledCyclopsFit(clientDataList, args, seed, intercept))
   }
   fitCyclopsWeights(
@@ -1441,6 +1456,45 @@ tunePooledCyclopsFit <- function(clientDataList, args, seed, intercept = TRUE) {
     trace = search$trace, stopReason = search$stopReason)
   fit$elapsedSeconds <- as.numeric(difftime(Sys.time(), start, units = "secs"))
   fit
+}
+
+# Starting estimates for ADAP with adapInitBackend = "localCyclops": each
+# training site's local Cyclops lasso, prepared, tuned and seeded exactly as
+# for the coefficient-averaging baseline, so the sample-size-weighted average
+# of these estimates is that baseline's model.
+localCyclopsEstimates <- function(trainPaths, popSettings, config, args, featureSet, fold, trainClientIds) {
+  trainPlp <- lapply(trainPaths, FederatedLearning::loadClientData, popSettings = popSettings)
+  trainMap <- FederatedLearning::createGlobalMap(
+    lapply(trainPlp, FederatedLearning::getClientFeatures),
+    type = config$mapType,
+    featureSet = featureSelection(featureSet, args),
+    covariateIds = config$covariateIds,
+    analysisIds = config$analysisIds
+  )
+  matrixConfig <- config
+  matrixConfig$mapping <- trainMap
+  matrixConfig$p <- nrow(trainMap)
+  trainData <- lapply(trainPlp, FederatedLearning::createClientMatrix, config = matrixConfig)
+  processed <- preprocessBaselineData(trainData = trainData, config = config, args = args)
+  if (!is.null(config$featureFiltering) &&
+      (!identical(as.character(trainMap$covariateId), config$featureFiltering$audit$covariateId) ||
+       !identical(as.logical(processed$preprocessor$keep), config$featureFiltering$audit$retained))) {
+    stop("Local Cyclops fits for ADAP initialization differ from the shared training mask")
+  }
+  lapply(seq_along(processed$trainData), function(i) {
+    attempt <- fitLocalBaselineSafely(
+      trainData = processed$trainData,
+      localIndex = i,
+      trainClientId = trainClientIds[[i]],
+      args = args,
+      seed = intArg(args[["baseline-seed"]], 42L) + fold + i,
+      intercept = isTRUE(config$intercept)
+    )
+    if (!isTRUE(attempt$ok)) {
+      stop("Local Cyclops fit for ADAP initialization failed at ", trainClientIds[[i]], ": ", attempt$error)
+    }
+    attempt$fit$w
+  })
 }
 
 fitLocalBaselineSafely <- function(trainData, localIndex, trainClientId, args, seed, intercept = TRUE) {
@@ -1651,6 +1705,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
     ))
     fits[[1]]$leadIndex <- NA_integer_
     fits[[1]]$innerCvScore <- NA_real_
+    if (identical(argValue(args, "pooled-tuning"), "rows")) fits[[1]]$configLabel <- "pooledTuning=rows"
   } else {
     eligible <- vapply(trainData, function(x) length(unique(x$yLabels)) == 2, logical(1))
     if (!any(eligible)) {
@@ -1687,14 +1742,15 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       fits[[1]]$innerCvScore <- NA_real_
       fits[[1]]$configLabel <- paste0("source=", trainClientIds[[fits[[1]]$leadIndex]], failureLabel)
     } else if (method %in% c("LocalAvgLasso", sparseAverageMethods)) {
-      weights <- trainN / sum(trainN)
+      averageWeighting <- localAverageWeighting(args)
+      weights <- if (identical(averageWeighting, "equalClient")) rep(1 / length(trainN), length(trainN)) else trainN / sum(trainN)
       fits <- list(list(
         w = Reduce("+", Map(function(localFit, wi) localFit$w * wi, localFits, weights)),
         selectedLambda = NA_real_,
         elapsedSeconds = sum(vapply(localFits, `[[`, numeric(1), "elapsedSeconds")),
         leadIndex = NA_integer_,
         innerCvScore = NA_real_,
-        configLabel = paste0("coefficientAverage=sampleSize", failureLabel)
+        configLabel = paste0("coefficientAverage=", averageWeighting, failureLabel)
       ))
       if (method %in% sparseAverageMethods) {
         aggregateStart <- Sys.time()
@@ -1964,7 +2020,7 @@ fitBaselineFold <- function(method, trainPaths, testPaths, popSettings, config,
       task = task, fold = fold, featureSet = featureSet, method = method,
       models = models,
       components = components,
-      aggregation = switch(method, LocalAvgLasso = "coefficientAverage=sampleSize",
+      aggregation = switch(method, LocalAvgLasso = paste0("coefficientAverage=", localAverageWeighting(args)),
         SparseLocalAvgLasso = "softThresholdedCoefficientAverage=sampleSize",
         DebiasedLocalAvgLasso = "nodewiseDebiasedThresholdedAverage=sampleSize",
         LocalEnsembleLasso = paste0("predictionAverage=", argValue(args, "local-ensemble-weighting") %||% "sampleSize"),
@@ -2656,6 +2712,14 @@ runComparisonFromArgs <- function(args, populationSettings = NULL, clientPaths =
                 }
                 config
               })
+              if (identical(configs[[1]]$adapInitBackend, "localCyclops")) {
+                estimates <- localCyclopsEstimates(trainPaths, popSettings, configs[[1]], args, featureSet,
+                  fold, clientIds[trainIds])
+                configs <- lapply(configs, function(config) {
+                  config$adapInitEstimates <- estimates
+                  config
+                })
+              }
               selectedConfig <- NULL
               res <- tryCatch(
                 if (method %in% baselineMethods) {

@@ -27,6 +27,18 @@ ADAP methods start from a local lasso at each site, fitted by glmnet with
 ten unstratified CV folds by default. \code{adapInitBackend = "glmnet_sparse"}
 keeps the site matrix sparse, which gives the same fit much faster at
 thousands of predictors; \code{adapInitFolds} and \code{adapInitStratify = TRUE}
-change the CV folds, and with them the starting estimate. Resuming checks
-these settings against the saved model and stops if they differ.
+change the CV folds, and with them the starting estimate.
+\code{adapInitBackend = "localCyclops"} instead starts from the local lasso
+models of the coefficient-averaging baseline (Cyclops, tuned within each
+site), so the averaged starting estimate is that baseline's model. Resuming
+checks these settings against the saved model and stops if they differ.
+
+ODAL and ADAP use the largest training site as lead by default;
+\code{leadRank = 2} uses the second largest, and so on, within each outer fold.
+\code{localAverageWeighting = "equalClient"} weights the local models of
+coefficient averaging equally instead of by training size (as
+\code{localEnsembleWeighting} does for the probability ensemble).
+\code{pooledTuning = "rows"} selects the pooled-lasso penalty by stratified CV
+over the pooled training rows (\code{localCvFolds} folds) instead of holding out
+each training database.
 }

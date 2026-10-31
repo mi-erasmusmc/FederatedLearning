@@ -8,7 +8,8 @@ createFeatureSettings(
   covariateIds = NULL,
   analysisIds = NULL,
   minFraction = 0.001,
-  combinations = list()
+  combinations = list(),
+  excludeCovariateIds = NULL
 )
 }
 \arguments{
@@ -27,6 +28,9 @@ held-out site. \code{NULL} disables the shared filter.}
 (a new id, distinct from every extracted covariate), \code{name} and
 \code{components} (the covariate ids to combine). Selection applies to the
 combined covariate, which takes its components' analysis id.}
+
+\item{excludeCovariateIds}{Covariate ids never to include, even when their
+analysis is selected, or \code{NULL}.}
 }
 \value{
 A \code{featureSettings} object.

@@ -320,7 +320,7 @@
         stringsAsFactors = FALSE
       )
     }))
-    leadIndex <- config$leadIndex %||% which.max(ns)
+    leadIndex <- config$leadIndex %||% .leadIndexByRank(ns, config$leadRank)
     state <- serverState
     state$phase <- 1L
     state$betaBar <- betaBar
@@ -476,6 +476,16 @@
     initial = function(lambda, totalPopSize, context) lambda,
     final = function(lambda, totalPopSize, context) lambda
   )
+}
+
+# Lead site by training size within the fold: rank 1 (the default) is the
+# largest site, as in the published methods; ties keep the site order.
+.leadIndexByRank <- function(ns, rank = NULL) {
+  rank <- rank %||% 1L
+  if (length(rank) != 1L || is.na(rank) || rank != round(rank) || rank < 1L || rank > length(ns)) {
+    stop("leadRank must be a whole number between 1 and the number of training sites")
+  }
+  order(-ns, seq_along(ns))[[rank]]
 }
 
 .registerAlgorithm(

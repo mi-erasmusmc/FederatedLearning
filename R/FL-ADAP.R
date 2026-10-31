@@ -918,7 +918,16 @@
 }
 
 .fitPdaStyleLocalLasso <- function(xRaw, xDesign, y, config) {
-  backend <- match.arg(config$adapInitBackend %||% "glmnet", c("glmnet", "glmnet_sparse"))
+  backend <- match.arg(config$adapInitBackend %||% "glmnet", c("glmnet", "glmnet_sparse", "localCyclops"))
+  if (identical(backend, "localCyclops")) {
+    # The runner fitted this site's local Cyclops lasso, as for coefficient averaging.
+    localId <- getOption("FederatedLearning.localId", NA_integer_)
+    beta <- config$adapInitEstimates[[localId]]
+    if (is.null(beta) || length(beta) != ncol(xDesign) || any(!is.finite(beta))) {
+      stop("ADAP initialization needs the runner's local Cyclops estimate for training site ", localId)
+    }
+    return(list(beta = as.numeric(beta), lambda = NA_real_, usedDensePdaPath = FALSE))
+  }
   if (!requireNamespace("glmnet", quietly = TRUE)) {
     stop("Please install glmnet for ADAP")
   }
@@ -3412,7 +3421,7 @@
     bmat <- do.call(cbind, bhats)
     weights <- ns / sum(ns)
     betaBar <- as.numeric(bmat %*% weights)
-    leadIndex <- config$leadIndex %||% which.max(ns)
+    leadIndex <- config$leadIndex %||% .leadIndexByRank(ns, config$leadRank)
     betaLead <- as.numeric(bmat[, leadIndex])
     state <- serverState
     state$phase <- 1L
@@ -4009,7 +4018,7 @@
     bmat <- do.call(cbind, bhats)
     weights <- ns / sum(ns)
     betaBar <- as.numeric(bmat %*% weights)
-    leadIndex <- config$leadIndex %||% which.max(ns)
+    leadIndex <- config$leadIndex %||% .leadIndexByRank(ns, config$leadRank)
     betaLead <- as.numeric(bmat[, leadIndex])
     state <- serverState
     state$phase <- 1L

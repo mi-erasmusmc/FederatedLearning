@@ -25,10 +25,12 @@
 #'   near-constant columns. The filter is estimated from site summaries before
 #'   any penalty selection and applied unchanged to every method and the
 #'   held-out site. `NULL` disables the shared filter.
+#' @param excludeCovariateIds Covariate ids never to include, even when their
+#'   analysis is selected, or `NULL`.
 #' @return A `featureSettings` object.
 #' @export
 createFeatureSettings <- function(covariateIds = NULL, analysisIds = NULL, minFraction = 0.001,
-                                  combinations = list()) {
+                                  combinations = list(), excludeCovariateIds = NULL) {
   ids <- function(x, name) {
     if (is.null(x)) return(NULL)
     if (!is.numeric(x) || !length(x) || any(!is.finite(x)) || any(x < 0) || any(x != round(x))) {
@@ -57,12 +59,16 @@ createFeatureSettings <- function(covariateIds = NULL, analysisIds = NULL, minFr
   })
   used <- unlist(lapply(combinations, function(x) c(x$covariateId, x$components)))
   if (anyDuplicated(used)) stop("Combinations must not share covariate ids", call. = FALSE)
-  structure(list(
+  settings <- list(
     covariateIds = ids(covariateIds, "covariateIds"),
     analysisIds = ids(analysisIds, "analysisIds"),
     minFraction = minFraction,
     combinations = combinations
-  ), class = "featureSettings")
+  )
+  # Only set when used, so settings without exclusions keep their earlier form.
+  excluded <- ids(excludeCovariateIds, "excludeCovariateIds")
+  if (length(excluded)) settings$excludeCovariateIds <- excluded
+  structure(settings, class = "featureSettings")
 }
 
 .featureCombinations <- function(featureSet) {
@@ -135,11 +141,13 @@ createFeatureSettings <- function(covariateIds = NULL, analysisIds = NULL, minFr
 }
 
 .selectFeatureSettings <- function(covariateRef, settings) {
-  if (is.null(settings$covariateIds) && is.null(settings$analysisIds)) {
-    return(rep(TRUE, nrow(covariateRef)))
+  selected <- if (is.null(settings$covariateIds) && is.null(settings$analysisIds)) {
+    rep(TRUE, nrow(covariateRef))
+  } else {
+    covariateRef$covariateId %in% settings$covariateIds |
+      covariateRef$analysisId %in% settings$analysisIds
   }
-  covariateRef$covariateId %in% settings$covariateIds |
-    covariateRef$analysisId %in% settings$analysisIds
+  selected & !covariateRef$covariateId %in% settings$excludeCovariateIds
 }
 
 #' Define a prediction task
@@ -187,8 +195,20 @@ createTaskSettings <- function(name, targetId, outcomeId, populationSettings) {
 #' ten unstratified CV folds by default. `adapInitBackend = "glmnet_sparse"`
 #' keeps the site matrix sparse, which gives the same fit much faster at
 #' thousands of predictors; `adapInitFolds` and `adapInitStratify = TRUE`
-#' change the CV folds, and with them the starting estimate. Resuming checks
-#' these settings against the saved model and stops if they differ.
+#' change the CV folds, and with them the starting estimate.
+#' `adapInitBackend = "localCyclops"` instead starts from the local lasso
+#' models of the coefficient-averaging baseline (Cyclops, tuned within each
+#' site), so the averaged starting estimate is that baseline's model. Resuming
+#' checks these settings against the saved model and stops if they differ.
+#'
+#' ODAL and ADAP use the largest training site as lead by default;
+#' `leadRank = 2` uses the second largest, and so on, within each outer fold.
+#' `localAverageWeighting = "equalClient"` weights the local models of
+#' coefficient averaging equally instead of by training size (as
+#' `localEnsembleWeighting` does for the probability ensemble).
+#' `pooledTuning = "rows"` selects the pooled-lasso penalty by stratified CV
+#' over the pooled training rows (`localCvFolds` folds) instead of holding out
+#' each training database.
 #'
 #' @param method Method name; an error lists the valid names.
 #' @param ... Named method options; an error lists the valid names.
@@ -275,11 +295,12 @@ createRunSettings <- function(hosts = "localhost", mirai = FALSE, debug = FALSE,
   "dualavg-tune-lambda", "dualavg-warm-start-lambda-path", "dualavg-warm-start-round-offset", "epsilon",
   "eta-client", "eta-server", "inner-folds", "k", "lambda", "lambda-cv-global-adjustment",
   "lambda-cv-max-rows", "lambda-grid-len", "lambda-search", "lambda-search-max-evals", "lambda-search-tol",
-  "lambda-selection-metric", "lambda-selection-tie-tolerance", "lead-index", "local-average-metric",
-  "local-average-threshold", "local-average-thresholds", "local-cv-folds", "local-debias-max-features",
+  "lambda-selection-metric", "lambda-selection-tie-tolerance", "lead-index", "lead-rank", "local-average-metric",
+  "local-average-threshold", "local-average-thresholds", "local-average-weighting", "local-cv-folds",
+  "local-debias-max-features",
   "local-debias-multiplier", "local-ensemble-weighting", "max-inner", "max-iter", "max-outer",
   "odal-curvature-action", "odal-curvature-tau", "odal-init", "odal-ridge-fallback", "odal-ridge-lambda",
-  "pda-rounds", "pooled-diagnostics", "pooled-kkt-tolerance", "profile", "rounds"
+  "pda-rounds", "pooled-diagnostics", "pooled-kkt-tolerance", "pooled-tuning", "profile", "rounds"
 )
 
 .optionFlag <- function(name) tolower(gsub("([A-Z])", "-\\1", name))
