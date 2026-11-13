@@ -121,15 +121,52 @@
 
 # The condition number (a LINPACK QR estimate) takes longer than the full
 # eigendecomposition at thousands of columns, so callers can skip it.
+# Eigendecompositions of dense p x p matrices cost O(p^3). For ADAP1, and for the
+# exact ADAP surrogate with report-only curvature, they are diagnostics only: the
+# eigenvalues are reported, never used in the fit. `adapEigenDiagnostics` = "all"
+# (the default) computes them for every fit; "final" only for the final fit and
+# the server's correction; "none" skips them. Skipped values are NA.
+.adapEigenState <- new.env(parent = emptyenv())
+.adapEigenState$skip <- FALSE
+
+.adapEigenDiagnosticsMode <- function(config) {
+  match.arg(config$adapEigenDiagnostics %||% "all", c("all", "final", "none"))
+}
+
+# Other surrogates use eigenvalues to accept, shift or weight the correction.
+.checkAdapEigenDiagnostics <- function(mode, surrogateVariant = "exact", solveStyle = "fullQuadratic",
+                                       curvatureAction = "report") {
+  if (identical(mode, "all")) return(invisible(TRUE))
+  if (!identical(surrogateVariant, "exact") || !identical(solveStyle, "fullQuadratic") ||
+      !identical(curvatureAction, "report")) {
+    stop("adapEigenDiagnostics = '", mode, "' needs ADAP1, or the exact ADAP surrogate with ",
+      "report-only curvature, whose eigenvalues are diagnostics only", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+# Evaluates expr with the eigendecomposition diagnostics on or off.
+.withAdapEigen <- function(enabled, expr) {
+  old <- .adapEigenState$skip
+  .adapEigenState$skip <- !isTRUE(enabled)
+  on.exit(.adapEigenState$skip <- old)
+  expr
+}
+
+.adapSymmetricEigenvalues <- function(B) {
+  if (isTRUE(.adapEigenState$skip)) {
+    return(NA_real_)
+  }
+  B <- as.matrix(B)
+  tryCatch(eigen((B + t(B)) / 2, symmetric = TRUE, only.values = TRUE)$values, error = function(e) NA_real_)
+}
+
 .adapMatrixStats <- function(B, prefix = "B", conditionNumber = TRUE) {
   B <- as.matrix(B)
   vals <- as.numeric(B)
   diagVals <- diag(B)
   finite <- is.finite(vals)
-  eig <- tryCatch(
-    eigen((B + t(B)) / 2, symmetric = TRUE, only.values = TRUE)$values,
-    error = function(e) NA_real_
-  )
+  eig <- .adapSymmetricEigenvalues(B)
   eigFinite <- is.finite(eig)
   c(
     stats::setNames(c(nrow(B), ncol(B), sum(!finite)), paste0(prefix, c("Rows", "Cols", "NonFinite"))),
@@ -137,7 +174,8 @@
     stats::setNames(sum(is.finite(diagVals) & diagVals <= 0), paste0(prefix, "DiagNonPositive")),
     stats::setNames(if (any(eigFinite)) min(eig[eigFinite]) else NA_real_, paste0(prefix, "EigenMin")),
     stats::setNames(if (any(eigFinite)) max(eig[eigFinite]) else NA_real_, paste0(prefix, "EigenMax")),
-    stats::setNames(sum(is.finite(eig) & eig <= 0), paste0(prefix, "EigenNonPositive")),
+    stats::setNames(if (isTRUE(.adapEigenState$skip)) NA_real_ else sum(eigFinite & eig <= 0),
+      paste0(prefix, "EigenNonPositive")),
     stats::setNames(if (isTRUE(conditionNumber)) tryCatch(kappa(B), error = function(e) NA_real_) else NA_real_,
       paste0(prefix, "Kappa"))
   )
@@ -153,10 +191,7 @@
 }
 
 .adapEigenRange <- function(B) {
-  vals <- tryCatch(
-    eigen((as.matrix(B) + t(as.matrix(B))) / 2, symmetric = TRUE, only.values = TRUE)$values,
-    error = function(e) NA_real_
-  )
+  vals <- .adapSymmetricEigenvalues(B)
   finite <- is.finite(vals)
   list(
     min = if (any(finite)) min(vals[finite]) else NA_real_,
@@ -3197,6 +3232,8 @@
         (!identical(surrogateVariant, "exact") || !identical(solveStyle, "fullQuadratic"))) {
       stop("adapCurvatureAction = 'report' requires the exact full-quadratic ADAP solver")
     }
+    eigenMode <- .adapEigenDiagnosticsMode(config)
+    .checkAdapEigenDiagnostics(eigenMode, surrogateVariant, solveStyle, curvatureAction)
     methodName <- serverBroadcast$adapMethodName %||% config$adapMethodName %||%
       switch(surrogateVariant,
         exact = "ADAP",
@@ -3315,7 +3352,7 @@
           )
         }
       }
-      cv <- .pdaAdapLeadCv(
+      cv <- .withAdapEigen(identical(eigenMode, "all"), .pdaAdapLeadCv(
         xDesign = xDesign,
         y = y,
         betaLead = betaLead,
@@ -3356,7 +3393,7 @@
         kktTolerance = config$adapKktTolerance %||% 1e-4,
         betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
         etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
-      )
+      ))
       lambda <- cv$lambda
       cvScores <- cv$scores
       lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
@@ -3364,7 +3401,7 @@
       cvValid <- cv$valid %||% NULL
       cvTrace <- cv$trace %||% NULL
     }
-    fitObj <- .fitPdaAdapSurrogate(
+    fitObj <- .withAdapEigen(!identical(eigenMode, "none"), .fitPdaAdapSurrogate(
       xDesign = xDesign,
       y = y,
       betaLead = betaLead,
@@ -3390,7 +3427,7 @@
       kktTolerance = config$adapKktTolerance %||% 1e-4,
       betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
       etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
-    )
+    ))
     if (.adapFitFailed(fitObj)) {
       stop(sprintf("%s final fit failed: %s", methodName, .adapFitFailureReason(fitObj)), call. = FALSE)
     }
@@ -3459,8 +3496,12 @@
     state$leadWeightMin <- weights[[state$leadIndex]]
     surrogateVariant <- state$adapSurrogateVariant %||% config$adapSurrogateVariant %||% "exact"
     leadHess <- hessList[[state$leadIndex]]
-    siteEigenMins <- vapply(hessList, function(H) .adapEigenRange(H)$min, numeric(1))
-    globalEig <- .adapEigenRange(globalHess)
+    eigenMode <- .adapEigenDiagnosticsMode(config)
+    .checkAdapEigenDiagnostics(eigenMode, surrogateVariant, state$adapSolveStyle %||% "fullQuadratic",
+      config$adapCurvatureAction %||% "report")
+    siteEigenMins <- .withAdapEigen(identical(eigenMode, "all"),
+      vapply(hessList, function(H) .adapEigenRange(H)$min, numeric(1)))
+    globalEig <- .withAdapEigen(identical(eigenMode, "all"), .adapEigenRange(globalHess))
     if (identical(surrogateVariant, "convex")) {
       state$leadWeight <- state$leadWeightMin
     } else if (identical(surrogateVariant, "maxconv")) {
@@ -3480,17 +3521,19 @@
       state$leadWeight <- 1
     }
     correction <- globalHess - state$leadWeight * leadHess
-    correctionEigVals <- tryCatch(
-      eigen((correction + t(correction)) / 2, symmetric = TRUE, only.values = TRUE)$values,
-      error = function(e) NA_real_
-    )
+    correctionEigVals <- .withAdapEigen(!identical(eigenMode, "none"), .adapSymmetricEigenvalues(correction))
     correctionEigFinite <- is.finite(correctionEigVals)
     correctionEpsilon <- .adapEpsilonEig(globalHess, tau = config$adapCurvatureTau %||% 1e-10)
     correctionDiag <- diag(correction)
     state$globalHessianEigenMin <- globalEig$min
     state$leadHessianEigenMin <- siteEigenMins[[state$leadIndex]]
-    state$siteHessianEigenMin <- min(siteEigenMins, na.rm = TRUE)
-    state$siteHessianNegative <- sum(is.finite(siteEigenMins) & siteEigenMins < -correctionEpsilon)
+    if (identical(eigenMode, "all")) {
+      state$siteHessianEigenMin <- min(siteEigenMins, na.rm = TRUE)
+      state$siteHessianNegative <- sum(is.finite(siteEigenMins) & siteEigenMins < -correctionEpsilon)
+    } else {
+      state$siteHessianEigenMin <- NA_real_
+      state$siteHessianNegative <- NA_integer_
+    }
     state$correctionEigenMin <- if (any(correctionEigFinite)) min(correctionEigVals[correctionEigFinite]) else NA_real_
     state$correctionEigenMax <- if (any(correctionEigFinite)) max(correctionEigVals[correctionEigFinite]) else NA_real_
     state$correctionEigenNegative <- if (any(correctionEigFinite)) sum(correctionEigVals[correctionEigFinite] < -correctionEpsilon) else NA_integer_
@@ -3724,6 +3767,10 @@
       return(NULL)
     }
     capture <- .captureSurrogateLead(config, clientData, serverBroadcast)
+    eigenMode <- .adapEigenDiagnosticsMode(config)
+    if (!identical(mode, "first")) {
+      .checkAdapEigenDiagnostics(eigenMode, surrogateVariant = mode)
+    }
     betaBar <- serverBroadcast$betaBar
     betaLead <- serverBroadcast$betaLead
     globalGrad <- serverBroadcast$globalGrad
@@ -3762,7 +3809,7 @@
             gridLen = config$lambdaGridLen %||% 100L
           )
         }
-        cv <- .pdaAdapFirstLeadCv(
+        cv <- .withAdapEigen(identical(eigenMode, "all"), .pdaAdapFirstLeadCv(
           capture = capture,
           xDesign = xDesign,
           y = y,
@@ -3795,7 +3842,7 @@
           kktTolerance = config$adapKktTolerance %||% 1e-4,
           betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
           etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
-        )
+        ))
         lambda <- cv$lambda
         cvScores <- cv$scores
         lambdaSeq <- cv$lambdaSeq %||% lambdaSeq
@@ -3803,7 +3850,7 @@
         cvValid <- cv$valid %||% NULL
         cvTrace <- cv$trace %||% NULL
       }
-      fitObj <- .fitPdaAdapFirstOrderSurrogate(
+      fitObj <- .withAdapEigen(!identical(eigenMode, "none"), .fitPdaAdapFirstOrderSurrogate(
         capture = capture,
         xDesign = xDesign,
         y = y,
@@ -3823,7 +3870,7 @@
         kktTolerance = config$adapKktTolerance %||% 1e-4,
         betaAbsThreshold = config$adapBetaAbsThreshold %||% 1e4,
         etaAbsThreshold = config$adapEtaAbsThreshold %||% 1e4
-      )
+      ))
       if (.adapFitFailed(fitObj)) {
         stop(sprintf("%s final fit failed: %s", methodName, .adapFitFailureReason(fitObj)), call. = FALSE)
       }

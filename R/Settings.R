@@ -201,6 +201,14 @@ createTaskSettings <- function(name, targetId, outcomeId, populationSettings) {
 #' site), so the averaged starting estimate is that baseline's model. Resuming
 #' checks these settings against the saved model and stops if they differ.
 #'
+#' ADAP reports eigenvalues of its correction and of the surrogate Hessian at
+#' every fit; each costs O(p^3) and they dominate the run time at thousands of
+#' predictors. For ADAP1, and for ADAP and ADAP2 with report-only curvature
+#' (the default), they are diagnostics only. `adapEigenDiagnostics = "final"`
+#' computes them only for the final fit and the server's correction, and
+#' `"none"` skips them; the fitted models are the same and skipped values are
+#' NA.
+#'
 #' ODAL and ADAP use the largest training site as lead by default;
 #' `leadRank = 2` uses the second largest, and so on, within each outer fold.
 #' `localAverageWeighting = "equalClient"` weights the local models of
@@ -279,7 +287,7 @@ createRunSettings <- function(hosts = "localhost", mirai = FALSE, debug = FALSE,
 # sites, feature settings and execution settings instead.
 .methodOptionFlags <- c(
   "adap-beta-abs-threshold", "adap-condition-numbers", "adap-curvature-action", "adap-curvature-tau",
-  "adap-cv-diagnostics", "adap-init-backend", "adap-init-folds",
+  "adap-cv-diagnostics", "adap-eigen-diagnostics", "adap-init-backend", "adap-init-folds",
   "adap-init-seed", "adap-init-stratify",
   "adapdiag-style", "adap-eta-abs-threshold", "adap-final-max-outer", "adap-kkt-tolerance",
   "adap-lambda-cv-global-adjustment", "adap-lambda-cv-max-rows", "adap-lambda-selection-metric",
