@@ -23,23 +23,25 @@ defines a grid of configurations. Options a method does not use are ignored
 by that method.
 }
 \details{
-ADAP methods start from a local lasso at each site, fitted by glmnet with
-ten unstratified CV folds by default. \code{adapInitBackend = "glmnet_sparse"}
-keeps the site matrix sparse, which gives the same fit much faster at
-thousands of predictors; \code{adapInitFolds} and \code{adapInitStratify = TRUE}
-change the CV folds, and with them the starting estimate.
+ADAP methods start from a local lasso at each site, fitted by glmnet on the
+sparse site matrix with three outcome-stratified CV folds by default.
+\code{adapInitBackend = "glmnet"} uses a dense matrix when it fits in memory,
+which gives the same fit more slowly; \code{adapInitFolds} and \code{adapInitStratify}
+change the CV folds, and with them the starting estimate (before this default,
+ADAP used \code{"glmnet"} with ten unstratified folds).
 \code{adapInitBackend = "localCyclops"} instead starts from the local lasso
 models of the coefficient-averaging baseline (Cyclops, tuned within each
 site), so the averaged starting estimate is that baseline's model. Resuming
 checks these settings against the saved model and stops if they differ.
 
-ADAP reports eigenvalues of its correction and of the surrogate Hessian at
-every fit; each costs O(p^3) and they dominate the run time at thousands of
-predictors. For ADAP1, and for ADAP and ADAP2 with report-only curvature
-(the default), they are diagnostics only. \code{adapEigenDiagnostics = "final"}
-computes them only for the final fit and the server's correction, and
-\code{"none"} skips them; the fitted models are the same and skipped values are
-NA.
+ADAP can report eigenvalues of its correction and of the surrogate Hessian
+at every fit; each costs O(p^3) and they dominate the run time at thousands
+of predictors. For ADAP1, and for ADAP and ADAP2 with report-only curvature
+(the default), they are diagnostics only, and by default
+(\code{adapEigenDiagnostics = "final"}) they are computed only for the final fit
+and the server's correction. \code{"all"} computes them at every fit and \code{"none"}
+skips them; the fitted models are the same and skipped values are NA. Where
+eigenvalues decide the fit, the default is \code{"all"}.
 
 ODAL and ADAP use the largest training site as lead by default;
 \code{leadRank = 2} uses the second largest, and so on, within each outer fold.

@@ -167,7 +167,8 @@ guardAdapInitializerResume <- function(rows, task, fold, featureSet, method, arg
   adapMethods <- c("ADAP", "ADAP2", "ADAP_PDA", "ADAP1", "ADAPDiag", "Prox-ADAP", "C-ADAP", "MaxConv-ADAP")
   if (!method %in% adapMethods) return(invisible(NULL))
   requested <- methodConfig(method, featureSet, args)
-  requestedBackend <- requested$adapInitBackend %||% "glmnet"
+  requestedBackend <- requested$adapInitBackend
+  # Results saved before the initializer was recorded used glmnet with ten unstratified folds.
   foldSettings <- function(config) list(
     folds = config$adapInitFolds %||% 10L,
     stratify = config$adapInitStratify %||% FALSE,
@@ -448,14 +449,12 @@ methodConfig <- function(method, featureSet, args) {
   if (method %in% adapMethods && !is.null(argValue(args, "adap-eigen-diagnostics"))) {
     cfg$adapEigenDiagnostics <- match.arg(argValue(args, "adap-eigen-diagnostics"), c("all", "final", "none"))
   }
-  if (method %in% adapMethods && !is.null(argValue(args, "adap-init-backend"))) {
-    cfg$adapInitBackend <- match.arg(argValue(args, "adap-init-backend"), c("glmnet", "glmnet_sparse", "localCyclops"))
-  }
   if (method %in% adapMethods) {
-    if (!is.null(argValue(args, "adap-init-folds")))
-      cfg$adapInitFolds <- intArg(argValue(args, "adap-init-folds"), NA_integer_)
-    if (!is.null(argValue(args, "adap-init-stratify")))
-      cfg$adapInitStratify <- logicalArg(argValue(args, "adap-init-stratify"), FALSE)
+    # Recorded even at their defaults, so saved models show the initializer they used.
+    cfg$adapInitBackend <- match.arg(argValue(args, "adap-init-backend") %||% "glmnet_sparse",
+      c("glmnet", "glmnet_sparse", "localCyclops"))
+    cfg$adapInitFolds <- intArg(argValue(args, "adap-init-folds"), 3L)
+    cfg$adapInitStratify <- logicalArg(argValue(args, "adap-init-stratify"), TRUE)
     if (!is.null(argValue(args, "adap-init-seed")))
       cfg$adapInitSeed <- intArg(argValue(args, "adap-init-seed"), NA_integer_)
   }

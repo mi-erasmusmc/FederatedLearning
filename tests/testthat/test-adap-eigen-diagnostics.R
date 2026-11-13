@@ -44,6 +44,11 @@ test_that("limiting ADAP's eigendecomposition diagnostics leaves the fits unchan
     expect_true(is.na(finalEigen(fits$none)))
     expect_true(any(is.finite(eigenColumns(fits$all$adapCvDiagnostics))))
     expect_false(any(is.finite(eigenColumns(fits$final$adapCvDiagnostics))))
+    # Where eigenvalues are diagnostics only, the default is "final".
+    default <- fitFederated(cl, method, adapEigenConfig(), verbose = FALSE)
+    expect_identical(default$w, fits$all$w)
+    expect_equal(finalEigen(default), finalEigen(fits$all))
+    expect_false(any(is.finite(eigenColumns(default$adapCvDiagnostics))))
     if (identical(method, "ADAP2")) {
       expect_true(is.finite(fits$all$siteHessianEigenMin))
       expect_true(is.na(fits$final$siteHessianEigenMin))
@@ -53,7 +58,10 @@ test_that("limiting ADAP's eigendecomposition diagnostics leaves the fits unchan
       expect_identical(fits$none$curvatureStatus, "unknown")
     }
   }
-  # Where eigenvalues decide the fit, they cannot be skipped.
+  # Where eigenvalues decide the fit, they cannot be skipped, and by default they are all computed.
+  expect_identical(.adapEigenDiagnosticsMode(list(), .adapEigenDiagnosticsOnly("exact", "fullQuadratic", "fail")), "all")
+  expect_identical(.adapEigenDiagnosticsMode(list(), .adapEigenDiagnosticsOnly("maxconv")), "all")
+  expect_identical(.adapEigenDiagnosticsMode(list()), "final")
   expect_error(fitFederated(cl, "ADAP2", c(adapEigenConfig(),
     list(adapEigenDiagnostics = "final", adapCurvatureAction = "fail")), verbose = FALSE), "diagnostics only")
   expect_error(fitFederated(cl, "MaxConv-ADAP", c(adapEigenConfig(), list(adapEigenDiagnostics = "none")),

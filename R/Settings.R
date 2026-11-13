@@ -191,23 +191,25 @@ createTaskSettings <- function(name, targetId, outcomeId, populationSettings) {
 #' defines a grid of configurations. Options a method does not use are ignored
 #' by that method.
 #'
-#' ADAP methods start from a local lasso at each site, fitted by glmnet with
-#' ten unstratified CV folds by default. `adapInitBackend = "glmnet_sparse"`
-#' keeps the site matrix sparse, which gives the same fit much faster at
-#' thousands of predictors; `adapInitFolds` and `adapInitStratify = TRUE`
-#' change the CV folds, and with them the starting estimate.
+#' ADAP methods start from a local lasso at each site, fitted by glmnet on the
+#' sparse site matrix with three outcome-stratified CV folds by default.
+#' `adapInitBackend = "glmnet"` uses a dense matrix when it fits in memory,
+#' which gives the same fit more slowly; `adapInitFolds` and `adapInitStratify`
+#' change the CV folds, and with them the starting estimate (before this default,
+#' ADAP used `"glmnet"` with ten unstratified folds).
 #' `adapInitBackend = "localCyclops"` instead starts from the local lasso
 #' models of the coefficient-averaging baseline (Cyclops, tuned within each
 #' site), so the averaged starting estimate is that baseline's model. Resuming
 #' checks these settings against the saved model and stops if they differ.
 #'
-#' ADAP reports eigenvalues of its correction and of the surrogate Hessian at
-#' every fit; each costs O(p^3) and they dominate the run time at thousands of
-#' predictors. For ADAP1, and for ADAP and ADAP2 with report-only curvature
-#' (the default), they are diagnostics only. `adapEigenDiagnostics = "final"`
-#' computes them only for the final fit and the server's correction, and
-#' `"none"` skips them; the fitted models are the same and skipped values are
-#' NA.
+#' ADAP can report eigenvalues of its correction and of the surrogate Hessian
+#' at every fit; each costs O(p^3) and they dominate the run time at thousands
+#' of predictors. For ADAP1, and for ADAP and ADAP2 with report-only curvature
+#' (the default), they are diagnostics only, and by default
+#' (`adapEigenDiagnostics = "final"`) they are computed only for the final fit
+#' and the server's correction. `"all"` computes them at every fit and `"none"`
+#' skips them; the fitted models are the same and skipped values are NA. Where
+#' eigenvalues decide the fit, the default is `"all"`.
 #'
 #' ODAL and ADAP use the largest training site as lead by default;
 #' `leadRank = 2` uses the second largest, and so on, within each outer fold.

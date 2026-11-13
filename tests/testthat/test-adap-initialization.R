@@ -6,7 +6,7 @@ test_that("ADAP initialization retains an unpenalized intercept on both matrix p
     set.seed(104)
     fit <- .fitPdaStyleLocalLasso(Matrix::Matrix(x, sparse = TRUE),
       Matrix::Matrix(cbind(1, x), sparse = TRUE), y,
-      list(maxDenseInitCells = if (dense) Inf else 0))
+      list(adapInitBackend = "glmnet", maxDenseInitCells = if (dense) Inf else 0))
     expect_identical(fit$usedDensePdaPath, dense)
     expect_true(all(fit$beta[-1] == 0))
     expect_equal(fit$beta[[1]], stats::qlogis(mean(y)), tolerance = 1e-7)
@@ -24,7 +24,8 @@ test_that("dense and sparse ADAP initialization use the same glmnet specificatio
     for (dense in c(TRUE, FALSE)) {
       fit <- .fitPdaStyleLocalLasso(Matrix::Matrix(x, sparse = TRUE),
         Matrix::Matrix(cbind(1, x), sparse = TRUE), y,
-        list(standardize = standardize, maxDenseInitCells = if (dense) Inf else 0, cvSeed = 212L))
+        list(standardize = standardize, adapInitBackend = "glmnet", maxDenseInitCells = if (dense) Inf else 0,
+          adapInitFolds = 10L, adapInitStratify = FALSE, cvSeed = 212L))
       expect_equal(fit$lambda, reference$lambda.min, tolerance = 1e-8)
       expect_equal(fit$beta, as.numeric(stats::coef(reference, s = "lambda.min")), tolerance = 1e-6)
       expect_length(fit$beta, ncol(x) + 1L)
@@ -59,7 +60,7 @@ test_that("a single predictor still has an unpenalized ADAP initialization inter
   for (dense in c(TRUE, FALSE)) {
     set.seed(412)
     fit <- .fitPdaStyleLocalLasso(x, .addInterceptColumn(x), y,
-      list(maxDenseInitCells = if (dense) Inf else 0))
+      list(adapInitBackend = "glmnet", maxDenseInitCells = if (dense) Inf else 0))
     expect_length(fit$beta, 2L)
     expect_true(all(is.finite(fit$beta)))
     expect_lt(abs(mean(stats::plogis(as.numeric(.addInterceptColumn(x) %*% fit$beta)) - y)), 1e-6)
@@ -106,7 +107,8 @@ test_that("ADAP initializer folds are reproducible, stratified and usable", {
   expect_error(.adapLocalInitFolds(rep(0L, 10), config), "both classes")
   expect_error(.adapLocalInitFolds(c(rep(0L, 9), 1L), config), "each training fold")
   expect_error(.adapLocalInitFolds(y, list(adapInitStratify = NA)), "TRUE or FALSE")
-  expect_identical(.adapLocalInitFolds(y, list(adapInitSeed = 21L)),
+  expect_identical(.adapLocalInitFolds(y, list(adapInitSeed = 21L)), .stratifiedFoldId(y, 3L, 21L))
+  expect_identical(.adapLocalInitFolds(y, list(adapInitSeed = 21L, adapInitFolds = 10L, adapInitStratify = FALSE)),
     .adapLocalInitFoldId(length(y), 21L))
 })
 
@@ -135,18 +137,21 @@ test_that("sparse and dense glmnet give the same starting estimate", {
   x <- Matrix::Matrix(matrix(rnorm(300), ncol = 3), sparse = TRUE)
   design <- .addInterceptColumn(x)
   y <- rbinom(100, 1, plogis(-1 + x[, 1]))
-  default <- .fitPdaStyleLocalLasso(x, design, y, list())
-  expect_identical(default, .fitPdaStyleLocalLasso(x, design, y, list(adapInitBackend = "glmnet")))
-  expect_true(default$usedDensePdaPath)
+  dense <- .fitPdaStyleLocalLasso(x, design, y, list(adapInitBackend = "glmnet"))
+  expect_true(dense$usedDensePdaPath)
   sparse <- .fitPdaStyleLocalLasso(x, design, y, list(adapInitBackend = "glmnet_sparse"))
   expect_false(sparse$usedDensePdaPath)
-  expect_identical(sparse, .fitPdaStyleLocalLasso(x, design, y, list(maxDenseInitCells = 0)))
-  expect_equal(sparse$beta, default$beta, tolerance = 1e-6)
+  expect_identical(sparse, .fitPdaStyleLocalLasso(x, design, y, list()))
+  expect_identical(sparse, .fitPdaStyleLocalLasso(x, design, y, list(adapInitBackend = "glmnet", maxDenseInitCells = 0)))
+  expect_equal(sparse$beta, dense$beta, tolerance = 1e-6)
   expect_equal(.fitPdaStyleLocalLasso(as.matrix(x), as.matrix(design), y,
     list(adapInitBackend = "glmnet_sparse")), sparse, tolerance = 1e-12)
   expect_identical(createMethodSettings("ADAP2", adapInitBackend = "glmnet_sparse")$options$adapInitBackend,
     "glmnet_sparse")
-  expect_identical(methodConfig("ADAP2", "all", list(`adap-init-folds` = "3"))$adapInitFolds, 3L)
+  expect_identical(methodConfig("ADAP2", "all", list(`adap-init-folds` = "5"))$adapInitFolds, 5L)
+  defaults <- methodConfig("ADAP2", "all", list())
+  expect_identical(defaults[c("adapInitBackend", "adapInitFolds", "adapInitStratify")],
+    list(adapInitBackend = "glmnet_sparse", adapInitFolds = 3L, adapInitStratify = TRUE))
   expect_error(methodConfig("ADAP2", "all", list(`adap-init-backend` = "cyclops")), "should be one of")
 })
 
@@ -160,16 +165,17 @@ test_that("resume rejects a different or unverifiable ADAP initializer", {
     models = list(model), config = list(adapInitBackend = "glmnet"))
   saved <- saveModelArtifact(artifact, rows, file.path(directory, "models"))
   check <- function(rows, args) guardAdapInitializerResume(rows, "task", 1L, "all", "ADAP1", args, directory)
-  expect_null(check(saved, list()))
-  expect_error(check(saved, list(`adap-init-backend` = "glmnet_sparse")), "different initializer")
-  expect_error(check(saved, list(`adap-init-folds` = "3", `adap-init-stratify` = "true")),
-    "different initializer folds or seed")
+  legacyArgs <- list(`adap-init-backend` = "glmnet", `adap-init-folds` = "10", `adap-init-stratify` = "false")
+  expect_null(check(saved, legacyArgs))
+  expect_error(check(saved, list()), "different initializer")
+  expect_error(check(saved, list(`adap-init-backend` = "glmnet")), "different initializer folds or seed")
   artifact$config <- list(adapInitBackend = "glmnet_sparse", adapInitFolds = 3L,
     adapInitStratify = TRUE, cvSeed = 42L)
   savedSparse <- saveModelArtifact(artifact, rows, file.path(directory, "models"))
   sparseArgs <- list(`adap-init-backend` = "glmnet_sparse", `adap-init-folds` = "3", `adap-init-stratify` = "true")
   expect_null(check(savedSparse, sparseArgs))
-  expect_error(check(savedSparse, list(`adap-init-backend` = "glmnet_sparse")), "different initializer folds or seed")
-  expect_error(check(rows, list(`adap-init-folds` = "3", `adap-init-stratify` = "true")), "Cannot verify")
-  expect_null(check(rows, list()))
+  expect_null(check(savedSparse, list()))
+  expect_error(check(savedSparse, list(`adap-init-folds` = "5")), "different initializer folds or seed")
+  expect_error(check(rows, list()), "Cannot verify")
+  expect_null(check(rows, legacyArgs))
 })

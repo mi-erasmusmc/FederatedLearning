@@ -519,7 +519,8 @@ test_that("ADAP full variants use variant-specific lead weights", {
   runServer <- function(init) {
     state <- init(list(p = 1, lambda = 0.1, leadIndex = 1))
     round0 <- FederatedLearning:::.serverRoundPdaAdap(state, phase0Reports, list(leadIndex = 1))
-    FederatedLearning:::.serverRoundPdaAdap(round0$state, phase1Reports, list(leadIndex = 1))
+    FederatedLearning:::.serverRoundPdaAdap(round0$state, phase1Reports,
+      list(leadIndex = 1, adapEigenDiagnostics = "all"))
   }
 
   exact <- runServer(FederatedLearning:::.serverInitPdaAdap2)

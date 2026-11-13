@@ -124,21 +124,28 @@
 # Eigendecompositions of dense p x p matrices cost O(p^3). For ADAP1, and for the
 # exact ADAP surrogate with report-only curvature, they are diagnostics only: the
 # eigenvalues are reported, never used in the fit. `adapEigenDiagnostics` = "all"
-# (the default) computes them for every fit; "final" only for the final fit and
-# the server's correction; "none" skips them. Skipped values are NA.
+# computes them for every fit; "final" (the default there) only for the final fit
+# and the server's correction; "none" skips them. Skipped values are NA. Where
+# eigenvalues decide the fit, the default is "all".
 .adapEigenState <- new.env(parent = emptyenv())
 .adapEigenState$skip <- FALSE
 
-.adapEigenDiagnosticsMode <- function(config) {
-  match.arg(config$adapEigenDiagnostics %||% "all", c("all", "final", "none"))
+# Other surrogates use eigenvalues to accept, shift or weight the correction.
+.adapEigenDiagnosticsOnly <- function(surrogateVariant = "exact", solveStyle = "fullQuadratic",
+                                      curvatureAction = "report") {
+  identical(surrogateVariant, "exact") && identical(solveStyle, "fullQuadratic") &&
+    identical(curvatureAction, "report")
 }
 
-# Other surrogates use eigenvalues to accept, shift or weight the correction.
+.adapEigenDiagnosticsMode <- function(config, diagnosticsOnly = TRUE) {
+  match.arg(config$adapEigenDiagnostics %||% if (diagnosticsOnly) "final" else "all",
+    c("all", "final", "none"))
+}
+
 .checkAdapEigenDiagnostics <- function(mode, surrogateVariant = "exact", solveStyle = "fullQuadratic",
                                        curvatureAction = "report") {
   if (identical(mode, "all")) return(invisible(TRUE))
-  if (!identical(surrogateVariant, "exact") || !identical(solveStyle, "fullQuadratic") ||
-      !identical(curvatureAction, "report")) {
+  if (!.adapEigenDiagnosticsOnly(surrogateVariant, solveStyle, curvatureAction)) {
     stop("adapEigenDiagnostics = '", mode, "' needs ADAP1, or the exact ADAP surrogate with ",
       "report-only curvature, whose eigenvalues are diagnostics only", call. = FALSE)
   }
@@ -929,8 +936,8 @@
 }
 
 .adapLocalInitFolds <- function(y, config) {
-  nfolds <- config$adapInitFolds %||% 10L
-  stratify <- config$adapInitStratify %||% FALSE
+  nfolds <- config$adapInitFolds %||% 3L
+  stratify <- config$adapInitStratify %||% TRUE
   if (length(nfolds) != 1L || !is.numeric(nfolds) || !is.finite(nfolds) ||
       nfolds < 3L || nfolds != floor(nfolds) || nfolds > length(y)) {
     stop("ADAP initialization needs an integer fold count between 3 and the number of rows")
@@ -953,7 +960,7 @@
 }
 
 .fitPdaStyleLocalLasso <- function(xRaw, xDesign, y, config) {
-  backend <- match.arg(config$adapInitBackend %||% "glmnet", c("glmnet", "glmnet_sparse", "localCyclops"))
+  backend <- match.arg(config$adapInitBackend %||% "glmnet_sparse", c("glmnet", "glmnet_sparse", "localCyclops"))
   if (identical(backend, "localCyclops")) {
     # The runner fitted this site's local Cyclops lasso, as for coefficient averaging.
     localId <- getOption("FederatedLearning.localId", NA_integer_)
@@ -3232,7 +3239,8 @@
         (!identical(surrogateVariant, "exact") || !identical(solveStyle, "fullQuadratic"))) {
       stop("adapCurvatureAction = 'report' requires the exact full-quadratic ADAP solver")
     }
-    eigenMode <- .adapEigenDiagnosticsMode(config)
+    eigenMode <- .adapEigenDiagnosticsMode(config,
+      .adapEigenDiagnosticsOnly(surrogateVariant, solveStyle, curvatureAction))
     .checkAdapEigenDiagnostics(eigenMode, surrogateVariant, solveStyle, curvatureAction)
     methodName <- serverBroadcast$adapMethodName %||% config$adapMethodName %||%
       switch(surrogateVariant,
@@ -3496,9 +3504,11 @@
     state$leadWeightMin <- weights[[state$leadIndex]]
     surrogateVariant <- state$adapSurrogateVariant %||% config$adapSurrogateVariant %||% "exact"
     leadHess <- hessList[[state$leadIndex]]
-    eigenMode <- .adapEigenDiagnosticsMode(config)
-    .checkAdapEigenDiagnostics(eigenMode, surrogateVariant, state$adapSolveStyle %||% "fullQuadratic",
-      config$adapCurvatureAction %||% "report")
+    solveStyle <- state$adapSolveStyle %||% "fullQuadratic"
+    curvatureAction <- config$adapCurvatureAction %||% "report"
+    eigenMode <- .adapEigenDiagnosticsMode(config,
+      .adapEigenDiagnosticsOnly(surrogateVariant, solveStyle, curvatureAction))
+    .checkAdapEigenDiagnostics(eigenMode, surrogateVariant, solveStyle, curvatureAction)
     siteEigenMins <- .withAdapEigen(identical(eigenMode, "all"),
       vapply(hessList, function(H) .adapEigenRange(H)$min, numeric(1)))
     globalEig <- .withAdapEigen(identical(eigenMode, "all"), .adapEigenRange(globalHess))
@@ -3767,7 +3777,8 @@
       return(NULL)
     }
     capture <- .captureSurrogateLead(config, clientData, serverBroadcast)
-    eigenMode <- .adapEigenDiagnosticsMode(config)
+    eigenMode <- .adapEigenDiagnosticsMode(config,
+      identical(mode, "first") || .adapEigenDiagnosticsOnly(surrogateVariant = mode))
     if (!identical(mode, "first")) {
       .checkAdapEigenDiagnostics(eigenMode, surrogateVariant = mode)
     }
