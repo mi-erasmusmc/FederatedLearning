@@ -227,11 +227,11 @@ clusterCreateMatrices <- function(cl, config) {
 .calibrationMetrics <- function(y, linearPredictor) {
   out <- c(calibrationInTheLarge = NA_real_, calibrationIntercept = NA_real_, calibrationSlope = NA_real_)
   if (length(unique(y)) != 2L || any(!is.finite(linearPredictor))) return(out)
-  fit <- function(formula) {
-    suppressWarnings(tryCatch(stats::glm(formula, family = stats::binomial()), error = function(e) NULL))
-  }
-  large <- fit(y ~ 1 + stats::offset(linearPredictor))
-  free <- fit(y ~ linearPredictor)
+  fit <- function(model) suppressWarnings(tryCatch(model, error = function(e) NULL))
+  # The offset is passed as an argument: inside a formula only a bare offset() is
+  # an offset, and stats::offset() would be fitted as a predictor with a free slope.
+  large <- fit(stats::glm(y ~ 1, offset = linearPredictor, family = stats::binomial()))
+  free <- fit(stats::glm(y ~ linearPredictor, family = stats::binomial()))
   if (!is.null(large)) out[["calibrationInTheLarge"]] <- unname(stats::coef(large)[[1]])
   if (!is.null(free)) out[c("calibrationIntercept", "calibrationSlope")] <- unname(stats::coef(free)[1:2])
   out

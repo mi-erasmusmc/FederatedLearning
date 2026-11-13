@@ -13,8 +13,14 @@ test_that("calibration measures recover known miscalibration", {
   expect_lt(abs(.calibrationMetrics(s$y, s$eta + 1)[["calibrationInTheLarge"]] + 1), 0.05)
   # Doubling the logits gives a slope of about one half.
   expect_lt(abs(.calibrationMetrics(s$y, 2 * s$eta)[["calibrationSlope"]] - 0.5), 0.03)
-  direct <- stats::glm(s$y ~ 1 + stats::offset(s$eta), family = stats::binomial())
-  expect_equal(calibrated[["calibrationInTheLarge"]], unname(stats::coef(direct)[1]), tolerance = 1e-10)
+  # With the slope fixed at one, calibration-in-the-large solves
+  # sum(y) = sum(plogis(lp + a)). It differs from the free-slope intercept when the
+  # slope is not one, as here (true slope 2, free intercept -2).
+  lp <- 0.5 * s$eta + 1
+  root <- stats::uniroot(function(a) sum(s$y) - sum(stats::plogis(lp + a)), c(-5, 5), tol = 1e-12)$root
+  shrunk <- .calibrationMetrics(s$y, lp)
+  expect_equal(shrunk[["calibrationInTheLarge"]], root, tolerance = 1e-6)
+  expect_gt(abs(shrunk[["calibrationInTheLarge"]] - shrunk[["calibrationIntercept"]]), 0.3)
   free <- stats::glm(s$y ~ s$eta, family = stats::binomial())
   expect_equal(unname(calibrated[c("calibrationIntercept", "calibrationSlope")]),
     unname(stats::coef(free)), tolerance = 1e-10)
