@@ -6,14 +6,16 @@ The package is currently a research prototype. The primary execution model is a 
 
 ## Installation
 
-Install the package from a local checkout:
+Install from GitHub, pinned to a commit so results can be traced to the code:
 
 ```r
 install.packages("remotes")
+remotes::install_github("mi-erasmusmc/FederatedLearning@<commit>")
+# or, from a local checkout:
 remotes::install_local(".")
 ```
 
-The package depends on OHDSI/PLP tooling and compiles C++ code, so the local R environment needs a working compiler toolchain and the required OHDSI packages installed.
+The package depends on OHDSI/PLP tooling and compiles C++ code, so the local R environment needs a working compiler toolchain (Rtools on Windows). The pooled and local lasso baselines also need Cyclops.
 
 ## Input Layout
 
@@ -30,11 +32,73 @@ data/
       plpData files...
 ```
 
-Each client folder should contain compatible PLP covariate data for the same prediction task. The package aligns features by `covariateId` using either a union or intersection map. This is necessary but not a full guarantee that each split used identical covariate-generation settings.
+Each client folder should contain compatible PLP covariate data for the same prediction task. The package aligns features by `covariateId` using either a union or intersection map (`runComparison()` always intersects across the training sites). This is necessary but not a full guarantee that each split used identical covariate-generation settings.
 
-## Minimal PLP Example
+## Comparing Methods
 
-This example assumes `clientPaths` already point to PLP data folders. With `mirai = FALSE` and `clientHosts = "localhost"`, the clients are simulated by local PSOCK worker processes.
+`runComparison()` is the main entry point. For each site in `holdouts` it trains every method on the other sites, evaluates on the held-out site, and writes results and models to the output directory.
+
+```r
+library(FederatedLearning)
+
+pop <- PatientLevelPrediction::createStudyPopulationSettings(
+  riskWindowStart = 1, riskWindowEnd = 365,
+  removeSubjectsWithPriorOutcome = TRUE, priorOutcomeLookback = 99999,
+  requireTimeAtRisk = FALSE
+)
+task <- createTaskSettings("taskA", targetId = 1234, outcomeId = 5678,
+  populationSettings = pop)
+sites <- c(site1 = "data/taskA/site1", site2 = "data/taskA/site2",
+  site3 = "data/taskA/site3")
+features <- list(allCovariates = createFeatureSettings(minFraction = 0.001))
+
+methods <- list(
+  createMethodSettings("ADAP2"),
+  createMethodSettings("LocalAvgLasso"),
+  createMethodSettings("PooledLasso")
+)
+
+runComparison(task, sites, features, methods, "results/taskA", holdouts = names(sites))
+results <- readComparisonResults("results/taskA")
+```
+
+The four settings functions:
+
+- `createTaskSettings()`: name, target and outcome cohort ids, and PLP population settings.
+- `createFeatureSettings()`: which covariates enter the model (`covariateIds`, `analysisIds`, `excludeCovariateIds`), logical-OR `combinations` of binary covariates, and `minFraction`, a shared training-only filter that drops covariates present in fewer than that fraction of outer-training entries (default 0.001; `NULL` disables it). Pass a named list to compare several.
+- `createMethodSettings(method, ...)`: a method and its options. Options are the comparison runner's flags in camelCase; an unknown name stops with the list of valid ones. A vector value defines a grid of configurations.
+- `createRunSettings()`: how the run executes, not what it estimates (`mirai`, `hosts`, `verbose`, `saveModels`, `rerunErrors`).
+
+The output directory holds:
+
+- `comparison_results.csv`: one row per method, held-out site and feature setting, with AUC, log loss, calibration (in the large, intercept, slope, ICI), nonzero predictors, selected penalty, communication, run time, peak memory and fit diagnostics; a filled `error` column marks a failed fit;
+- `models/`: saved models, read with `loadModel()` and scored with `predictModel()`;
+- `preprocessing/`: the shared feature-filter audit, with per-predictor training counts (keep private);
+- `run_manifest.csv` and `manifest/`: one row per call with the framework and study commits, R, the BLAS, a settings hash and the full settings.
+
+Calling `runComparison()` again on the same directory resumes and skips finished combinations, and warns when the code or settings differ from the earlier run. Use a new directory when a setting changes.
+
+### ADAP Options
+
+ADAP1 and ADAP2 take these options in `createMethodSettings()`. The defaults are the settings we recommend.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `adapInitBackend` | `"glmnet_sparse"` | Local starting lasso: glmnet on the sparse site matrix; `"glmnet"` uses a dense matrix when it fits (same fit, slower), `"localCyclops"` the coefficient-averaging baseline's local models. |
+| `adapInitFolds` | `3` | CV folds for the local starting lasso. |
+| `adapInitStratify` | `TRUE` | Stratify those folds by outcome. |
+| `adapEigenDiagnostics` | `"final"` | Eigenvalue diagnostics (each O(p^3)) only for the final fit and the server's correction; `"all"` at every fit, `"none"` never. The fitted model is the same. Variants whose fit uses the eigenvalues default to `"all"`. |
+| `leadRank` | `1` | Lead site by training size: 1 is the largest. |
+| `innerFolds` | `3` | Outcome-stratified CV folds for the penalty search at the lead site. |
+| `adapLambdaSelectionMetric` | `"deviance"` | Penalty selection score: `"deviance"` or `"auc"`. |
+| `lambdaSearchMaxEvals` | `25` | Most penalties evaluated by the search. |
+| `cvSeed` | `42` | Seed for the CV folds. |
+
+ADAP2 stores a dense p-by-p Hessian per site, so memory grows with the square of the number of predictors: roughly 10 GB in total at 5,000 predictors and 30 GB at 10,000 on four sites.
+
+## Low-Level API
+
+`fitFederated()` fits one method on an existing worker cluster, without the outer folds, baselines or result files. This example assumes `clientPaths` already point to PLP data folders. With `mirai = FALSE` and `clientHosts = "localhost"`, the clients are simulated by local PSOCK worker processes.
 
 ```r
 library(FederatedLearning)
@@ -112,7 +176,7 @@ The script builds standard OHDSI objects internally: `DatabaseConnector::createC
 
 ## Comparison Runner
 
-`extras/runComparisonMatrix.R` runs methods across tasks, feature sets, and leave-one-client-out folds:
+`extras/runComparisonMatrix.R` is the command-line form of the same runner that `runComparison()` calls. It runs methods across tasks, feature sets, and leave-one-client-out folds:
 
 ```bash
 Rscript extras/runComparisonMatrix.R \
@@ -130,7 +194,9 @@ Outputs include per-fold metrics, summary metrics by method, diagnostics, and la
 ### Matched Feature Filtering
 
 `--federated-preprocess=baseline` opts federated methods into the baseline rarity
-and near-constant-column filters. The default remains `none`. Filtering uses
+and near-constant-column filters. The script's default remains `none`;
+`runComparison()` applies the shared filter to every method unless
+`createFeatureSettings(minFraction = NULL)`. Filtering uses
 summaries from the outer-training sites only, with one common feature map for
 inner tuning, final fitting and held-out scoring. This matches the baseline's
 existing outer-training preprocessing scope, not preprocessing refitted inside
@@ -203,6 +269,19 @@ Registered algorithm names are passed to `fitFederated(algorithm = ...)`.
 | `ADAP_PDA` | Legacy full-Hessian correction with simultaneous diagonal proximal updates, not the pinned upstream PDA coordinate-descent solver. | Local estimates, gradients, full Hessians, lead-site surrogate fit. |
 | `ADAP1` | First-order ADAP-style variant without Hessian transmission. | Local estimates, gradients, lead-site surrogate fit. |
 | `ADAPDiag` | Diagonal-correction extension, retaining full lead-site curvature by default. | Local estimates, gradients, Hessian diagonals, lead-site surrogate fit. |
+| `Prox-ADAP`, `C-ADAP`, `MaxConv-ADAP` | Experimental ADAP surrogates (proximal, convexified and maximum-convexity variants) for method development. | As `ADAP2`. |
+
+`runComparison()` also accepts these centralised and local lasso baselines, fitted with Cyclops:
+
+| Baseline | Description |
+| --- | --- |
+| `PooledLasso` | Lasso on the pooled training rows; penalty chosen by holding out each training database (`pooledTuning = "rows"` uses CV over pooled rows). |
+| `LocalAvgLasso` | Average of the local lassos' coefficients, weighted by training size (`localAverageWeighting = "equalClient"` for equal weights). |
+| `SparseLocalAvgLasso`, `DebiasedLocalAvgLasso` | Coefficient averaging with a tuned sparsity threshold, without or with local debiasing. |
+| `LocalEnsembleLasso` | Average of the local models' predicted probabilities. |
+| `BiggestSiteLasso` | The largest training site's local lasso. |
+| `LocalBestLasso` | The local lasso that scores best at the other training sites. |
+| `LocalSiteLasso` | Each training site's local lasso, evaluated separately. |
 
 Several PDA-style methods finish in a small number of phases rather than many communication rounds. Dual averaging usually uses many more rounds but smaller per-round payloads.
 
@@ -221,7 +300,7 @@ The built-in feature filters are:
 | `phenotypes` | Covariates with phenotype analysis ID currently set to `49`. |
 | `ageSexPhenotypes` | Union of the age/sex and phenotype filters. |
 
-You can also pass explicit `covariateIds` or `analysisIds` in `config`. The current feature filters are intentionally simple and should be validated against the covariate settings used to generate PLP data.
+These names apply to `fitFederated()` and the runner script; `runComparison()` selects covariates with `createFeatureSettings()` instead. You can also pass explicit `covariateIds` or `analysisIds` in `config`. The current feature filters are intentionally simple and should be validated against the covariate settings used to generate PLP data.
 
 ## Execution Model
 
@@ -250,7 +329,7 @@ These payloads are exchanged inside the simulated federation between the coordin
 
 - The package is documented as simulated federated learning, not as a production multi-site deployment.
 - `clientFrac` is present in some APIs but the core training loop currently evaluates all clients each round.
-- Some aggregation behavior is equal-client rather than sample-size weighted; method-specific behavior should be checked before interpreting results as pooled empirical-risk minimization.
+- Aggregation is weighted by sample size by default, with equal-client weighting as an option; method-specific behavior should still be checked before interpreting results as pooled empirical-risk minimization.
 - Feature compatibility across sites is not fully enforced beyond covariate ID mapping.
 - Worker state is global within each worker process and should be treated as session state.
 
