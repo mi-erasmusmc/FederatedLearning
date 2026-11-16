@@ -233,8 +233,28 @@ clusterCreateMatrices <- function(cl, config) {
   large <- fit(stats::glm(y ~ 1, offset = linearPredictor, family = stats::binomial()))
   free <- fit(stats::glm(y ~ linearPredictor, family = stats::binomial()))
   if (!is.null(large)) out[["calibrationInTheLarge"]] <- unname(stats::coef(large)[[1]])
+  # With a few extreme predictions glm's iteration can run off and still report convergence
+  # (for example -4e15). The offset-only score equation always has one root when both outcomes
+  # occur, so a value that does not solve it is replaced by the root.
+  score <- function(a) sum(y - stats::plogis(linearPredictor + a))
+  citl <- out[["calibrationInTheLarge"]]
+  if (!is.finite(citl) || !is.finite(score(citl)) || abs(score(citl)) > 1e-6 * max(1, sum(y))) {
+    out[["calibrationInTheLarge"]] <- .calibrationInTheLargeRoot(y, linearPredictor)
+  }
   if (!is.null(free)) out[c("calibrationIntercept", "calibrationSlope")] <- unname(stats::coef(free)[1:2])
   out
+}
+
+# Calibration-in-the-large as the root of the offset-only logistic score equation,
+# sum(y) = sum(plogis(linearPredictor + a)); the score decreases in a.
+.calibrationInTheLargeRoot <- function(y, linearPredictor) {
+  score <- function(a) sum(y - stats::plogis(linearPredictor + a))
+  lower <- -1
+  upper <- 1
+  while (score(lower) < 0 && lower > -1e4) lower <- 2 * lower
+  while (score(upper) > 0 && upper < 1e4) upper <- 2 * upper
+  if (!(score(lower) >= 0 && score(upper) <= 0)) return(NA_real_)
+  stats::uniroot(score, c(lower, upper), tol = 1e-12)$root
 }
 
 # Smooth calibration curve: a binomial GAM of the outcome on a cubic regression

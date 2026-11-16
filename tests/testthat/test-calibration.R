@@ -27,6 +27,26 @@ test_that("calibration measures recover known miscalibration", {
   expect_true(all(is.na(.calibrationMetrics(rep(0, 5), 1:5))))
 })
 
+test_that("calibration-in-the-large solves its score equation when glm runs off", {
+  # A few entries with extreme predicted risk and no outcome: glm's iteration ends near
+  # -4e15 and reports convergence, although the score equation has a finite root.
+  set.seed(1)
+  n <- 100000
+  k <- 4000
+  lp <- c(rep(7, k), stats::rnorm(n - k, -4.5, 0.6))
+  y <- c(rep(0, k), stats::rbinom(n - k, 1, stats::plogis(stats::rnorm(n - k, -4.5, 0.6))))
+  citl <- FederatedLearning:::.calibrationMetrics(y, lp)[["calibrationInTheLarge"]]
+  root <- stats::uniroot(function(a) sum(y - stats::plogis(lp + a)), c(-50, 50), tol = 1e-12)$root
+  expect_equal(citl, root, tolerance = 1e-8)
+  expect_lt(abs(sum(y - stats::plogis(lp + citl))), 1e-6)
+  # Where glm solves it, its value is kept unchanged.
+  eta <- stats::rnorm(5000, -2, 1)
+  yy <- stats::rbinom(5000, 1, stats::plogis(0.5 * eta + 1))
+  glmValue <- unname(stats::coef(stats::glm(yy ~ 1, offset = eta, family = stats::binomial()))[[1]])
+  expect_identical(FederatedLearning:::.calibrationMetrics(yy, eta)[["calibrationInTheLarge"]], glmValue)
+  expect_equal(FederatedLearning:::.calibrationInTheLargeRoot(yy, eta), glmValue, tolerance = 1e-7)
+})
+
 test_that("single models use their linear predictor, not clipped probabilities", {
   set.seed(5)
   eta <- c(stats::rnorm(200, -2), 45, -45)
