@@ -43,6 +43,15 @@ and the server's correction. \code{"all"} computes them at every fit and \code{"
 skips them; the fitted models are the same and skipped values are NA. Where
 eigenvalues decide the fit, the default is \code{"all"}.
 
+\code{createMethodSettings("DualAvg", centerPredictors = TRUE)} centres each
+non-binary predictor at its pooled training mean and codes binary predictors
+present in more than half of the pooled training entries the other way round
+before fitting, and returns the coefficients on the original predictors. The
+penalized objective and its solution are unchanged, but DualAvg converges
+faster when a predictor is nearly collinear with the intercept, such as age
+in an older population. The sites exchange their row counts and column sums
+once, which is counted as a "design summary" exchange.
+
 ODAL and ADAP use the largest training site as lead by default;
 \code{leadRank = 2} uses the second largest, and so on, within each outer fold.
 \code{localAverageWeighting = "equalClient"} weights the local models of

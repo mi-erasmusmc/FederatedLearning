@@ -111,6 +111,14 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   }
   config <- .prepareSurrogateCapture(config, algorithm)
   clusterCreateMatrices(cl, config)
+  reparametrization <- NULL
+  if (isTRUE(config$centerPredictors)) {
+    if (!(algorithm %in% c("DualAvg", "DualAvgCpp", "DualAvgR"))) {
+      stop("centerPredictors is supported only for DualAvg", call. = FALSE)
+    }
+    reparametrization <- .reparametrizeCluster(cl, config$intercept)
+    on.exit(parallel::clusterCall(cl, .workerRestoreDesign), add = TRUE)
+  }
   parallel::clusterApply(
     cl,
     seq_along(cl),
@@ -304,6 +312,10 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   roundOffset <- as.integer(roundOffset)
   roundsCompleted <- 0L
   communication <- .newCommunicationLog()
+  if (!is.null(reparametrization)) {
+    .recordExchange(communication, "design summary",
+      rep(list(reparametrization$transform), length(cl)), reparametrization$summaries)
+  }
   kktChecks <- 0L
   kktMaxAbs <- NA_real_
   converged <- FALSE
@@ -532,6 +544,13 @@ fitFederated <- function(cl, algorithm, config, verbose = TRUE) {
   }
   if (!is.null(globalObjective)) {
     result$globalObjective <- globalObjective
+  }
+  if (!is.null(reparametrization)) {
+    # The dual state z stays on the reparametrized design, so a warm start on the same
+    # training sites continues where this fit stopped; w is returned on the original columns.
+    result$wReparametrized <- result$w
+    result$w <- .restoreReparametrizedCoefficients(result$w, reparametrization$transform)
+    result$reparametrization <- reparametrization$transform
   }
   if (!is.null(serverReport$cvMetric)) {
     result$cvMetric <- serverReport$cvMetric

@@ -446,6 +446,9 @@ methodConfig <- function(method, featureSet, args) {
   if (method %in% c("ADAP", "ADAP2") && !is.null(argValue(args, "adap-curvature-action"))) {
     cfg$adapCurvatureAction <- match.arg(argValue(args, "adap-curvature-action"), c("fail", "report"))
   }
+  if (method %in% dualAvgMethods && !is.null(argValue(args, "center-predictors"))) {
+    cfg$centerPredictors <- logicalArg(argValue(args, "center-predictors"), FALSE)
+  }
   if (method %in% adapMethods && !is.null(argValue(args, "adap-eigen-diagnostics"))) {
     cfg$adapEigenDiagnostics <- match.arg(argValue(args, "adap-eigen-diagnostics"), c("all", "final", "none"))
   }
