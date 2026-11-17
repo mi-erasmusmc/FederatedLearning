@@ -259,15 +259,19 @@ clusterCreateMatrices <- function(cl, config) {
 
 # Smooth calibration curve: a binomial GAM of the outcome on a cubic regression
 # spline of the linear predictor, the estimator chosen for the PandemicPrediction
-# study. The curve is evaluated at percentiles of the predictions with pointwise
-# 95% intervals, so it describes the data without patient-level predictions.
-# The integrated calibration index (ICI) is the mean absolute difference between
+# study. The curve and its pointwise 95% interval are evaluated on a grid that
+# spans the predictions except their outermost entries: each end of the grid is
+# the minTail-th most extreme linear predictor, so at least minTail entries lie
+# at or beyond it and no exported point belongs to fewer patients. The grid is
+# the percentiles 1 to 99 inside that range plus gridPoints evenly spaced
+# linear-predictor values, so the tails are drawn as well as the bulk. The
+# integrated calibration index (ICI) is the mean absolute difference between
 # predicted and smoothed observed risk over all patients.
-.calibrationCurve <- function(y, linearPredictor, points = 50L) {
+.calibrationCurve <- function(y, linearPredictor, points = 50L, gridPoints = 100L, minTail = 10L) {
   none <- list(curve = NULL, ici = NA_real_)
   events <- sum(y == 1)
   distinct <- length(unique(linearPredictor))
-  if (length(y) < 20L || events == 0L || events == length(y) || distinct < 5L ||
+  if (length(y) < max(20L, 2L * minTail) || events == 0L || events == length(y) || distinct < 5L ||
       any(!is.finite(linearPredictor))) {
     return(none)
   }
@@ -277,7 +281,11 @@ clusterCreateMatrices <- function(cl, config) {
     family = stats::binomial(), method = "fREML", discrete = TRUE, select = TRUE, gamma = 1.2)),
     error = function(e) NULL)
   if (is.null(fit)) return(none)
-  grid <- unique(stats::quantile(linearPredictor, seq(0.01, 0.99, length.out = points), names = FALSE))
+  sorted <- sort(linearPredictor)
+  ends <- c(sorted[minTail], sorted[length(sorted) - minTail + 1L])
+  percentiles <- stats::quantile(linearPredictor, seq(0.01, 0.99, length.out = points), names = FALSE)
+  grid <- sort(unique(c(percentiles[percentiles >= ends[1] & percentiles <= ends[2]],
+    seq(ends[1], ends[2], length.out = gridPoints))))
   smooth <- stats::predict(fit, newdata = data.frame(lp = grid), se.fit = TRUE)
   observed <- as.numeric(stats::fitted(fit))
   list(

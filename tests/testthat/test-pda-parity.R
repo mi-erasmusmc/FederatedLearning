@@ -90,7 +90,7 @@ test_that("ADAP initialization matches official PDA with matched standardization
   }
 })
 
-test_that("ADAP local initialization defaults to unstandardized glmnet with ten folds", {
+test_that("ADAP local initialization with ten unstratified folds matches unstandardized cv.glmnet", {
   skip_if_not_installed("glmnet")
   set.seed(111)
   x <- sweep(matrix(rnorm(450), nrow = 150), 2, c(.2, 1, 5), "*")
@@ -98,7 +98,8 @@ test_that("ADAP local initialization defaults to unstandardized glmnet with ten 
   set.seed(112)
   expected <- glmnet::cv.glmnet(x, y, family = "binomial", alpha = 1,
     intercept = TRUE, standardize = FALSE, nfolds = 10)
-  actual <- .fitPdaStyleLocalLasso(x, cbind(1, x), y, list(cvSeed = 112L))
+  actual <- .fitPdaStyleLocalLasso(x, cbind(1, x), y, list(cvSeed = 112L, adapInitFolds = 10L,
+    adapInitStratify = FALSE))
   expect_equal(actual$beta, as.numeric(stats::coef(expected, s = "lambda.min")), tolerance = 1e-12)
   expect_equal(actual$lambda, expected$lambda.min, tolerance = 1e-12)
   expect_identical(formals(glmnet::glmnet)$standardize, TRUE)

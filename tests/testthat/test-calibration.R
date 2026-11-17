@@ -67,7 +67,8 @@ test_that("the smooth calibration curve and ICI recover known miscalibration", {
   s <- calibrationSample()
   calibrated <- .calibrationCurve(s$y, s$eta)
   curve <- calibrated$curve
-  expect_identical(nrow(curve), 50L)
+  expect_gte(nrow(curve), 100L)
+  expect_lte(nrow(curve), 150L)
   expect_true(all(diff(curve$predicted) > 0))
   expect_true(all(curve$lower <= curve$observed & curve$observed <= curve$upper))
   expect_gte(mean(curve$lower <= curve$predicted & curve$predicted <= curve$upper), 0.9)
@@ -80,6 +81,26 @@ test_that("the smooth calibration curve and ICI recover known miscalibration", {
   fit <- mgcv::bam(y ~ s(lp, bs = "cr", k = 24), data = data.frame(y = s$y, lp = s$eta + 1),
     family = stats::binomial(), method = "fREML", discrete = TRUE, select = TRUE, gamma = 1.2)
   expect_equal(shifted$ici, mean(abs(stats::plogis(s$eta + 1) - stats::fitted(fit))), tolerance = 1e-8)
+})
+
+test_that("the calibration curve spans the predictions but leaves out their outermost entries", {
+  s <- calibrationSample()
+  curve <- .calibrationCurve(s$y, s$eta, minTail = 10L)$curve
+  sorted <- sort(s$eta)
+  ends <- stats::qlogis(range(curve$predicted))
+  expect_equal(ends, c(sorted[10], sorted[length(sorted) - 9L]), tolerance = 1e-10)
+  # At least ten entries lie at or beyond each end, and no more than ten beyond the evaluated range.
+  expect_gte(sum(s$eta <= ends[1] + 1e-12), 10L)
+  expect_gte(sum(s$eta >= ends[2] - 1e-12), 10L)
+  expect_lte(sum(s$eta < ends[1] - 1e-12), 9L)
+  # The evenly spaced linear-predictor grid reaches into the tails beyond the 1st and 99th percentiles.
+  percentiles <- stats::quantile(s$eta, c(0.01, 0.99), names = FALSE)
+  expect_gte(sum(stats::qlogis(curve$predicted) < percentiles[1]), 1L)
+  expect_gte(sum(stats::qlogis(curve$predicted) > percentiles[2]), 1L)
+  # A larger tail requirement narrows the range.
+  wider <- .calibrationCurve(s$y, s$eta, minTail = 50L)$curve
+  expect_gt(min(wider$predicted), min(curve$predicted))
+  expect_null(.calibrationCurve(s$y[1:30], s$eta[1:30], minTail = 20L)$curve)
 })
 
 test_that("the calibration curve is not estimated without enough distinct predictions or outcomes", {
@@ -103,12 +124,15 @@ test_that("evaluation rows keep their calibration curves when bound together", {
   curves <- attr(bound, "calibrationCurve")
   expect_identical(nrow(bound), 2L)
   expect_identical(as.character(unique(curves$clientId)), c("a", "b"))
-  expect_identical(as.numeric(table(curves$clientId)), c(50, 50))
+  expect_identical(as.numeric(table(curves$clientId)), vapply(c("a", "b"), function(site) {
+    s <- calibrationSample(n = 300L, seed = utf8ToInt(site))
+    as.numeric(nrow(.calibrationCurve(s$y, s$eta)$curve))
+  }, numeric(1), USE.NAMES = FALSE))
   s <- calibrationSample(n = 400L)
   worker <- .evaluateBinaryMetrics(s$y, stats::plogis(s$eta), w = 1, linearPredictor = s$eta)
   expect_true(all(c("calibrationIci", "calibrationInTheLarge", "calibrationIntercept", "calibrationSlope") %in%
     names(worker)))
-  expect_identical(nrow(attr(worker, "calibrationCurve")), 50L)
+  expect_identical(nrow(attr(worker, "calibrationCurve")), nrow(.calibrationCurve(s$y, s$eta)$curve))
 })
 
 test_that("federated evaluation returns calibration curves from its workers", {
